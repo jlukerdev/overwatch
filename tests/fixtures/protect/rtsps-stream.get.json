@@ -1,0 +1,6 @@
+{
+  "high": "rtsps://console.invalid:7441/<redacted-high>?enableSrtp",
+  "medium": "rtsps://console.invalid:7441/<redacted-medium>?enableSrtp",
+  "low": "rtsps://console.invalid:7441/<redacted-low>?enableSrtp",
+  "package": null
+}

@@ -1,0 +1,166 @@
+{
+  "motion": {
+    "add": {
+      "type": "add",
+      "item": {
+        "id": "evt-002",
+        "modelKey": "event",
+        "type": "motion",
+        "start": 1794512657236,
+        "device": "cam-008"
+      }
+    },
+    "updates": [
+      {
+        "type": "update",
+        "item": {
+          "id": "evt-002",
+          "type": "motion",
+          "start": 1794512657236,
+          "end": 1794512673875,
+          "device": "cam-008",
+          "modelKey": "event"
+        }
+      }
+    ]
+  },
+  "smartDetect": [
+    {
+      "type": "add",
+      "item": {
+        "id": "evt-001",
+        "modelKey": "event",
+        "type": "smartDetectZone",
+        "start": 1794512660747,
+        "device": "cam-008",
+        "smartDetectTypes": [
+          "person"
+        ]
+      }
+    },
+    {
+      "type": "update",
+      "item": {
+        "id": "evt-001",
+        "type": "smartDetectZone",
+        "start": 1794512660747,
+        "device": "cam-008",
+        "smartDetectTypes": [
+          "person"
+        ],
+        "modelKey": "event"
+      }
+    },
+    {
+      "type": "update",
+      "item": {
+        "id": "evt-001",
+        "type": "smartDetectZone",
+        "start": 1794512660747,
+        "end": 1794512670873,
+        "device": "cam-008",
+        "smartDetectTypes": [
+          "person"
+        ],
+        "modelKey": "event"
+      }
+    },
+    {
+      "type": "update",
+      "item": {
+        "id": "evt-001",
+        "type": "smartDetectZone",
+        "start": 1794512660747,
+        "end": 1794512670873,
+        "device": "cam-008",
+        "smartDetectTypes": [
+          "person"
+        ],
+        "modelKey": "event"
+      }
+    },
+    {
+      "type": "update",
+      "item": {
+        "id": "evt-001",
+        "type": "smartDetectZone",
+        "start": 1794512660747,
+        "end": 1794512670873,
+        "device": "cam-008",
+        "smartDetectTypes": [
+          "person"
+        ],
+        "modelKey": "event"
+      }
+    },
+    {
+      "type": "add",
+      "item": {
+        "id": "evt-003",
+        "modelKey": "event",
+        "type": "smartDetectZone",
+        "start": 1794512666566,
+        "device": "cam-004",
+        "smartDetectTypes": [
+          "person"
+        ]
+      }
+    },
+    {
+      "type": "update",
+      "item": {
+        "id": "evt-003",
+        "type": "smartDetectZone",
+        "start": 1794512666566,
+        "device": "cam-004",
+        "smartDetectTypes": [
+          "person"
+        ],
+        "modelKey": "event"
+      }
+    },
+    {
+      "type": "update",
+      "item": {
+        "id": "evt-003",
+        "type": "smartDetectZone",
+        "start": 1794512666566,
+        "end": 1794512674546,
+        "device": "cam-004",
+        "smartDetectTypes": [
+          "person"
+        ],
+        "modelKey": "event"
+      }
+    },
+    {
+      "type": "update",
+      "item": {
+        "id": "evt-003",
+        "type": "smartDetectZone",
+        "start": 1794512666566,
+        "end": 1794512674546,
+        "device": "cam-004",
+        "smartDetectTypes": [
+          "person"
+        ],
+        "modelKey": "event"
+      }
+    },
+    {
+      "type": "update",
+      "item": {
+        "id": "evt-003",
+        "type": "smartDetectZone",
+        "start": 1794512666566,
+        "end": 1794512674546,
+        "device": "cam-004",
+        "smartDetectTypes": [
+          "person"
+        ],
+        "modelKey": "event"
+      }
+    }
+  ],
+  "ring": []
+}

@@ -3,6 +3,10 @@
   "compilerOptions": {
     "lib": ["ES2023"],
     "types": ["node"],
+    // scripts/*.ts run directly under Node type stripping: .ts import paths, erasable syntax only.
+    "allowImportingTsExtensions": true,
+    "erasableSyntaxOnly": true,
+    "noEmit": true,
     "tsBuildInfoFile": "./node_modules/.tmp/tsconfig.node.tsbuildinfo"
   },
   "include": [
@@ -10,6 +14,7 @@
     "src/preload/**/*",
     "src/shared/**/*",
     "tests/unit/**/*",
+    "scripts/**/*.ts",
     "electron.vite.config.ts",
     "vitest.config.mts"
   ]

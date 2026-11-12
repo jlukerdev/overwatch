@@ -1,0 +1,50 @@
+:root {
+  color-scheme: dark;
+  --bg: #0b0d10;
+  --fg: #e6e8eb;
+  --muted: #8a9099;
+  font-family:
+    system-ui,
+    -apple-system,
+    'Segoe UI',
+    Roboto,
+    sans-serif;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+  background: var(--bg);
+  color: var(--fg);
+}
+
+.app {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  gap: 0.25rem;
+  user-select: none;
+}
+
+.app__title {
+  margin: 0;
+  font-size: 2rem;
+  font-weight: 600;
+}
+
+.app__version {
+  margin: 0;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}

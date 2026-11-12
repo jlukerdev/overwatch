@@ -1,0 +1,10 @@
+node_modules/
+out/
+dist/
+resources/bin/
+package-lock.json
+docs/reference/
+src/renderer/src/player/vendor/
+
+# Hand-written docs: keep their existing formatting
+*.md

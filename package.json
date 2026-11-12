@@ -11,7 +11,8 @@
     "preview": "electron-vite preview",
     "typecheck:node": "tsc --noEmit -p tsconfig.node.json",
     "typecheck:web": "tsc --noEmit -p tsconfig.web.json",
-    "typecheck": "npm run check:protect-types && npm run typecheck:node && npm run typecheck:web",
+    "typecheck:spike": "tsc --noEmit -p scripts/spikes/video-spike/renderer/tsconfig.json",
+    "typecheck": "npm run check:protect-types && npm run typecheck:node && npm run typecheck:web && npm run typecheck:spike",
     "lint": "eslint --max-warnings 0 .",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
@@ -26,6 +27,7 @@
     "spike:protect": "node scripts/spikes/protect-spike.ts",
     "spike:scan": "node scripts/spikes/scan-fixtures.ts",
     "spike:access": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/spikes/access-spike.ts",
+    "spike:video": "node --disable-warning=ExperimentalWarning scripts/spikes/video-spike/launch.ts",
     "mock:access": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/mock-access/server.ts"
   },
   "dependencies": {

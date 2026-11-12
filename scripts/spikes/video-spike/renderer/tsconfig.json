@@ -1,0 +1,14 @@
+{
+  // Spike renderer page (P0.5): browser code, typechecked with the DOM lib. The launcher strips
+  // the types at run time (node:module stripTypeScriptTypes), so: erasable syntax only.
+  "extends": "../../../../tsconfig.base.json",
+  "compilerOptions": {
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
+    "types": [],
+    "allowImportingTsExtensions": true,
+    "erasableSyntaxOnly": true,
+    "noEmit": true,
+    "tsBuildInfoFile": "../../../../node_modules/.tmp/tsconfig.spike-video.tsbuildinfo"
+  },
+  "include": ["./*.ts", "../stats.ts"]
+}

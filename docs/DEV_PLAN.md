@@ -10,7 +10,7 @@ Phases run in order. Each one ends with a **gate**: a check you can demo or meas
 | # | Task |
 |---|---|
 | P0.1 | Scaffold the Electron + electron-vite + React + TS app in this folder, following the structure in `README.md`. Strict tsconfig, ESLint + Prettier, Vitest |
-| P0.2 | `scripts/fetch-go2rtc.mjs`: download the pinned go2rtc release for each platform/arch into `resources/bin/<platform>-<arch>/`, check the SHA-256, mark executable |
+| P0.2 | `scripts/fetch-go2rtc.ts`: download the pinned go2rtc release for each platform/arch into `resources/bin/<platform>-<arch>/`, check the SHA-256, mark executable |
 | P0.3 | API spike (`scripts/spikes/`): against the UDM SE, confirm a locally created API key works (R6). Exercise `meta/info`, `cameras`, `rtsps-stream` (GET, then POST one missing quality; confirm `medium` works too), `snapshot`, and both WS endpoints, and check the responses match `docs/reference/protect-openapi-v7.3.74.json`. Record one real motion start/end pair from the events WS. Save **sanitized** samples to `tests/fixtures/protect/` |
 | P0.3b | Add `npm run gen:protect-types`: openapi-typescript → `src/main/protect/generated.ts` (committed). `types.ts` re-exports only the subset the app uses |
 | P0.4 | Access spike: `GET /doors` and `PUT /doors/{id}/unlock` against a test door. Confirm the port and auth path on 4.3.24. Save sanitized fixtures |

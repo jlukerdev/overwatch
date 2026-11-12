@@ -17,7 +17,8 @@
     "format:check": "prettier --check .",
     "test": "vitest run",
     "test:watch": "vitest",
-    "fetch:go2rtc": "node scripts/fetch-go2rtc.mjs",
+    "fetch:go2rtc": "node scripts/fetch-go2rtc.ts",
+    "predist": "npm run fetch:go2rtc -- --all",
     "dist": "npm run build && electron-builder",
     "postinstall": "install-electron"
   },

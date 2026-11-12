@@ -11,13 +11,15 @@
     "preview": "electron-vite preview",
     "typecheck:node": "tsc --noEmit -p tsconfig.node.json",
     "typecheck:web": "tsc --noEmit -p tsconfig.web.json",
-    "typecheck": "npm run typecheck:node && npm run typecheck:web",
+    "typecheck": "npm run check:protect-types && npm run typecheck:node && npm run typecheck:web",
     "lint": "eslint --max-warnings 0 .",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "test": "vitest run",
     "test:watch": "vitest",
     "fetch:go2rtc": "node scripts/fetch-go2rtc.ts",
+    "gen:protect-types": "node scripts/gen-protect-types.ts",
+    "check:protect-types": "node scripts/gen-protect-types.ts --check",
     "predist": "npm run fetch:go2rtc -- --all",
     "dist": "npm run build && electron-builder",
     "postinstall": "install-electron",
@@ -44,11 +46,17 @@
     "eslint": "^10.14.0",
     "eslint-plugin-react-hooks": "^7.1.1",
     "globals": "^17.14.0",
+    "openapi-typescript": "7.13.0",
     "prettier": "^3.10.1",
     "typescript": "~6.0.3",
     "typescript-eslint": "^8.72.2",
     "undici": "^7.30.2",
     "vite": "^8.3.8",
     "vitest": "^5.1.0"
+  },
+  "overrides": {
+    "openapi-typescript": {
+      "typescript": "$typescript"
+    }
   }
 }

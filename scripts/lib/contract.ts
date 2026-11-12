@@ -1,4 +1,7 @@
-// Validate captured Protect responses against the vendored OpenAPI 3.1 contract (P0.3).
+// Validate Protect payloads against the vendored OpenAPI 3.1 contract (P0.3, shared since P0.3b).
+// Used by the P0.3 spike (scripts/spikes/protect-spike.ts) and the fixture tests
+// (tests/unit/protectTypes.test.ts); unit-tested in tests/unit/contract.test.ts.
+// Node runs this file directly (type stripping), so only erasable TypeScript syntax is allowed.
 // OpenAPI 3.1 schemas are JSON Schema 2020-12, so Ajv's 2020 build validates them directly; the
 // whole document is registered under one id and every schema is addressed by JSON pointer.
 import { Ajv2020 } from 'ajv/dist/2020.js'

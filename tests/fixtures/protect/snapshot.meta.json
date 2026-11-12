@@ -1,0 +1,34 @@
+[
+  {
+    "request": "default",
+    "camera": "cam-004",
+    "status": 200,
+    "contentType": "image/jpeg",
+    "bytes": 32828
+  },
+  {
+    "request": "highQuality=true",
+    "camera": "cam-004",
+    "status": 400,
+    "contentType": "application/json; charset=utf-8",
+    "bytes": 73,
+    "body": {
+      "error": "Camera does not support full HD snapshot",
+      "name": "BAD_REQUEST"
+    }
+  },
+  {
+    "request": "highQuality=true (supportFullHdSnapshot)",
+    "camera": "cam-006",
+    "status": 200,
+    "contentType": "image/jpeg",
+    "bytes": 1132686
+  },
+  {
+    "request": "default (supportFullHdSnapshot)",
+    "camera": "cam-006",
+    "status": 200,
+    "contentType": "image/jpeg",
+    "bytes": 1132306
+  }
+]

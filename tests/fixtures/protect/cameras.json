@@ -1,0 +1,488 @@
+[
+  {
+    "id": "cam-001",
+    "modelKey": "camera",
+    "state": "CONNECTED",
+    "name": "Shop",
+    "type": "UVC G3 Instant",
+    "guid": null,
+    "mac": "mac-001",
+    "isMicEnabled": true,
+    "osdSettings": {
+      "isNameEnabled": false,
+      "isDateEnabled": true,
+      "isLogoEnabled": false,
+      "isDebugEnabled": false,
+      "overlayLocation": "topLeft"
+    },
+    "ledSettings": {
+      "isEnabled": false,
+      "welcomeLed": true,
+      "floodLed": true
+    },
+    "micVolume": 100,
+    "activePatrolSlot": null,
+    "videoMode": "default",
+    "hdrType": "off",
+    "featureFlags": {
+      "supportFullHdSnapshot": false,
+      "hasHdr": true,
+      "smartDetectTypes": [],
+      "smartDetectAudioTypes": [],
+      "videoModes": [
+        "default",
+        "sport",
+        "slowShutter"
+      ],
+      "hasMic": true,
+      "hasLedStatus": true,
+      "hasSpeaker": true
+    },
+    "smartDetectSettings": {
+      "objectTypes": [],
+      "audioTypes": []
+    },
+    "hasPackageCamera": false
+  },
+  {
+    "id": "cam-002",
+    "modelKey": "camera",
+    "state": "CONNECTED",
+    "name": "Living Room",
+    "type": "UVC G3 Instant",
+    "guid": null,
+    "mac": "mac-002",
+    "isMicEnabled": true,
+    "osdSettings": {
+      "isNameEnabled": false,
+      "isDateEnabled": true,
+      "isLogoEnabled": false,
+      "isDebugEnabled": false,
+      "overlayLocation": "topLeft"
+    },
+    "ledSettings": {
+      "isEnabled": true,
+      "welcomeLed": true,
+      "floodLed": true
+    },
+    "micVolume": 80,
+    "activePatrolSlot": null,
+    "videoMode": "default",
+    "hdrType": "auto",
+    "featureFlags": {
+      "supportFullHdSnapshot": false,
+      "hasHdr": true,
+      "smartDetectTypes": [],
+      "smartDetectAudioTypes": [],
+      "videoModes": [
+        "default",
+        "sport",
+        "slowShutter"
+      ],
+      "hasMic": true,
+      "hasLedStatus": true,
+      "hasSpeaker": true
+    },
+    "smartDetectSettings": {
+      "objectTypes": [],
+      "audioTypes": []
+    },
+    "hasPackageCamera": false
+  },
+  {
+    "id": "cam-003",
+    "modelKey": "camera",
+    "state": "CONNECTED",
+    "name": "Rufus",
+    "type": "UVC G3 Instant",
+    "guid": null,
+    "mac": "mac-003",
+    "isMicEnabled": true,
+    "osdSettings": {
+      "isNameEnabled": false,
+      "isDateEnabled": true,
+      "isLogoEnabled": false,
+      "isDebugEnabled": false,
+      "overlayLocation": "topLeft"
+    },
+    "ledSettings": {
+      "isEnabled": true,
+      "welcomeLed": true,
+      "floodLed": true
+    },
+    "micVolume": 100,
+    "activePatrolSlot": null,
+    "videoMode": "default",
+    "hdrType": "off",
+    "featureFlags": {
+      "supportFullHdSnapshot": false,
+      "hasHdr": true,
+      "smartDetectTypes": [],
+      "smartDetectAudioTypes": [],
+      "videoModes": [
+        "default",
+        "sport",
+        "slowShutter"
+      ],
+      "hasMic": true,
+      "hasLedStatus": true,
+      "hasSpeaker": true
+    },
+    "smartDetectSettings": {
+      "objectTypes": [],
+      "audioTypes": []
+    },
+    "hasPackageCamera": false
+  },
+  {
+    "id": "cam-004",
+    "modelKey": "camera",
+    "state": "CONNECTED",
+    "name": "Carport",
+    "type": "UVC G4 Instant",
+    "guid": "guid-001",
+    "mac": "mac-004",
+    "isMicEnabled": true,
+    "osdSettings": {
+      "isNameEnabled": false,
+      "isDateEnabled": true,
+      "isLogoEnabled": false,
+      "isDebugEnabled": false,
+      "overlayLocation": "topLeft"
+    },
+    "ledSettings": {
+      "isEnabled": false,
+      "welcomeLed": true,
+      "floodLed": true
+    },
+    "micVolume": 100,
+    "activePatrolSlot": null,
+    "videoMode": "default",
+    "hdrType": "off",
+    "featureFlags": {
+      "supportFullHdSnapshot": false,
+      "hasHdr": true,
+      "smartDetectTypes": [
+        "person",
+        "vehicle",
+        "animal"
+      ],
+      "smartDetectAudioTypes": [
+        "alrmSmoke",
+        "alrmCmonx",
+        "alrmBabyCry",
+        "alrmSpeak"
+      ],
+      "videoModes": [
+        "default",
+        "sport",
+        "slowShutter"
+      ],
+      "hasMic": true,
+      "hasLedStatus": true,
+      "hasSpeaker": true
+    },
+    "smartDetectSettings": {
+      "objectTypes": [
+        "person"
+      ],
+      "audioTypes": [
+        "alrmCmonx",
+        "alrmSmoke"
+      ]
+    },
+    "hasPackageCamera": false
+  },
+  {
+    "id": "cam-005",
+    "modelKey": "camera",
+    "state": "CONNECTED",
+    "name": "Front Door",
+    "type": "UVC G4 Instant",
+    "guid": "guid-001",
+    "mac": "mac-005",
+    "isMicEnabled": true,
+    "osdSettings": {
+      "isNameEnabled": false,
+      "isDateEnabled": true,
+      "isLogoEnabled": false,
+      "isDebugEnabled": false,
+      "overlayLocation": "topLeft"
+    },
+    "ledSettings": {
+      "isEnabled": false,
+      "welcomeLed": true,
+      "floodLed": true
+    },
+    "micVolume": 100,
+    "activePatrolSlot": null,
+    "videoMode": "default",
+    "hdrType": "off",
+    "featureFlags": {
+      "supportFullHdSnapshot": false,
+      "hasHdr": true,
+      "smartDetectTypes": [
+        "person",
+        "vehicle",
+        "animal"
+      ],
+      "smartDetectAudioTypes": [
+        "alrmSmoke",
+        "alrmCmonx",
+        "alrmBabyCry",
+        "alrmSpeak"
+      ],
+      "videoModes": [
+        "default",
+        "sport",
+        "slowShutter"
+      ],
+      "hasMic": true,
+      "hasLedStatus": true,
+      "hasSpeaker": true
+    },
+    "smartDetectSettings": {
+      "objectTypes": [
+        "person"
+      ],
+      "audioTypes": [
+        "alrmCmonx",
+        "alrmSmoke"
+      ]
+    },
+    "hasPackageCamera": false
+  },
+  {
+    "id": "cam-006",
+    "modelKey": "camera",
+    "state": "CONNECTED",
+    "name": "Front Yard",
+    "type": "UVC G4 Bullet",
+    "guid": null,
+    "mac": "mac-006",
+    "isMicEnabled": true,
+    "osdSettings": {
+      "isNameEnabled": false,
+      "isDateEnabled": true,
+      "isLogoEnabled": false,
+      "isDebugEnabled": false,
+      "overlayLocation": "topLeft"
+    },
+    "ledSettings": {
+      "isEnabled": true,
+      "welcomeLed": true,
+      "floodLed": true
+    },
+    "micVolume": 100,
+    "activePatrolSlot": null,
+    "videoMode": "sport",
+    "hdrType": "off",
+    "featureFlags": {
+      "supportFullHdSnapshot": true,
+      "hasHdr": true,
+      "smartDetectTypes": [
+        "person",
+        "vehicle",
+        "animal"
+      ],
+      "smartDetectAudioTypes": [
+        "alrmSmoke",
+        "alrmCmonx",
+        "alrmBabyCry",
+        "alrmSpeak"
+      ],
+      "videoModes": [
+        "default",
+        "highFps",
+        "sport",
+        "slowShutter"
+      ],
+      "hasMic": true,
+      "hasLedStatus": false,
+      "hasSpeaker": false
+    },
+    "smartDetectSettings": {
+      "objectTypes": [
+        "person",
+        "vehicle"
+      ],
+      "audioTypes": [
+        "alrmCmonx",
+        "alrmSmoke"
+      ]
+    },
+    "hasPackageCamera": false
+  },
+  {
+    "id": "cam-007",
+    "modelKey": "camera",
+    "state": "CONNECTED",
+    "name": "Office",
+    "type": "UVC G5 Flex",
+    "guid": "guid-002",
+    "mac": "mac-007",
+    "isMicEnabled": true,
+    "osdSettings": {
+      "isNameEnabled": false,
+      "isDateEnabled": true,
+      "isLogoEnabled": false,
+      "isDebugEnabled": false,
+      "overlayLocation": "topLeft"
+    },
+    "ledSettings": {
+      "isEnabled": true,
+      "welcomeLed": true,
+      "floodLed": true
+    },
+    "micVolume": 60,
+    "activePatrolSlot": null,
+    "videoMode": "default",
+    "hdrType": "off",
+    "featureFlags": {
+      "supportFullHdSnapshot": false,
+      "hasHdr": true,
+      "smartDetectTypes": [
+        "person",
+        "vehicle",
+        "animal"
+      ],
+      "smartDetectAudioTypes": [
+        "alrmSmoke",
+        "alrmCmonx",
+        "alrmBabyCry",
+        "alrmSpeak"
+      ],
+      "videoModes": [
+        "default",
+        "sport",
+        "slowShutter"
+      ],
+      "hasMic": true,
+      "hasLedStatus": true,
+      "hasSpeaker": false
+    },
+    "smartDetectSettings": {
+      "objectTypes": [],
+      "audioTypes": []
+    },
+    "hasPackageCamera": false
+  },
+  {
+    "id": "cam-008",
+    "modelKey": "camera",
+    "state": "CONNECTED",
+    "name": "Backyard",
+    "type": "UVC G4 Instant",
+    "guid": "guid-001",
+    "mac": "mac-008",
+    "isMicEnabled": true,
+    "osdSettings": {
+      "isNameEnabled": false,
+      "isDateEnabled": true,
+      "isLogoEnabled": false,
+      "isDebugEnabled": false,
+      "overlayLocation": "topLeft"
+    },
+    "ledSettings": {
+      "isEnabled": false,
+      "welcomeLed": true,
+      "floodLed": true
+    },
+    "micVolume": 100,
+    "activePatrolSlot": null,
+    "videoMode": "default",
+    "hdrType": "off",
+    "featureFlags": {
+      "supportFullHdSnapshot": false,
+      "hasHdr": true,
+      "smartDetectTypes": [
+        "person",
+        "vehicle",
+        "animal"
+      ],
+      "smartDetectAudioTypes": [
+        "alrmSmoke",
+        "alrmCmonx",
+        "alrmBabyCry",
+        "alrmSpeak"
+      ],
+      "videoModes": [
+        "default",
+        "sport",
+        "slowShutter"
+      ],
+      "hasMic": true,
+      "hasLedStatus": true,
+      "hasSpeaker": true
+    },
+    "smartDetectSettings": {
+      "objectTypes": [
+        "person"
+      ],
+      "audioTypes": [
+        "alrmCmonx",
+        "alrmSmoke"
+      ]
+    },
+    "hasPackageCamera": false
+  },
+  {
+    "id": "cam-009",
+    "modelKey": "camera",
+    "state": "CONNECTED",
+    "name": "Side Yard",
+    "type": "UVC G4 Instant",
+    "guid": "guid-001",
+    "mac": "mac-009",
+    "isMicEnabled": true,
+    "osdSettings": {
+      "isNameEnabled": false,
+      "isDateEnabled": true,
+      "isLogoEnabled": false,
+      "isDebugEnabled": false,
+      "overlayLocation": "topLeft"
+    },
+    "ledSettings": {
+      "isEnabled": false,
+      "welcomeLed": true,
+      "floodLed": true
+    },
+    "micVolume": 100,
+    "activePatrolSlot": null,
+    "videoMode": "default",
+    "hdrType": "off",
+    "featureFlags": {
+      "supportFullHdSnapshot": false,
+      "hasHdr": true,
+      "smartDetectTypes": [
+        "person",
+        "vehicle",
+        "animal"
+      ],
+      "smartDetectAudioTypes": [
+        "alrmSmoke",
+        "alrmCmonx",
+        "alrmBabyCry",
+        "alrmSpeak"
+      ],
+      "videoModes": [
+        "default",
+        "sport",
+        "slowShutter"
+      ],
+      "hasMic": true,
+      "hasLedStatus": true,
+      "hasSpeaker": true
+    },
+    "smartDetectSettings": {
+      "objectTypes": [
+        "person"
+      ],
+      "audioTypes": [
+        "alrmCmonx",
+        "alrmSmoke"
+      ]
+    },
+    "hasPackageCamera": false
+  }
+]

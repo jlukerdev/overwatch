@@ -1,0 +1,35 @@
+# Minimal packaging config (P0.1). Finished in P6.3: icons, signing, artifact names, go2rtc checks.
+appId: com.personal.viewprotect
+productName: View Protect
+directories:
+  output: dist
+  buildResources: resources
+files:
+  - out/**/*
+  - package.json
+# go2rtc sidecar binaries fetched by `npm run fetch:go2rtc` (P0.2) live in
+# resources/bin/<node platform>-<arch> (darwin-arm64, win32-x64). They are copied per
+# target below: the platform part is literal because electron-builder's `${os}` macro
+# gives mac/win and its `${platform}` macro gives the *build host's* process.platform,
+# which is wrong when cross-building. `${arch}` is the target arch.
+mac:
+  extraResources:
+    - from: resources/bin/darwin-${arch}
+      to: bin
+      filter:
+        - '**/*'
+  target:
+    - target: dmg
+      arch: [arm64]
+win:
+  extraResources:
+    - from: resources/bin/win32-${arch}
+      to: bin
+      filter:
+        - '**/*'
+  target:
+    - target: nsis
+      arch: [x64]
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true

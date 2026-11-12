@@ -76,5 +76,20 @@ The version and the SHA-256 of each release zip are pinned in `scripts/go2rtc.ma
 
 The `overrides` entry in `package.json` forces openapi-typescript's `typescript` peer dependency (declared as `^5`) to the repo's TypeScript 6 version (documented here because `package.json` can't hold comments). It's there so `npm install` doesn't fail or pull in a second TypeScript. Remove it once openapi-typescript's peer range includes TypeScript 6. Until then, `check:protect-types` guards the output: if the generator misbehaves under TypeScript 6, the regenerated types no longer match the committed file and the check fails.
 
+### UniFi Access (optional, off by default)
+Door unlock through UniFi Access is an optional feature (DOOR-0): with it off, the app makes no Access calls and shows no door UI. Access is not in Ubiquiti's official developer docs, and the development network has no Access hardware, so the client is built against a local mock of the community-documented developer API (`docs/spikes/P0.4-access-mock.md`). All Access shapes are unverified until the on-site check (OS-1 in `docs/DEV_PLAN.md`).
+
+```bash
+npm run mock:access
+```
+
+Serves `https://127.0.0.1:12445/api/v1/developer` (loopback only by default) with a self-signed certificate generated on first run into `scripts/mock-access/.cert/` (gitignored; needs the system `openssl`, or pass `--cert`/`--key`). It prints the base URL, the certificate SHA-256 and, unless `VP_ACCESS_TOKEN` is set in the environment or `.env.local`, a random mock-only token. Fake doors: Front Door, Garage Side Door, Office, and Storage Room (not bound to a hub, so unlocking it fails). An unlock holds the relay at `unlock` for 5 s. Options: `--port`, `--host`, `--latency-ms`, `--fail-rate <0..1>`, `--unlock-ms`.
+
+```bash
+VP_ACCESS_BASE_URL=https://127.0.0.1:12445/api/v1/developer VP_ACCESS_TOKEN=<mock token> npm run spike:access
+```
+
+Lists doors and checks the responses against the zod schemas in `src/main/access/types.ts`. Add `-- --unlock "Front Door"` to unlock one door after typing its name to confirm (`--yes` skips the prompt, and is refused unless the target sends the mock-only `x-view-protect-mock` header). The spike pins the certificate per host and port in `scripts/spikes/output/` and writes sanitized fixtures to `tests/fixtures/access/` marked `"_source": "mock"` (only when that header is present; otherwise `"console"`). On-site, the same script runs against the real console (OS-1).
+
 ## Installing prototype builds
 Prototype builds are unsigned. On macOS, right-click the app → Open the first time. On Windows, choose SmartScreen → "More info" → "Run anyway". Installing a newer build over an older one keeps your Views and settings.

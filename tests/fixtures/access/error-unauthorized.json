@@ -1,0 +1,13 @@
+{
+  "_source": "mock",
+  "request": {
+    "method": "GET",
+    "path": "/doors",
+    "auth": "Bearer <invalid token>"
+  },
+  "status": 401,
+  "response": {
+    "code": "CODE_ACCESS_TOKEN_INVALID",
+    "msg": "token is missing, invalid or expired"
+  }
+}

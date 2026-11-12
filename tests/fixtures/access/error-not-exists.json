@@ -1,0 +1,13 @@
+{
+  "_source": "mock",
+  "request": {
+    "method": "GET",
+    "path": "/doors/{id}",
+    "id": "uuid-001"
+  },
+  "status": 404,
+  "response": {
+    "code": "CODE_NOT_EXISTS",
+    "msg": "door does not exist"
+  }
+}

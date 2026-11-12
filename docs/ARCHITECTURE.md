@@ -11,6 +11,7 @@
 | Video gateway | **go2rtc** bundled binary (sidecar) | Proven with Protect RTSPS (Home Assistant and Frigate use it). Turns RTSPS into MSE over WebSocket. One upstream connection per stream. Handles H.265 + AAC. Reconnects on its own |
 | Player | go2rtc's `video-rtc` MSE player (vendored) wrapped in a React component | Low latency, plain `<video>` element, so mute and volume are trivial |
 | Validation | **zod** | Config schema plus IPC payload validation |
+| API types | **openapi-typescript** from the vendored official contract (`docs/reference/`) | Types match the console's API version exactly |
 | Secrets | Electron **safeStorage** | Keychain / DPAPI with no native module |
 | Packaging | **electron-builder** → DMG (mac arm64), NSIS (win x64) | Can add electron-updater later for MVP auto-update |
 | Tests | **Vitest** (unit), **Playwright for Electron** (smoke) | |
@@ -52,12 +53,12 @@
 ### Key rules
 1. **Secrets never reach the renderer.** The renderer asks main for things like "stream URL for camera X, quality low". Main hands back a *loopback go2rtc URL* and never the RTSPS URL or key.
 2. **go2rtc binds to `127.0.0.1` on a random free port.** Main writes its config into the userData dir at launch. The API and WebRTC listeners are turned off except for the loopback HTTP/WS listener.
-3. **Stream naming:** `<cameraId>_low`, `<cameraId>_high`. Main registers them with go2rtc through its REST API (`PUT /api/streams`) when the camera list loads. go2rtc only opens the upstream while a consumer is attached.
+3. **Stream naming:** `<cameraId>_<quality>` for `high`, `medium`, `low` (and `package`). Main registers a go2rtc stream (`PUT /api/streams`) **the first time a quality is requested** (QUAL-8), creating the Protect RTSPS URL first if it's missing. go2rtc only opens the upstream while a consumer is attached, so registered-but-unused qualities cost nothing.
 4. **Events:** main holds the Protect `/subscribe/events` and `/subscribe/devices` sockets. It sends trimmed, typed events (`motion`, `smartDetect`, `cameraState`) to the renderer over IPC.
 5. **The cell logic is pure.** The rotation/motion scheduler is a pure reducer in `src/renderer/src/features/cells/cellScheduler.ts`, so it can be unit-tested.
 
 ## 3. Streaming details
-- Grid cells consume `_low`. Filled mode attaches a second player to `_high`, keeps the low player visible until `high` fires its first `playing` event, then swaps.
+- Every player asks for its quality from `resolveQuality()` in `src/shared/quality.ts` (cell → view → settings; fill → view → settings). Nothing in the app hard-codes a quality. When the effective quality changes, or on entering fill mode, a second player attaches to the new stream, and the old one stays visible until the new one fires its first `playing` event.
 - Many cells showing the same camera share one go2rtc upstream, so that costs nothing extra.
 - Multi-camera cells keep **only the visible camera's player attached**. Optional (Phase 4 tuning): pre-warm the next camera in a rotation 1–2 s before it switches, so it doesn't open on a black frame.
 - Protect RTSPS uses a self-signed cert. Main builds go2rtc sources with go2rtc's no-verify RTSPS scheme, **only for the pinned console host**. (Phase 0 confirms the exact scheme and URL rewriting, e.g. removing `?enableSrtp`.)

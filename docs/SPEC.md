@@ -1,6 +1,6 @@
 # View Protect — Prototype Specification
 
-**Status:** Draft v0.1 (prototype) · **Owner:** personal use only · **Built by:** coding agents (see `/CLAUDE.md`)
+**Status:** Draft v0.2 (prototype). Protect API verified against the official v7.3.74 contract · **Owner:** personal use only · **Built by:** coding agents (see `/CLAUDE.md`)
 
 View Protect is a desktop app for Windows and macOS that connects to a local UniFi Protect console through the official **Integration API**. It shows live camera feeds in named, user-defined grid **Views**. It also does light UniFi Access control: unlocking the door linked to a camera.
 
@@ -37,10 +37,12 @@ Prove the hard parts end to end with functional UI, but no polish:
 - Auto-update, code signing and notarization
 - Two-way talk (talkback)
 - Multi-monitor views and kiosk/auto-start
-- PTZ control
 - Cells that span multiple grid slots (non-uniform layouts)
 - Exporting and importing views
-- Cloud connections other than a VPN
+- Remote access through the Site Manager Cloud Connector, for control/status/unlock only (§5.1). Video still needs LAN or VPN
+- Importing Protect's own Live Views (`/v1/liveviews`) as View Protect Views
+- PTZ preset/patrol buttons (the API has presets and patrols only, no continuous PTZ)
+- Auto-show a camera on `nfcCardScanned` / `fingerprintIdentified` at its reader
 
 ### 2.3 Out of scope
 - Recording, playback, timeline and event browsing
@@ -60,9 +62,10 @@ IDs are referenced in `DEV_PLAN.md` and in commit messages.
 - **CON-5** Connection status is always visible (connected / reconnecting / error).
 
 ### Cameras (CAM)
-- **CAM-1** List all adopted cameras with name, model, online state, mic presence, and a snapshot thumbnail.
-- **CAM-2** Camera state stays current through the Integration API device websocket: online/offline, renames, adds and removals.
-- **CAM-3** An offline camera's cell shows an "Offline" placeholder and resumes on its own when the camera comes back.
+- **CAM-1** List all adopted cameras with name (fall back to model `type` when `name` is null), model, `state`, mic availability (`featureFlags.hasMic && isMicEnabled`), and a snapshot thumbnail.
+- **CAM-2** Camera state stays current through `/v1/subscribe/devices`: `state` changes, renames, adds and removals.
+- **CAM-3** A cell whose camera is not `CONNECTED` shows an "Offline" (or "Connecting…") placeholder and resumes on its own when the camera comes back. The snapshot endpoint returns 503 for offline cameras; treat that as normal, not an error.
+- **CAM-4** For doorbells with `hasPackageCamera`, the package camera can be put in a cell as its own source (`<cameraId>:package`).
 
 ### Views (VIEW)
 - **VIEW-1** A View has a name and a uniform grid layout, `cols × rows`. Presets are 1×1, 2×2, 3×2, 3×3, 4×3 and 4×4. Custom sizes go up to 4×4.
@@ -76,15 +79,30 @@ IDs are referenced in `DEV_PLAN.md` and in commit messages.
 - **CELL-1** A cell with one camera shows that camera live.
 - **CELL-2** A cell with several cameras is a **multi-camera cell** with:
   - `rotateIntervalSec` (optional, ≥ 5): cycles through its cameras in order.
-  - `motionSwitch` (on/off): when a camera in the cell reports motion or a smart detection, the cell switches to it.
-  - `motionHoldSec` (default 15): how long a motion-triggered camera stays shown after the last motion event before rotation resumes.
-  - Priority: if several cameras have motion, the most recent event wins. Ties go to the earlier position in the list.
+  - `motionSwitch` (on/off): when a camera in the cell reports a trigger event, the cell switches to it.
+  - `motionTriggers` (default `["motion", "smartDetect", "ring"]`): which event types count. `smartDetect` covers `smartDetectZone`, `smartDetectLine` and `smartDetectLoiterZone`.
+  - `smartDetectTypes` (optional filter, e.g. `["person", "vehicle"]`): only smart detections with these types trigger.
+  - `motionHoldSec` (default 15): how long a triggered camera stays shown **after the event ends** (the `update` that sets `end`) before rotation resumes. If no `end` arrives within 60 s, treat the event as ended.
+  - Priority: `ring` beats any other trigger. Otherwise the most recent event start wins. Ties go to the earlier position in the list.
+  - This matches Protect's own Live View slot model (`cycleMode: motion | time`, `cycleInterval`), with one difference: View Protect lets a cell use **both** at once (rotate on a timer and break in on motion).
 - **CELL-3** The overlay shows the camera name, a motion indicator, a mute toggle (only if the camera has a mic), an unlock button (only if a door is linked), and for multi-camera cells the position (e.g. `2/4`) with manual next/previous buttons.
 - **CELL-4** Overlay controls show on hover and auto-hide after 3 s of no mouse movement.
 
+### Stream quality (QUAL)
+Protect offers `high`, `medium` and `low` RTSPS streams for every camera, plus `package` on doorbells. **No quality is hard-coded.** The user picks it at each level below, and the most specific setting wins.
+
+- **QUAL-1** App settings set two defaults: **grid quality** (default `low`) and **fill quality** (default `high`).
+- **QUAL-2** A View can override grid quality for all its cells (`gridQuality`).
+- **QUAL-3** A cell can override quality (`quality`). Effective grid quality = `cell.quality ?? view.gridQuality ?? settings.defaultGridQuality`.
+- **QUAL-4** The cell overlay has a quality picker (Low / Med / High). Changing it updates that cell's `quality` and saves it. "Use View default" clears the override.
+- **QUAL-5** Filled mode uses `view.fillQuality ?? settings.defaultFillQuality`. The fill overlay also has a quality picker, which applies until you leave fill mode; it has a "save as default" option.
+- **QUAL-6** Changing quality swaps seamlessly: the current stream keeps playing until the new one renders its first frame (same mechanism as FILL-2).
+- **QUAL-7** The app shows the effective quality on hover (e.g. `MED`), and in the camera list shows which RTSPS qualities exist on the console.
+- **QUAL-8** RTSPS URLs are created **on demand**: the first time any cell or fill view needs a quality for a camera, main GETs the existing streams and POSTs only the missing quality. The app never deletes streams (they may be shared with other integrations).
+
 ### Focus / fill (FILL)
 - **FILL-1** Clicking a cell (outside the controls) fills the window with that camera. `Esc`, a click on the back control, or a double-click returns to the grid.
-- **FILL-2** The grid uses the **low** quality stream. Filled mode switches to **high** quality. The switch should look seamless: keep the low stream playing until the first high frame renders.
+- **FILL-2** Filled mode switches from the cell's grid quality to the fill quality (QUAL-5) if they differ. The switch should look seamless: keep the grid stream playing until the first frame of the fill stream renders.
 - **FILL-3** A filled multi-camera cell pins the current camera (no rotation) until the user returns to the grid.
 
 ### Zoom (ZOOM)
@@ -93,7 +111,7 @@ IDs are referenced in `DEV_PLAN.md` and in commit messages.
 - **ZOOM-3** Zoom is a client-side CSS transform. It never changes camera settings.
 
 ### Audio (AUD)
-- **AUD-1** Every cell starts muted.
+- **AUD-1** Every cell starts muted. The audio control only shows when `featureFlags.hasMic && isMicEnabled`.
 - **AUD-2** Unmuting a cell mutes all other cells. Only one source plays at a time.
 - **AUD-3** Volume control in filled mode. A global mute-all shortcut (`M`).
 
@@ -111,7 +129,7 @@ IDs are referenced in `DEV_PLAN.md` and in commit messages.
 | ID | Requirement | Target (prototype) |
 |---|---|---|
 | NFR-1 | Platforms | macOS 14+ (Apple Silicon), Windows 11 x64 |
-| NFR-2 | Concurrent streams | 10 low-quality H.265 streams + 1 high-quality stream |
+| NFR-2 | Concurrent streams | 10 grid streams at `low` + 1 fill stream at `high` (default settings). Also measure 10 × `medium` so the user can see what their choice costs |
 | NFR-3 | Decode | Hardware video decode. Verify in `chrome://gpu` / media internals |
 | NFR-4 | Resource use | ≤ 40% CPU on a mid-range machine with 10 streams. No memory growth over 8 h |
 | NFR-5 | Latency | ≤ 2 s glass-to-glass on LAN |
@@ -125,21 +143,51 @@ IDs are referenced in `DEV_PLAN.md` and in commit messages.
 
 ## 5. External interfaces
 
-> ⚠️ The endpoint details below come from community libraries and docs. **Phase 0 checks each one against the docs on the UDM SE itself**, and this section gets corrected.
+### 5.1 UniFi Protect Integration API (official, verified against docs)
 
-### 5.1 UniFi Protect Integration API
-- Base: `https://<console>/proxy/protect/integration/v1`
-- Auth: header `X-API-KEY: <key>`. Keys are created in UniFi OS → Settings → Control Plane → Integrations. There is no read-only scope, so treat the key as an admin credential.
-- Used:
-  - `GET /meta/info`: version and health check
-  - `GET /cameras`, `GET /cameras/{id}`: inventory
-  - `GET /cameras/{id}/snapshot`: thumbnails
-  - `GET|POST|DELETE /cameras/{id}/rtsps-stream`: fetch or create RTSPS URLs per quality (`high`, `medium`, `low`)
-  - WebSocket `/subscribe/devices`: device state changes
-  - WebSocket `/subscribe/events`: motion and smart detection events
-- Later: talkback session endpoint (two-way audio).
+**Source of truth:** the official Ubiquiti contract, vendored at `docs/reference/protect-openapi-v7.3.74.json` (endpoint index: `docs/reference/protect-endpoints-v7.3.74.md`). It was fetched from `developer.ui.com/protect/v7.3.74/`. This matches the console exactly. (The 7.3.74 contract is byte-identical to 7.3.70.) The latest published docs are v7.4.96. When Protect is upgraded, re-download the matching version, regenerate the types and diff the contract. **Generate TypeScript types from this file (openapi-typescript). Don't write them by hand.**
+
+- **Base URL (local):** `https://<consoleIP>/proxy/protect/integration` + `/v1/...`
+- **Base URL (cloud, not used in prototype):** `https://api.ui.com/v1/connector/consoles/{consoleId}/proxy/protect/integration`. This is the Site Manager Cloud Connector. It carries REST and control calls without a VPN, **but the RTSPS URLs it returns still point at the console**, so live video still needs the LAN or a VPN. Possible MVP use: remote status and door unlock without a VPN.
+- **Auth:** header `X-API-KEY: <key>`. The official docs say to generate keys at unifi.ui.com. Keys can also be created locally in UniFi OS → Settings → Control Plane → Integrations; P0.3 confirms which kind the local endpoint accepts. There is no read-only scope, so treat the key as an admin credential.
+- **Errors:** every endpoint returns `{ error: string, name: string, cause?: object }` for non-2xx responses. Map these into typed app errors.
+
+**Endpoints used in the prototype**
+
+| Endpoint | Use | Notes from contract |
+|---|---|---|
+| `GET /v1/meta/info` | Health check / Test connection (CON-4) | Returns `{ applicationVersion }` |
+| `GET /v1/cameras`, `GET /v1/cameras/{id}` | Inventory (CAM-1) | Key fields: `id`, `name` (nullable), `type` (model), `state` ∈ `CONNECTED \| CONNECTING \| DISCONNECTED`, `isMicEnabled`, `featureFlags.{hasMic, hasSpeaker, smartDetectTypes, supportFullHdSnapshot}`, `hasPackageCamera`. **No codec field**, so H.265 has to be detected in the player |
+| `GET /v1/cameras/{id}/snapshot` | Thumbnails | `image/jpeg`. Query `highQuality=true\|false`, `channel=main\|package`. **503 = camera offline** |
+| `GET /v1/cameras/{id}/rtsps-stream` | Reuse existing stream URLs | Returns `{ high, medium, low, package }`, each a URI or `null` |
+| `POST /v1/cameras/{id}/rtsps-stream` | Create a missing quality on demand (QUAL-8) | Body `{ "qualities": ["<quality>"] }` (min 1). Returns a URI for each quality requested. `high`/`medium`/`low` exist on **all** cameras. `package` only when `hasPackageCamera` |
+| `DELETE /v1/cameras/{id}/rtsps-stream?qualities=…` | Not called automatically | 204. The app only ever creates streams; leave existing ones alone (other integrations such as Home Assistant may share them) |
+| WS `GET /v1/subscribe/devices` | Device state (CAM-2/3) | Messages `{ type: "add" \| "update" \| "remove", item }`, where `item.modelKey` tells you the kind of device (`camera`, `nvr`, …) |
+| WS `GET /v1/subscribe/events` | Motion / smart detect (CELL-2) | Messages `{ type: "add" \| "update", item: { id, modelKey: "event", type, start, end, device, smartDetectTypes? } }`. **An event starts with `add` (`end` null) and ends with an `update` that sets `end`.** `device` is the camera id |
+
+**Event types relevant to View Protect**
+
+| `item.type` | Meaning | Used for |
+|---|---|---|
+| `motion` | Camera motion start/end | Motion auto-switch (default trigger) |
+| `smartDetectZone`, `smartDetectLine`, `smartDetectLoiterZone` | Smart detection; `smartDetectTypes` ⊂ `person, vehicle, package, licensePlate, face, animal` | Auto-switch with an optional type filter |
+| `ring` | Doorbell/intercom ring | Auto-switch trigger (high priority) |
+| `nfcCardScanned`, `fingerprintIdentified` | Reader scan at a device | Possible MVP feature: show the camera when someone badges in |
+| others (sensors, alarm hub, relays, …) | — | Ignore |
+
+**Available but not used in the prototype (useful for MVP)**
+
+| Endpoint | Possible use |
+|---|---|
+| `POST /v1/cameras/{id}/talkback-session` | Two-way talk. Returns `{ url, codec, samplingRate, bitsPerSample }`. Only when `featureFlags.hasSpeaker` |
+| `POST /v1/cameras/{id}/ptz/goto/{slot}`, `…/ptz/patrol/start/{slot}`, `…/ptz/patrol/stop` | PTZ **presets and patrols only**. There's no continuous pan/tilt/zoom in the API |
+| `GET/POST/PATCH /v1/liveviews` | Protect's own Live Views: `slots[]` of `{ cameras[], cycleMode: "motion" \| "time", cycleInterval }`, `layout` = slot count 1–26. Possible feature: import Protect Live Views as View Protect Views |
+| `GET /v1/nvrs` | NVR info and arm mode |
 
 ### 5.2 UniFi Access API
+
+> ⚠️ **Not in Ubiquiti's official developer portal.** developer.ui.com covers Site Manager, Network, Protect and others, **but not Access**. The details below come from community sources. P0.4 verifies them on the console.
+
 - Base: `https://<console>:12445/api/v1/developer`. On newer firmware it may also be reachable through the console proxy on 443.
 - Auth: `Authorization: Bearer <token>`. The token is created in Access → Settings → Advanced → API Token.
 - Used: `GET /doors`, `PUT /doors/{id}/unlock`.
@@ -164,14 +212,18 @@ Protect RTSPS → **go2rtc** (bundled, bound to 127.0.0.1 only) → MSE over Web
       "name": "Perimeter",
       "cols": 3, "rows": 3,
       "fit": "contain",
+      "gridQuality": null,          // null = use settings.defaultGridQuality (QUAL-2)
+      "fillQuality": null,          // null = use settings.defaultFillQuality
       "cells": [
-        { "cameraIds": ["camA"] },
-        { "cameraIds": ["camB", "camC", "camD"], "rotateIntervalSec": 10, "motionSwitch": true, "motionHoldSec": 15 },
+        { "cameraIds": ["camA"], "quality": "medium" },   // per-cell override (QUAL-3)
+        { "cameraIds": ["camB", "camC", "camD"], "rotateIntervalSec": 10, "motionSwitch": true,
+          "motionTriggers": ["motion", "smartDetect", "ring"], "smartDetectTypes": ["person"], "motionHoldSec": 15 },
         { "cameraIds": [] }
       ]
     }
   ],
   "lastViewId": "uuid",
+  "streams": { "defaultGridQuality": "low", "defaultFillQuality": "high" },   // QUAL-1; values: "low" | "medium" | "high"
   "ui": { "overlayAutoHideSec": 3 }
 }
 ```
@@ -185,7 +237,10 @@ Protect RTSPS → **go2rtc** (bundled, bound to 127.0.0.1 only) → MSE over Web
 | # | Item | Mitigation |
 |---|---|---|
 | R1 | H.265 over MSE in Electron on Windows depends on the GPU driver and HEVC support | Phase 0 gate. Fallbacks, in order: (a) turn off Enhanced Encoding on the affected cameras, (b) have go2rtc transcode via FFmpeg (CPU cost), (c) switch the player to libmpv (see ARCHITECTURE alternatives) |
-| R2 | Not yet confirmed which qualities `rtsps-stream` exposes per camera model, and whether creating one affects the NVR | Phase 0 spike. Create only `low` + `high` |
-| R3 | Access unlock auth path on 4.3.24 | Phase 0 spike |
+| R2 | ~~Which qualities `rtsps-stream` exposes~~ **Resolved by the official contract:** high/medium/low on all cameras, package on doorbells. Still open: whether the Protect UI shows API-created streams as "RTSP enabled" | GET first and POST only the quality actually needed (QUAL-8). Never DELETE |
+| R3 | Access API isn't in the official docs; unlock auth path on 4.3.24 unverified | P0.4 spike. Fallback: hide unlock and ship the rest |
+| R6 | API key origin: the official docs say unifi.ui.com, while local Integrations keys also exist | P0.3 tries a locally created key first |
+| R7 | No codec field on cameras, so the app can't tell H.265 ahead of time | Detect in the player (go2rtc stream info). Show a "codec unsupported" state instead of a black cell |
+| R8 | Contract drift on Protect upgrades | Vendored versioned OpenAPI + generated types. Contract diff is part of the upgrade checklist |
 | R4 | Self-signed cert on RTSPS for go2rtc | Use go2rtc's no-verify RTSPS scheme toward the pinned console host only. Bind go2rtc to loopback |
 | R5 | Integration API key is admin-level | Store only in the keystore. Never send it to the renderer |

@@ -4,6 +4,7 @@ This app is built and maintained by agents. Read `docs/SPEC.md`, `docs/ARCHITECT
 
 ## Ground rules
 - Work one DEV_PLAN phase at a time, and don't start a phase until the previous gate has passed. Reference requirement IDs (e.g. `CELL-2`) in commits.
+- **The Protect API contract lives in `docs/reference/protect-openapi-v7.3.74.json`.** Check it before calling any endpoint, and use the generated types.
 - **Official Protect Integration API only.** Never use the private Protect API or username/password login.
 - **Secrets stay in main.** The renderer never sees API keys, tokens or RTSPS URLs. It only gets loopback go2rtc stream names/URLs.
 - Never disable TLS verification globally. Use the pinned agent in `src/main/tls/`.

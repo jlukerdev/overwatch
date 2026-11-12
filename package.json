@@ -24,7 +24,9 @@
     "dist": "npm run build && electron-builder",
     "postinstall": "install-electron",
     "spike:protect": "node scripts/spikes/protect-spike.ts",
-    "spike:scan": "node scripts/spikes/scan-fixtures.ts"
+    "spike:scan": "node scripts/spikes/scan-fixtures.ts",
+    "spike:access": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/spikes/access-spike.ts",
+    "mock:access": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/mock-access/server.ts"
   },
   "dependencies": {
     "react": "^19.3.1",

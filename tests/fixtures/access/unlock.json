@@ -1,0 +1,27 @@
+{
+  "_source": "mock",
+  "request": {
+    "method": "PUT",
+    "path": "/doors/{id}/unlock",
+    "id": "door-001",
+    "body": null
+  },
+  "status": 200,
+  "response": {
+    "code": "SUCCESS",
+    "msg": "success",
+    "data": "success"
+  },
+  "relayAfterUnlock": [
+    {
+      "tMs": 2,
+      "relay": "unlock",
+      "position": "close"
+    },
+    {
+      "tMs": 5025,
+      "relay": "lock",
+      "position": "close"
+    }
+  ]
+}

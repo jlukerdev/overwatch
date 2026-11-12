@@ -13,13 +13,13 @@ Phases run in order. Each one ends with a **gate**: a check you can demo or meas
 | P0.2 | `scripts/fetch-go2rtc.ts`: download the pinned go2rtc release for each platform/arch into `resources/bin/<platform>-<arch>/`, check the SHA-256, mark executable |
 | P0.3 | API spike (`scripts/spikes/`): against the UDM SE, confirm a locally created API key works (R6). Exercise `meta/info`, `cameras`, `rtsps-stream` (GET, then POST one missing quality; confirm `medium` works too), `snapshot`, and both WS endpoints, and check the responses match `docs/reference/protect-openapi-v7.3.74.json`. Record one real motion start/end pair from the events WS. Save **sanitized** samples to `tests/fixtures/protect/` |
 | P0.3b | Add `npm run gen:protect-types`: openapi-typescript → `src/main/protect/generated.ts` (committed). `types.ts` re-exports only the subset the app uses |
-| P0.4 | Access spike: `GET /doors` and `PUT /doors/{id}/unlock` against a test door. Confirm the port and auth path on 4.3.24. Save sanitized fixtures |
+| P0.4 | **Access mock + spike** (no Access on the development network). `npm run mock:access`: local HTTPS mock of the community-documented Access developer API (`GET /doors`, `PUT /doors/{id}/unlock`, Bearer auth, response envelope, error cases) with a self-signed cert. `npm run spike:access`: client spike that runs against the mock now and against the real console on-site (OS-1). Fixtures in `tests/fixtures/access/` are marked mock-derived |
 | P0.5 | Video spike: hard-coded go2rtc config with one Enhanced Encoding camera → MSE player in a bare Electron window |
 | P0.6 | Fix SPEC §5 with what you verified |
 
 **Gate G0:**
 - One H.265 camera plays with audio in Electron on macOS **and** Windows, with hardware decode confirmed.
-- Unlock works.
+- Unlock works **against the Access mock** (P0.4). Real Access is verified on-site (OS-1).
 
 If H.265 fails on Windows, pick a fallback from SPEC R1 before continuing.
 
@@ -33,7 +33,7 @@ CON-1…5, CAM-1…3
 | P1.1 | `secrets/` (safeStorage) and `config/` store with zod schema + migrations |
 | P1.2 | `tls/` TOFU pinning: fetch the fingerprint, accept dialog, pinned undici Agent used by every client |
 | P1.3 | `protect/client.ts` REST client typed from the generated OpenAPI types, mapping the `{error,name,cause}` error shape. `protect/subscriptions.ts` WS with reconnect + backoff |
-| P1.4 | `access/client.ts` (doors list and unlock) |
+| P1.4 | `access/client.ts` (doors list and unlock), tested against the P0.4 mock. Does nothing unless Access is enabled (DOOR-0) |
 | P1.5 | Typed IPC contract (`src/shared/ipc.ts`) and preload bridge |
 | P1.6 | Settings screen: host, key, token, Test connection, status indicator |
 | P1.7 | Camera list screen with snapshots and live online state |
@@ -89,15 +89,15 @@ CELL-2
 ---
 
 ## Phase 5 — Audio & door unlock
-AUD-1…3, DOOR-1…5
+AUD-1…3, DOOR-0…5
 
 | # | Task |
 |---|---|
 | P5.1 | Single-active-audio controller, volume in fill mode, `M` mute-all |
-| P5.2 | Door link settings (camera → door) |
+| P5.2 | "Enable UniFi Access" switch (DOOR-0) + token field + Access base URL override, then door link settings (camera → door), all hidden while disabled |
 | P5.3 | Press-and-hold unlock control + result toast + `unlock.log` |
 
-**Gate G5:** unmuting a second cell mutes the first. Unlocking from a camera cell opens the right door, and the attempt is logged.
+**Gate G5:** unmuting a second cell mutes the first. With Access disabled, no door UI shows and no Access calls are made. With Access enabled against the mock, unlocking from a camera cell unlocks the right mock door, and the attempt is logged.
 
 ---
 
@@ -113,6 +113,16 @@ NFR-6…10
 | P6.5 | Prototype review: write `docs/PROTOTYPE_REVIEW.md` (what worked, perf numbers, decisions for MVP) |
 
 **Gate G6:** run the installer over an older build and data is kept. The app runs for 8 hours unattended with no intervention.
+
+---
+
+## On-site verification (deployment location)
+Things that can only be checked where the real Access hardware is. Run these before relying on the Access feature there.
+
+| # | Check |
+|---|---|
+| OS-1 | With a real Access token, run `npm run spike:access` against the site console (doors list, then one confirmed unlock of an agreed test door). Confirm base URL/port, auth and response shapes. Correct SPEC §5.2, the mock and the fixtures wherever they differ |
+| OS-2 | In the app: enable Access, link each camera to its door, and unlock each linked door once from its cell (G5 against real hardware) |
 
 ---
 

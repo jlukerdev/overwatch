@@ -120,6 +120,6 @@ NFR-6…10
 Code signing + notarization · import Protect Live Views · Cloud Connector remote control/unlock · badge-in camera pop-up · auto-update (electron-updater) · two-way talk · multi-monitor / kiosk / launch at login · spanning cells · view import/export · door-link auto-suggest · PTZ · smart-detect type filters for auto-switch (person/vehicle only).
 
 ## Working agreements for agents
-- One phase per branch: `view-protect/p<N>-<slug>`. Commits reference requirement IDs.
+- **One task per branch and PR** (`view-protect/<task-id>-<slug>`). Each task goes through: subagent implementation → `/code-review` → fixes (decisions needing the user go to the user) → commit, push, PR → user merges → next task. The full workflow is in `/CLAUDE.md`. Commits reference task and requirement IDs.
 - Never commit secrets, real hostnames, or unsanitized fixtures (camera names are fine; strip MACs, IPs, tokens).
 - Update `SPEC.md` when behaviour changes, and record perf numbers in `docs/perf-results.md`.

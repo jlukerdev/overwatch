@@ -24,6 +24,7 @@ view-protect/
 │  └─ icons/
 ├─ scripts/
 │  ├─ fetch-go2rtc.ts         pinned download + checksum (run by Node directly)
+│  ├─ gen-protect-types.ts    Protect contract → src/main/protect/generated.ts
 │  └─ spikes/                 Phase 0 throwaway scripts (read .env.local)
 ├─ src/
 │  ├─ main/                   Electron main process (Node) — owns all secrets & network
@@ -69,6 +70,11 @@ On Windows, if the binary can't be replaced because it is in use, quit View Prot
 
 ### Updating go2rtc
 The version and the SHA-256 of each release zip are pinned in `scripts/go2rtc.manifest.json`. To update, change `version`, then replace each `sha256` with the new asset's hash (download the zips from the GitHub release and run `shasum -a 256`, and cross-check with `gh api repos/AlexxIT/go2rtc/releases/tags/<version> --jq '.assets[] | {name, digest}'`). Check that the zip still contains the `binary` named in the manifest, then run `npm run fetch:go2rtc -- --all --force`.
+
+### Protect API types
+`src/main/protect/generated.ts` is generated from the vendored contract `docs/reference/protect-openapi-v7.3.74.json` with openapi-typescript (pinned exactly in `package.json`) and committed. Don't edit it by hand: run `npm run gen:protect-types` to regenerate it. `npm run check:protect-types` regenerates in memory and fails if the committed file differs, so drift between the contract and the types is caught. App code imports from `src/main/protect/types.ts`, which picks the subset the app uses and applies the contract-drift overrides found in the P0.3 spike (`docs/spikes/P0.3-protect-api.md` §6). When Protect is upgraded, vendor the new contract, update the path in `scripts/gen-protect-types.ts`, regenerate, and re-check the overrides. `npm run typecheck` (and so `npm run build`) runs `check:protect-types` first, so stale generated types fail the normal checks.
+
+The `overrides` entry in `package.json` forces openapi-typescript's `typescript` peer dependency (declared as `^5`) to the repo's TypeScript 6 version (documented here because `package.json` can't hold comments). It's there so `npm install` doesn't fail or pull in a second TypeScript. Remove it once openapi-typescript's peer range includes TypeScript 6. Until then, `check:protect-types` guards the output: if the generator misbehaves under TypeScript 6, the regenerated types no longer match the committed file and the check fails.
 
 ## Installing prototype builds
 Prototype builds are unsigned. On macOS, right-click the app → Open the first time. On Windows, choose SmartScreen → "More info" → "Run anyway". Installing a newer build over an older one keeps your Views and settings.

@@ -121,10 +121,15 @@ function say(line = ''): void {
   console.log(sanitizer.sanitizeString(masked).replaceAll(LOOPBACK_MARK, LOOPBACK))
 }
 
-/** process.env without any VP_* variable, for child processes. */
+/**
+ * process.env without any VP_* variable, for child processes. Also drops ELECTRON_RUN_AS_NODE:
+ * VS Code's terminals inherit it from the extension host, and it makes Electron run as plain Node.
+ */
 function childEnv(extra: Record<string, string> = {}): NodeJS.ProcessEnv {
   const out: NodeJS.ProcessEnv = {}
-  for (const [k, v] of Object.entries(process.env)) if (!k.startsWith('VP_')) out[k] = v
+  for (const [k, v] of Object.entries(process.env)) {
+    if (!k.startsWith('VP_') && k !== 'ELECTRON_RUN_AS_NODE') out[k] = v
+  }
   return { ...out, ...extra }
 }
 

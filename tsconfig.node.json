@@ -17,5 +17,7 @@
     "scripts/**/*.ts",
     "electron.vite.config.ts",
     "vitest.config.mts"
-  ]
+  ],
+  // Browser code with its own tsconfig (DOM lib): npm run typecheck:spike.
+  "exclude": ["scripts/spikes/video-spike/renderer/**"]
 }

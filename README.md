@@ -91,5 +91,8 @@ VP_ACCESS_BASE_URL=https://127.0.0.1:12445/api/v1/developer VP_ACCESS_TOKEN=<moc
 
 Lists doors and checks the responses against the zod schemas in `src/main/access/types.ts`. Add `-- --unlock "Front Door"` to unlock one door after typing its name to confirm (`--yes` skips the prompt, and is refused unless the target sends the mock-only `x-view-protect-mock` header). The spike pins the certificate per host and port in `scripts/spikes/output/` and writes sanitized fixtures to `tests/fixtures/access/` marked `"_source": "mock"` (only when that header is present; otherwise `"console"`). On-site, the same script runs against the real console (OS-1).
 
+### Video spike (P0.5)
+`npm run spike:video` plays one camera through go2rtc (on a free `127.0.0.1` port) over MSE in a bare Electron window. It reports the codec, the decoder (hardware or not, read from the Chromium Media domain), audio, latency and CPU, then prints a Gate G0 PASS/FAIL. It needs `.env.local` (`VP_CONSOLE_HOST`, `VP_PROTECT_API_KEY`) and `npm run fetch:go2rtc`. It only makes GET calls to the console and never creates RTSPS streams. Options: `--camera <name>`, `--quality high|medium|low`, `--duration <s>`, `--list` (cameras, existing qualities and their codecs), `--keep-open`, `--bare`, `--trim-keep <s>`. Results go to `scripts/spikes/output/video-spike/` (gitignored). Findings and the Windows procedure are in `docs/spikes/P0.5-video.md`.
+
 ## Installing prototype builds
 Prototype builds are unsigned. On macOS, right-click the app → Open the first time. On Windows, choose SmartScreen → "More info" → "Run anyway". Installing a newer build over an older one keeps your Views and settings.

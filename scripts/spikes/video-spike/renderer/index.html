@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <!-- launch.ts fills in the CSP with the go2rtc loopback port when it stages the page. -->
+    <meta http-equiv="Content-Security-Policy" content="__CSP__" />
+    <title>View Protect – video spike</title>
+    <link rel="stylesheet" href="./page.css" />
+  </head>
+  <body>
+    <div id="player"></div>
+    <div id="overlay">
+      <pre id="stats">starting…</pre>
+      <div id="clock"></div>
+      <button id="mute" type="button">Mute</button>
+    </div>
+    <script type="module" src="./page.js"></script>
+  </body>
+</html>

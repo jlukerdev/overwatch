@@ -6,9 +6,9 @@
   "description": "Live UniFi Protect camera grid Views for Windows and macOS.",
   "main": "./out/main/index.js",
   "scripts": {
-    "dev": "electron-vite dev",
-    "build": "npm run typecheck && electron-vite build",
-    "preview": "electron-vite preview",
+    "dev": "node scripts/electron-vite.ts dev",
+    "build": "npm run typecheck && node scripts/electron-vite.ts build",
+    "preview": "node scripts/electron-vite.ts preview",
     "typecheck:node": "tsc --noEmit -p tsconfig.node.json",
     "typecheck:web": "tsc --noEmit -p tsconfig.web.json",
     "typecheck:spike": "tsc --noEmit -p scripts/spikes/video-spike/renderer/tsconfig.json",
@@ -33,6 +33,7 @@
   "dependencies": {
     "react": "^19.3.1",
     "react-dom": "^19.3.1",
+    "undici": "^7.30.2",
     "zod": "^4.6.7",
     "zustand": "^5.1.0"
   },
@@ -54,7 +55,6 @@
     "prettier": "^3.10.1",
     "typescript": "~6.0.3",
     "typescript-eslint": "^8.72.2",
-    "undici": "^7.30.2",
     "vite": "^8.3.8",
     "vitest": "^5.1.0"
   },

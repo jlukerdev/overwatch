@@ -1,10 +1,23 @@
-// App entry: window creation, single-instance lock, lifecycle, wires up services.
+// App entry: window creation, single-instance lock, lifecycle, and the one place where the
+// main-process services are assembled from their parts (config, secrets, TLS pins, the shared
+// Protect request throttle and the two API clients).
 import { join } from 'node:path'
 import { app, BrowserWindow, safeStorage } from 'electron'
+import { createAccessClient, type AccessClient } from './access/client'
 import { createConfigStore, type ConfigStore } from './config/store'
 import { type Config } from './config/schema'
+import { accessEndpoint, protectEndpoint } from './console/endpoints'
 import { isAppUrl } from './navigation'
-import { createSecretsStore, safeStorageCrypto, type SecretsStore } from './secrets/secrets'
+import { createRateLimiter, type RateLimiter } from './net/rateLimiter'
+import { createProtectClient, type ProtectClient } from './protect/client'
+import {
+  createSecretsStore,
+  safeStorageCrypto,
+  type Secrets,
+  type SecretsStore,
+} from './secrets/secrets'
+import { createConfigPinStore } from './tls/configPinStore'
+import { createPinRegistry, type PinRegistry } from './tls/pinning'
 
 // With ELECTRON_RUN_AS_NODE set, the Electron binary runs as a plain Node interpreter: `app` and
 // `BrowserWindow` are undefined and every line below fails with a confusing TypeError. VS Code
@@ -22,14 +35,34 @@ let mainWindow: BrowserWindow | null = null
 
 /**
  * The main-process services, created once at startup. The typed IPC handlers that hand this to the
- * renderer arrive in P1.5; nothing crosses the contextBridge yet, and `secrets` never will
- * (CON-2, NFR-9).
+ * renderer arrive in P1.5; nothing crosses the contextBridge yet, and `secrets`, `credentials` and
+ * the clients never will (CON-2, NFR-9) — the renderer gets trimmed models and loopback go2rtc
+ * names instead.
  */
 export interface Services {
   readonly config: ConfigStore
   readonly secrets: SecretsStore
   /** The config as loaded (or defaults). P1.5 owns keeping this current as the user edits it. */
   current: Config
+  /**
+   * The decrypted secrets, held in memory because the API clients read them **synchronously** on
+   * every request. P1.6 updates these together with `secrets.set()`. Never logged, never sent to
+   * the renderer (CON-2, R5).
+   */
+  readonly credentials: Secrets
+  /** TOFU certificate pins (CON-3), stored in the two `console` fingerprint fields of SPEC §6. */
+  readonly pins: PinRegistry
+  /** One throttle for every Protect call, REST and WebSocket, because R9's budget is per key. */
+  readonly limiter: RateLimiter
+  /**
+   * A Protect client for the console **as configured right now**, built on first use and rebuilt
+   * when the address changes. Throws a `ConsoleEndpointError` while no host is set (CON-1) and a
+   * `PinRequiredError` on the first request to an unpinned console (CON-3) — both of which are
+   * Settings' business to resolve (P1.6), not this module's.
+   */
+  protect(): ProtectClient
+  /** The same for the Access developer API. It makes no call at all while Access is off (DOOR-0). */
+  access(): AccessClient
 }
 
 let services: Services | null = null
@@ -40,9 +73,14 @@ export function getServices(): Services | null {
 }
 
 /**
- * Loads config and opens the secrets store. This is the only place that touches Electron's `app`
- * and `safeStorage` for them: both stores take their directory and crypto as parameters so they
- * stay unit-testable (see their headers).
+ * Loads config, opens the secrets store and assembles everything that talks to the console: the
+ * pin registry over the config's two fingerprint fields (CON-3), the shared request throttle (R9)
+ * and the two API clients. This is the only place that touches Electron's `app` and `safeStorage`:
+ * every module below takes its directory, crypto, endpoint, credentials and dispatcher as
+ * parameters, which is what keeps them unit-testable in plain Node (see their headers).
+ *
+ * **Nothing here connects.** Resolving an address and reading a pin are offline; the first request
+ * happens when the user asks for one (CON-4, P1.6).
  *
  * Nothing here is fatal. A corrupt config has already been moved aside and replaced with defaults
  * by the store, and an unavailable keystore only means the user cannot save a key yet — in both
@@ -58,9 +96,90 @@ async function startServices(): Promise<void> {
     // config.json holds no secrets (CON-2), so this text is safe to log as is.
     console.error(`[config] ${loaded.recovery.problem}`)
   }
+
+  // The live config and the decrypted secrets. Everything below closes over these rather than
+  // taking a copy, so editing the address or the key in Settings (P1.6) reaches the clients without
+  // anything being rebuilt by hand.
+  let current = loaded.config
+  const credentials: Secrets = {}
+
+  const pins = createPinRegistry(
+    createConfigPinStore({
+      getConsole: () => current.console,
+      setConsole: (next) => {
+        current = { ...current, console: next }
+        // CON-3: a pin the user accepted has to survive a restart, so it is written at once. A
+        // failed write is reported rather than thrown — the pin is already in memory, so the
+        // session works; it is the next launch that would ask again.
+        void config.save(current).catch((err: unknown) => {
+          console.error('[config] Could not save the accepted certificate pin:', err)
+        })
+      },
+    }),
+  )
+
+  // One limiter for both clients and, later, both subscriptions: the console's 10 requests per
+  // second are counted per API key, and a WebSocket upgrade spends one too (SPEC §5.1, R9).
+  const limiter = createRateLimiter()
+
+  // The clients are cached per resolved base URL. Rebuilding on an address change matters because
+  // the pinned Agent and the pin are both keyed by host:port.
+  let protectCache: { baseUrl: string; client: ProtectClient } | null = null
+  const protect = (): ProtectClient => {
+    const endpoint = protectEndpoint(current.console)
+    const cached = protectCache
+    if (cached !== null && cached.baseUrl === endpoint.baseUrl) return cached.client
+    const client = createProtectClient({
+      endpoint,
+      apiKey: () => credentials.protectApiKey ?? null,
+      // Read per request, so re-accepting a certificate takes effect without a new client.
+      dispatcher: () => pins.agentFor(endpoint.host, endpoint.port),
+      limiter,
+      log: (line) => {
+        console.log(`[protect] ${line}`)
+      },
+    })
+    protectCache = { baseUrl: endpoint.baseUrl, client }
+    return client
+  }
+
+  let accessCache: { baseUrl: string; client: AccessClient } | null = null
+  const access = (): AccessClient => {
+    const endpoint = accessEndpoint(current.console)
+    const cached = accessCache
+    if (cached !== null && cached.baseUrl === endpoint.baseUrl) return cached.client
+    const client = createAccessClient({
+      endpoint,
+      // DOOR-0, read per call: the feature is off by default and the switch is in Settings (P5.2).
+      enabled: () => current.console.accessEnabled,
+      token: () => credentials.accessToken ?? null,
+      dispatcher: () => pins.agentFor(endpoint.host, endpoint.port),
+      log: (line) => {
+        console.log(`[access] ${line}`)
+      },
+    })
+    accessCache = { baseUrl: endpoint.baseUrl, client }
+    return client
+  }
+
   // Published before anything that can fail below, so a write-back or keystore problem cannot
-  // leave the app with no services for the rest of the session.
-  services = { config, secrets, current: loaded.config }
+  // leave the app with no services for the rest of the session. `current` is an accessor pair over
+  // the closure variable, so a later assignment is visible to the pin store and both clients.
+  services = {
+    config,
+    secrets,
+    get current() {
+      return current
+    },
+    set current(next: Config) {
+      current = next
+    },
+    credentials,
+    pins,
+    limiter,
+    protect,
+    access,
+  }
 
   if (loaded.source === 'file' && loaded.migratedFrom !== null) {
     // Write the upgraded file back once, so every later launch loads it directly.
@@ -79,7 +198,61 @@ async function startServices(): Promise<void> {
     if (stored.status === 'unreadable' || stored.status === 'io-error') {
       console.error(`[secrets] ${stored.problem}`)
     }
+    // Into the existing object, not over it: the clients hold this reference.
+    Object.assign(credentials, stored.secrets)
   }
+
+  reportConnectionReadiness(current, pins, credentials)
+}
+
+/**
+ * One offline line per endpoint saying whether the app *could* connect: it resolves the addresses
+ * and reads the stored pins but **sends nothing**. Testing the connection is a deliberate user
+ * action in Settings (CON-4, P1.6), and an app that silently reached for the console at every
+ * launch would also spend rate-limit permits nobody asked for (R9).
+ *
+ * Nothing here can print a secret: the API key and token appear only as "stored" or "not stored".
+ */
+function reportConnectionReadiness(config: Config, pins: PinRegistry, credentials: Secrets): void {
+  const describe = (
+    label: string,
+    resolve: () => { host: string; port: number; hostPort: string },
+    credential: string | undefined,
+    credentialName: string,
+  ): void => {
+    let endpoint: { host: string; port: number; hostPort: string }
+    try {
+      endpoint = resolve()
+    } catch (err) {
+      console.log(`[${label}] not configured yet: ${message(err)}`)
+      return
+    }
+    let pinned: string
+    try {
+      pinned =
+        pins.pinnedFingerprint(endpoint.host, endpoint.port) === null
+          ? 'certificate not accepted yet'
+          : 'certificate pinned'
+    } catch (err) {
+      // A stored pin that is not a fingerprint at all: the user has to re-accept it (CON-3).
+      pinned = `certificate pin unusable (${message(err)})`
+    }
+    const held = credential === undefined ? 'not stored' : 'stored'
+    console.log(`[${label}] ${endpoint.hostPort}: ${pinned}, ${credentialName} ${held}`)
+  }
+
+  describe('protect', () => protectEndpoint(config.console), credentials.protectApiKey, 'API key')
+  if (!config.console.accessEnabled) {
+    // DOOR-0: off by default, and while it is off the app makes no Access call at all.
+    console.log('[access] disabled (DOOR-0)')
+    return
+  }
+  describe('access', () => accessEndpoint(config.console), credentials.accessToken, 'token')
+}
+
+/** An error's message, for a log line. Never carries a secret: these errors are built from config. */
+function message(err: unknown): string {
+  return err instanceof Error ? err.message : String(err)
 }
 
 const rendererIndexPath = join(__dirname, '../renderer/index.html')

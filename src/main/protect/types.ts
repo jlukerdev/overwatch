@@ -70,6 +70,24 @@ export type RtspsStreams = Json200<'/v1/cameras/{id}/rtsps-stream', 'get'>
 /** `POST /v1/cameras/{id}/rtsps-stream`: a URL for each requested quality only. Secret: main only. */
 export type RtspsStreamsCreated = Json200<'/v1/cameras/{id}/rtsps-stream', 'post'>
 
+// --- snapshots ----------------------------------------------------------------------------------
+
+/** The query of `GET /v1/cameras/{id}/snapshot` (`highQuality`, `channel`). */
+type SnapshotQuery = NonNullable<paths['/v1/cameras/{id}/snapshot']['get']['parameters']['query']>
+
+/**
+ * `channel=main|package` of the snapshot endpoint (CAM-4). `package` only exists on a camera with
+ * `hasPackageCamera`.
+ */
+export type SnapshotChannel = NonNullable<SnapshotQuery['channel']>
+
+/**
+ * `highQuality=true|false`. **Only send `true` when `featureFlags.supportFullHdSnapshot` is set:**
+ * on a camera without it the console answers `400 BAD_REQUEST` and does *not* fall back to a
+ * smaller image (P0.3; SPEC §5.1).
+ */
+export type SnapshotHighQuality = NonNullable<SnapshotQuery['highQuality']>
+
 // --- talkback (MVP) -----------------------------------------------------------------------------
 
 /** `POST /v1/cameras/{id}/talkback-session`: `{ url, codec, samplingRate, bitsPerSample }`. */

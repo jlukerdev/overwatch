@@ -23,6 +23,18 @@ Phases run in order. Each one ends with a **gate**: a check you can demo or meas
 
 If H.265 fails on Windows, pick a fallback from SPEC R1 before continuing.
 
+**G0 outcome: PASSED on 2026-11-13, with one user waiver.**
+
+| G0 item | Result |
+|---|---|
+| H.265 + audio + hardware decode, macOS | **Pass.** Real H.265 stream (`hvc1.1.6.L153.B0`, 2688×1512), `VideoToolboxVideoDecoder` with `platform=true`, GPU `video_decode` enabled, AAC audio decoded |
+| H.265 + audio + hardware decode, Windows | **Pass except the real-stream H.265 check, which the user waived.** On H.264: MSE playback, `D3D11VideoDecoder` with `platform=true`, GPU `video_decode` enabled, AAC audio. Every HEVC capability probe is positive, but all cameras were back on H.264 that day, so H.265 was never driven through a real stream. Re-run when a camera has Enhanced Encoding on (SPEC R1) |
+| Unlock against the Access mock | **Pass** (P0.4). Real Access hardware is still unverified — OS-1 |
+
+**Fallback decision (2026-11-13):** rather than leave the waived check hanging, R1 fallback (a) is now the standing configuration — **all cameras run H.264 with Enhanced Encoding off**, for requirements outside this app. The Windows real-stream H.265 check has to be re-run before Enhanced Encoding is turned back on.
+
+Evidence: `docs/spikes/P0.3-protect-api.md`, `docs/spikes/P0.4-access-mock.md`, `docs/spikes/P0.5-video.md`. The verified interface details are folded into `SPEC.md` §5 by P0.6. Items carried out of Phase 0: SPEC **R9** (the 10 req/s rate limit), **R10** (the H.265 `high` drop rate, parked with R1) and **R11** (the unverified devices-WS shapes and snapshot 503).
+
 ---
 
 ## Phase 1 — Connection & camera inventory

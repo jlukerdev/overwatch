@@ -2,7 +2,6 @@ import { describe, expect, it } from 'vitest'
 import {
   FAKE_HOST,
   createSanitizer,
-  filterRateLimitHeader,
   isSensitiveKey,
   isVersionKey,
   keyWords,
@@ -257,25 +256,5 @@ describe('IPv4 rule and version keys', () => {
   it('redacts a bare IP under a non-version key', () => {
     const s = createSanitizer()
     expect(s.sanitize({ gateway: '203.0.113.1' })).toEqual({ gateway: '<redacted-ip>' })
-  })
-})
-
-describe('filterRateLimitHeader', () => {
-  it('drops the partition key and keeps known parameters', () => {
-    expect(filterRateLimitHeader('"10-in-1sec"; q=10; w=1; pk=:c2VjcmV0LXBrLXZhbHVl:')).toBe(
-      '"10-in-1sec"; q=10; w=1',
-    )
-    expect(filterRateLimitHeader('"10-in-1sec"; r=7; t=1')).toBe('"10-in-1sec"; r=7; t=1')
-  })
-
-  it('drops unknown or non-numeric parameters', () => {
-    expect(filterRateLimitHeader('limit=10; remaining=3; reset=1; foo=2; q=abc')).toBe(
-      'limit=10; remaining=3; reset=1',
-    )
-  })
-
-  it('keeps a plain number (retry-after) and filters each list member', () => {
-    expect(filterRateLimitHeader('1')).toBe('1')
-    expect(filterRateLimitHeader('"a"; q=1; pk=:x:, "b"; w=2')).toBe('"a"; q=1, "b"; w=2')
   })
 })

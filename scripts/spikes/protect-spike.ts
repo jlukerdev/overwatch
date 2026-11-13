@@ -29,7 +29,8 @@ import type { Agent } from 'undici'
 import { Contract, responsePointer } from '../lib/contract.ts'
 import type { ValidationResult } from '../lib/contract.ts'
 import { jpegSize } from './lib/jpeg.ts'
-import { createSanitizer, filterRateLimitHeader } from './lib/sanitize.ts'
+import { createSanitizer } from './lib/sanitize.ts'
+import { filterRateLimitHeader } from '../../src/main/net/rateLimitHeaders.ts'
 import { createPinnedAgent, fetchLeafCert, normalizeFingerprint } from './lib/tls.ts'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..')

@@ -170,36 +170,3 @@ export function createSanitizer(options: SanitizerOptions = {}): Sanitizer {
 
   return { sanitize: (value) => walk(value), mapId, sanitizeString }
 }
-
-/** Parameter names worth logging from `ratelimit` / `ratelimit-policy` style headers. */
-const RATE_LIMIT_PARAMS = new Set(['q', 'w', 'r', 't', 'limit', 'remaining', 'reset'])
-
-/**
- * Allowlist filter for rate-limit headers (structured-field style: `"10-in-1sec"; q=10; w=1`).
- * Keeps each list member's policy name and only the known numeric parameters; drops everything
- * else, including the per-client partition key `pk`. A plain number (e.g. `retry-after: 1`) is
- * kept as is. Returns '' when nothing is safe to log.
- */
-export function filterRateLimitHeader(value: string): string {
-  const trimmed = value.trim()
-  if (/^\d+$/.test(trimmed)) return trimmed
-  return trimmed
-    .split(',')
-    .map((member) => {
-      const parts = member.split(';').map((p) => p.trim())
-      const kept: string[] = []
-      // The first segment is the policy name (`"10-in-1sec"`) unless it is already a parameter.
-      const first = parts[0] ?? ''
-      if (!first.includes('=')) {
-        parts.shift()
-        if (/^"[\w.-]+"$|^[\w.-]+$/.test(first)) kept.push(first)
-      }
-      for (const p of parts) {
-        const m = /^([a-z][\w-]*)=(\d+(?:\.\d+)?)$/i.exec(p)
-        if (m?.[1] !== undefined && RATE_LIMIT_PARAMS.has(m[1].toLowerCase())) kept.push(p)
-      }
-      return kept.join('; ')
-    })
-    .filter((m) => m.length > 0)
-    .join(', ')
-}

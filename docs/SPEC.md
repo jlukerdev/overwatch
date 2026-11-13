@@ -161,13 +161,13 @@ How much of each interface is actually proven differs, and the distinction matte
 
 - **Base URL (local):** `https://<consoleIP>/proxy/protect/integration` + `/v1/...`
 - **Base URL (cloud, not used in prototype):** `https://api.ui.com/v1/connector/consoles/{consoleId}/proxy/protect/integration`. This is the Site Manager Cloud Connector. It carries REST and control calls without a VPN, **but the RTSPS URLs it returns still point at the console**, so live video still needs the LAN or a VPN. Possible MVP use: remote status and door unlock without a VPN.
-- **Auth:** header `X-API-KEY: <key>`. The official docs say to generate keys at unifi.ui.com, but **a key created locally in UniFi OS → Settings → Control Plane → Integrations works on the local endpoint** (P0.3 §1, R6 resolved); no unifi.ui.com key is needed. The same header authenticates both WebSockets (`wss://<console>/proxy/protect/integration/v1/subscribe/{devices,events}`), with no subprotocol and no extensions. There is no read-only scope, so treat the key as an admin credential.
+- **Auth:** header `X-API-KEY: <key>`. The official docs say to generate keys at unifi.ui.com, but **a key created locally in UniFi OS → Settings → Control Plane → Integrations works on the local endpoint** (P0.3 §1, R6 resolved); no unifi.ui.com key is needed. The same header authenticates both WebSockets (`wss://<console>/proxy/protect/integration/v1/subscribe/{devices,events}`), with no subprotocol and no extensions. There is no read-only scope, so treat the key as an admin credential. **Unverified:** no run has pointed a *wrong* key at the two WebSockets, and undici fails a non-101 handshake without exposing the HTTP response, so what a rejected upgrade looks like to the client is unknown. P1.3 looks for 401/403 in the error's `cause` chain and then in its message, stops retrying when it finds one (a reconnect loop cannot fix a bad key) and treats anything unrecognised as a retryable network error. Confirm it on the next console run.
 - **Errors:** every endpoint returns `{ error: string, name: string, cause?: object }` for non-2xx responses. Map these into typed app errors.
 - **TLS (CON-3):** the console presents a self-signed leaf certificate, so the pinned undici Agent **must disable TLS session resumption** (`maxCachedSessions: 0`) or handle resumed sessions explicitly. On a resumed session `getPeerCertificate()` returns no fingerprint and the pin check fails (P0.3 §8). P1.2 has to carry this.
 
 **Rate limit (not in the contract, found in P0.3 §7)**
 
-- **10 requests per 1-second window, per key.** Over the limit: `429 { error: "Too many requests", name: "TOO_MANY_REQUESTS_ERROR", windowMs: 1000, limit: 10 }`. Treat 429 as retryable after `windowMs`.
+- **10 requests per 1-second window, per key.** Over the limit: `429 { error: "Too many requests", name: "TOO_MANY_REQUESTS_ERROR", windowMs: 1000, limit: 10 }`. Treat 429 as retryable after `windowMs` — **for a GET**. A rate-limited **POST is never retried automatically** (P0.3's spike rule, which P1.3's client follows): `POST rtsps-stream` creates state, so the caller re-reads with a GET and decides whether the POST is still needed. The retry budget is 4 attempts.
 - Responses carry `ratelimit: "10-in-1sec"; r=<remaining>; t=<reset s>` and `ratelimit-policy: "10-in-1sec"; q=10; w=1; pk=:<partition key>:`. The `pk` value is an opaque per-client key: **never log it.** Log these headers through an allowlist of the policy name and the numeric parameters only.
 - **WebSocket upgrades count against the same budget.** A rate-limited upgrade is accepted, sent one JSON text frame with the 429 body, then closed with code **4500** and reason `Too many requests`.
 - Consequence for P1.7 and P2.2: fetching snapshots for 15 cameras, or `ensureStream` for a 10-cell View, will blow the limit unless the calls are queued or throttled (the spikes spaced them ≥ 150 ms apart), and WebSocket reconnects must back off.
@@ -201,7 +201,7 @@ How much of each interface is actually proven differs, and the distinction matte
 - An event **starts** with `add`, whose item **omits `end` entirely** — it is not `end: null`. It **ends** with an `update` that sets `end`. `update` items are **full** event objects (`id, modelKey, type, start, device, smartDetectTypes[, end]`), not partial patches.
 - **End updates may repeat.** The smartDetect end update was repeated two or three times with identical payloads 0–0.5 s apart; the motion end update arrived once. Consumers must be idempotent on `(id, end)`.
 - **End signals lag the real world.** One smartDetect `end` update arrived about 4 s after its `end` timestamp, so expect an end signal 3–5 s after the scene goes quiet. Motion events ran roughly 10–30 s per walk-by. P0.3's two motion figures — a 16.6 s `start`→`end` and an end update 9.3 s after the `add` — come from different events and can't be combined, so **motion's end-update lag is unmeasured**; P4.1 must not depend on it. CELL-2's `motionHoldSec` is measured from the `end` timestamp, not from arrival.
-- **Keepalive:** the server sent **no WebSocket pings** in 9 minutes and did not close an idle socket. The client has to detect dead connections itself, by sending its own ping or reconnecting on a TCP error (NFR-7).
+- **Keepalive:** the server sent **no WebSocket pings** in 9 minutes and did not close an idle socket. The client has to detect dead connections itself (NFR-7). **P1.3 does not send pings:** undici's `WebSocket` has no standard ping API, and its connector already turns TCP keepalive on (60 s idle), so a dead peer surfaces as a socket error and the subscription reconnects with backoff. An app-level idle timeout exists but is **off by default** — both feeds are legitimately silent for many minutes, so a timeout would mostly cause reconnects that each spend a rate-limit permit and a re-read of `GET /v1/cameras`.
 
 **Available but not used in the prototype (useful for MVP)**
 
@@ -216,12 +216,13 @@ How much of each interface is actually proven differs, and the distinction matte
 
 > ⚠️ **Not in Ubiquiti's official developer portal.** developer.ui.com covers Site Manager, Network, Protect and others, **but not Access**. The details below come from community sources. P0.4 encoded them as a local mock and zod schemas; **OS-1 is what verifies them on the console.**
 
-- Base: `https://<console>:12445/api/v1/developer`. On newer firmware it may also be reachable through the console proxy on 443.
+- Base: `https://<console>:12445/api/v1/developer`. On newer firmware it may also be reachable through the console proxy on 443. In the app this whole URL is `console.accessBaseUrl` (§6), so the alternative path needs no code change — only the setting.
 - Auth: `Authorization: Bearer <token>`. The token is created in Access → Settings → Advanced → API Token.
-- Used: `GET /doors`, `PUT /doors/{id}/unlock`.
+- Used: `GET /doors`, `GET /doors/{id}` and `PUT /doors/{id}/unlock`. The single-door read is how the app sees an unlock take effect: the local API has no push for the lock relay, so it is polled (P0.4 §2, hubitat-unifi-access).
 - Responses (community-sourced, unverified): envelope `{ code, msg, data }` with `code: "SUCCESS"` on success and a `CODE_*` value otherwise (e.g. `CODE_ACCESS_TOKEN_INVALID`, `CODE_NOT_EXISTS`, `CODE_PARAMS_INVALID`). Door fields and sources: `docs/spikes/P0.4-access-mock.md` §2; types and zod schemas: `src/main/access/types.ts`.
 - **Client rules (P1.4 must follow these, P0.4 §3/§5):** an error is HTTP non-2xx **or** `code !== "SUCCESS"`, whatever the status — the HTTP status that goes with each error code is undocumented everywhere, and the real console may answer 200 with a non-`SUCCESS` code. A 401 is an auth error whatever the body. Show `msg` when it is present and fall back to the `code` plus the HTTP status when it is not — `msg` is optional in the schemas below, so a DOOR-3 failure must never surface an empty message.
 - **Schema leniencies**, each marked `UNVERIFIED (OS-1)` in `types.ts`: `is_bind_hub` accepts `true`/`false` **and** the strings `"true"`/`"false"` and always parses to a boolean (anything else is rejected); the envelope's `msg` is optional while `code` stays required. `npm run spike:access` prints a **shape note** for every normalization it would apply, so OS-1 records which form the console really sends.
+- **No throttle of our own.** The community guide mentions 429 throttling but documents no limit and no `Retry-After`, and R9's measured 10 req/s belongs to the *Protect* key, not to this API. P1.4's client therefore does not pace or retry anything; the door list is read once per Settings visit and an unlock is a single deliberate call (DOOR-3/4). If OS-1 finds a real limit, pacing goes where P1.7's queue goes.
 - **TLS pinning is per host:port.** The certificate the console presents on 12445 may differ from the one on 443, so the Access pin is kept separately from the Protect pin (P0.4 §4).
 - Open question: one community source says unlock may need a different auth path on some firmware; this is not modelled in the mock. **It can't be verified until on-site testing** (the development network has no Access).
 
@@ -265,7 +266,7 @@ go2rtc:   rtspx://<console-host>:7441/<alias>
 {
   "schemaVersion": 1,
   "console": { "host": "192.0.2.10", "certFingerprint": "7B:12:B7:0C:…:B8:5C:B6:6A", "accessEnabled": false,
-               "accessBaseUrl": null, "accessCertFingerprint": null },   // DOOR-0: off by default; accessBaseUrl null = https://<host>:12445
+               "accessBaseUrl": null, "accessCertFingerprint": null },   // DOOR-0: off by default; accessBaseUrl null = https://<host>:12445/api/v1/developer
   "doorLinks": { "<cameraId>": "<accessDoorId>" },
   "views": [
     {
@@ -289,7 +290,11 @@ go2rtc:   rtspx://<console-host>:7441/<alias>
 }
 ```
 
-`cells.length === cols * rows`, in row-major order. **Two certificate fingerprints, not one:** pinning is per host:port (§5.2, P0.4 §4), and the Access developer API answers on 12445 while Protect is behind 443, so `certFingerprint` pins the console and `accessCertFingerprint` pins the Access endpoint; both are `null` until the user accepts them (CON-3). The schema is validated with zod on load. Unknown or older `schemaVersion` values go through migrations in `src/main/config/migrations.ts`.
+`cells.length === cols * rows`, in row-major order.
+
+**`console.host` and `console.accessBaseUrl`** (the rules `src/main/console/endpoints.ts` encodes, added in P1.3/P1.4). `host` is an IP or host name and may carry a non-default port (`udm.local:8443`); a scheme other than `https://` is refused rather than upgraded, since the API key may only travel over TLS (CON-2, R5), and an IPv6 literal needs brackets to tell the address from a port. `accessBaseUrl` is the **API root** — origin *and* path, the same value the P0.4 spike takes as `VP_ACCESS_BASE_URL` — so the §5.2 alternative behind the console proxy and the local mock are both just a different value here. `null` derives `https://<console.host>:12445/api/v1/developer`, **ignoring any port in `host`**, because the developer API has its own.
+
+**Two certificate fingerprints, not one:** pinning is per host:port (§5.2, P0.4 §4), and the Access developer API answers on 12445 while Protect is behind 443, so `certFingerprint` pins the console and `accessCertFingerprint` pins the Access endpoint; both are `null` until the user accepts them (CON-3). The schema is validated with zod on load. Unknown or older `schemaVersion` values go through migrations in `src/main/config/migrations.ts`.
 
 ---
 

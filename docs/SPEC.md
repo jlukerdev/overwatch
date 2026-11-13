@@ -264,7 +264,8 @@ go2rtc:   rtspx://<console-host>:7441/<alias>
 // <userData>/config.json  (secrets live separately in secrets.bin, encrypted)
 {
   "schemaVersion": 1,
-  "console": { "host": "192.0.2.10", "certFingerprint": "sha256/…", "accessEnabled": false, "accessBaseUrl": null },   // DOOR-0: off by default; accessBaseUrl null = https://<host>:12445,
+  "console": { "host": "192.0.2.10", "certFingerprint": "7B:12:B7:0C:…:B8:5C:B6:6A", "accessEnabled": false,
+               "accessBaseUrl": null, "accessCertFingerprint": null },   // DOOR-0: off by default; accessBaseUrl null = https://<host>:12445
   "doorLinks": { "<cameraId>": "<accessDoorId>" },
   "views": [
     {
@@ -288,7 +289,7 @@ go2rtc:   rtspx://<console-host>:7441/<alias>
 }
 ```
 
-`cells.length === cols * rows`, in row-major order. The schema is validated with zod on load. Unknown or older `schemaVersion` values go through migrations in `src/main/config/migrations.ts`.
+`cells.length === cols * rows`, in row-major order. **Two certificate fingerprints, not one:** pinning is per host:port (§5.2, P0.4 §4), and the Access developer API answers on 12445 while Protect is behind 443, so `certFingerprint` pins the console and `accessCertFingerprint` pins the Access endpoint; both are `null` until the user accepts them (CON-3). The schema is validated with zod on load. Unknown or older `schemaVersion` values go through migrations in `src/main/config/migrations.ts`.
 
 ---
 

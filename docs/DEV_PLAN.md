@@ -84,6 +84,11 @@ VIEW-5, CELL-1, NFR-2…5, NFR-7
 | P2.4 | Temporary hard-coded 3×3 + 4×3 grid that fills and reflows with the window |
 | P2.5 | Perf harness: 10 streams for 30 min **at each of low, medium and high**. Record CPU, GPU, RAM and latency on both OSes into `docs/perf-results.md`, so the quality defaults are based on measurements |
 
+**Carried from P2.3 into P2.4** (two defects found by `/code-review` on the P2.3 branch, deferred by the user on 2026-11-14 because they are best fixed once the player runs in a real grid, where the timings are observable rather than guessed):
+
+- **An R7 codec-unsupported verdict is machine-wide and terminal.** It is set from whichever layer failed and then disables any further `ensureStream`, so when the still-healthy visible stream later loses its socket no replacement is requested: the cell keeps a frozen frame with no message and no recovery. The fix is to scope the verdict to the quality that failed — a codec is a property of one stream, and Enhanced Encoding is per camera (R7), so a `high` that will not decode must not poison a `low` that does.
+- **A layer that attaches but never paints hangs on "Connecting…" with no retry.** go2rtc's `{type:'error'}` handshake reply is dropped, the socket stays open so the reconnect path cannot fire, and the stall detector is inert until a first frame has been seen. NFR-7 and gate G2 want recovery here: surface go2rtc's error, and give a layer a bounded window to paint before closing it and retrying on the existing backoff (P0.5 measured a first frame at 0.28–0.65 s).
+
 **Gate G2:** NFR-2/4/5 met, and 30-minute runs show no memory growth. Streams recover by themselves after go2rtc is killed or the network drops. **If this fails → evaluate the libmpv fallback (ARCHITECTURE §1) before Phase 3.**
 
 ---

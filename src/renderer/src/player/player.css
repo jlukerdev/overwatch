@@ -1,0 +1,83 @@
+/*
+ * The live player and its placeholder (P2.3; QUAL-6, CAM-3, VIEW-5). Lives next to its code like the
+ * feature stylesheets (features/cameras/cameras.css, features/settings/settings.css); the tokens
+ * come from src/renderer/src/styles.css.
+ *
+ * The player fills whatever box it is given and has no size of its own: the grid is P2.4's and the
+ * View layout VIEW-5's, so anything here with a width in it would be a layout decision taken in the
+ * wrong file.
+ */
+
+.livePlayer {
+  position: relative;
+  display: flex;
+  overflow: hidden;
+  width: 100%;
+  height: 100%;
+  align-items: center;
+  justify-content: center;
+  /* Behind every stream and every placeholder: the one colour a cell may show while a frame is on
+     its way. Never black-on-black, so an empty cell is still visibly a cell. */
+  background: var(--bg-sunken);
+}
+
+/* Holds both layers of a swap, stacked. */
+.livePlayer__layers {
+  position: absolute;
+  display: grid;
+  width: 100%;
+  height: 100%;
+  inset: 0;
+}
+
+/*
+ * One <vp-mse-player>. Both layers occupy the same grid cell, so the incoming one is composited
+ * over the outgoing one and the swap is a single frame with nothing in between (QUAL-6, FILL-2).
+ */
+.livePlayer__layer {
+  display: block;
+  overflow: hidden;
+  grid-area: 1 / 1;
+  min-width: 0;
+  min-height: 0;
+}
+
+/*
+ * A layer that has not rendered its first frame yet: present, attached and decoding, but invisible.
+ *
+ * `opacity: 0` and not `display: none` or `visibility: hidden` — a cell that is not rendered is a
+ * cell Chromium may not decode for, and this layer exists precisely to have a frame ready *before*
+ * it is shown. It stays under the visible layer (both are in the same grid cell, this one is painted
+ * first), so there is no moment where neither is on screen.
+ */
+.livePlayer__layer--pending {
+  opacity: 0;
+  pointer-events: none;
+}
+
+/* The <video> inside the custom element. VIEW-5's rule, early: never distort a camera. */
+.livePlayer__layer video {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  /* Nothing in a cell is selectable or draggable; the overlay and fill mode are Phase 3's. */
+  user-select: none;
+  -webkit-user-drag: none;
+}
+
+/*
+ * CAM-3 / R7 / `gateway-down`: the one line that says why there is no picture. Shown only when no
+ * layer is on screen — the machine cannot produce a placeholder over live video — so this never
+ * covers a stream (playerMachine.ts, rule 1).
+ */
+.livePlayer__placeholder {
+  position: relative;
+  max-width: 90%;
+  padding: 0.25rem 0.5rem;
+  color: var(--muted);
+  font-size: 0.9rem;
+  text-align: center;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  overflow: hidden;
+}

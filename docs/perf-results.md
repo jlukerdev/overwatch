@@ -8,7 +8,7 @@ Recorded with the P2.5 perf harness (`npm run perf`, `scripts/perf/` + `src/main
 
 | Machine | Quality | Streams | CPU total % (mean / p95) | Renderer % | GPU proc % | go2rtc % | GPU util % (mean / p95) | RAM MB (mean / max) | RAM growth MB/h | Buffer lag s (mean / p95 / max) | Dropped % | Not playing (max cells / samples) | Decoder | Run |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| | low | | | | | | | | | | | | | not run yet |
+| macOS 27.2.1 (arm64, Apple M5 Pro, 15 cores, 64 GB) | low | 9 | — | — | — | — | — | — | — | — | — | — | — | skipped (user decision, 2026-11-14): `medium` and `high` cost about the same CPU, so `low` sets no limit. Only a 1-min smoke run exists: about 34 % of one core, 0.98 s buffer lag |
 | macOS 27.2.1 (arm64, Apple M5 Pro, 15 cores, 64 GB) | medium | 9 | 51.5 / 53.4 | 22.1 / 24.0 | 18.6 / 19.4 | 5.4 / 5.8 | 0 / 0 | 777 / 837 | 347.9 | 0.99 / 1.04 / 1.27 | 0.78 | 1 / 1 | VideoToolboxVideoDecoder (platform; gpu enabled) | 2026-11-14, 30 min |
 | macOS 27.2.1 (arm64, Apple M5 Pro, 15 cores, 64 GB) | high | 9 (10 seen) | 51.4 / 55.0 | 20.7 / 22.2 | 18.0 / 19.6 | 5.8 / 6.2 | 3 / 13 | 928 / 998 | 396.0 | 0.99 / 1.04 / 1.09 | 0.86 | 1 / 2 | VideoToolboxVideoDecoder (platform; gpu enabled) | 2026-11-14, 30 min |
 

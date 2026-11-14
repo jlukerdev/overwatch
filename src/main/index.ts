@@ -2,11 +2,13 @@
 // main-process services are assembled from their parts (config, secrets, TLS pins, the shared
 // Protect request throttle and the two API clients).
 import { join } from 'node:path'
-import { app, BrowserWindow, safeStorage } from 'electron'
+import { app, BrowserWindow, ipcMain, safeStorage } from 'electron'
 import { createAccessClient, type AccessClient } from './access/client'
 import { createConfigStore, type ConfigStore } from './config/store'
 import { type Config } from './config/schema'
+import { createConnectionManager, type ConnectionManager } from './connection'
 import { accessEndpoint, protectEndpoint } from './console/endpoints'
+import { createIpcRouter, registerIpcHandlers } from './ipc/handlers'
 import { isAppUrl } from './navigation'
 import { createRateLimiter, type RateLimiter } from './net/rateLimiter'
 import { createProtectClient, type ProtectClient } from './protect/client'
@@ -34,20 +36,20 @@ if (process.env.ELECTRON_RUN_AS_NODE !== undefined && process.env.ELECTRON_RUN_A
 let mainWindow: BrowserWindow | null = null
 
 /**
- * The main-process services, created once at startup. The typed IPC handlers that hand this to the
- * renderer arrive in P1.5; nothing crosses the contextBridge yet, and `secrets`, `credentials` and
- * the clients never will (CON-2, NFR-9) — the renderer gets trimmed models and loopback go2rtc
- * names instead.
+ * The main-process services, created once at startup. The typed IPC handlers (P1.5) hand the
+ * renderer a trimmed view of this and nothing more: `secrets`, `credentials` and the clients never
+ * cross the contextBridge (CON-2, NFR-9) — the renderer gets trimmed models, booleans saying
+ * whether a credential is stored, and loopback go2rtc names (P2.2) instead.
  */
 export interface Services {
   readonly config: ConfigStore
   readonly secrets: SecretsStore
-  /** The config as loaded (or defaults). P1.5 owns keeping this current as the user edits it. */
+  /** The config as loaded (or defaults). The connection manager replaces it on a console change. */
   current: Config
   /**
    * The decrypted secrets, held in memory because the API clients read them **synchronously** on
-   * every request. P1.6 updates these together with `secrets.set()`. Never logged, never sent to
-   * the renderer (CON-2, R5).
+   * every request. The `setSecret`/`clearSecret` handlers update these together with `secrets.set()`.
+   * Never logged, never sent to the renderer (CON-2, R5).
    */
   readonly credentials: Secrets
   /** TOFU certificate pins (CON-3), stored in the two `console` fingerprint fields of SPEC §6. */
@@ -70,6 +72,23 @@ let services: Services | null = null
 /** The services, or `null` before `startServices()` has finished. */
 export function getServices(): Services | null {
   return services
+}
+
+/** CON-5/CAM-1/2: the connection status and the camera inventory. `null` if startup failed. */
+let connection: ConnectionManager | null = null
+
+/** Removes every IPC handler again; set once the router is bound to `ipcMain`. */
+let disposeIpcHandlers: (() => void) | null = null
+
+/**
+ * The event sink the connection manager pushes through. Only the main window and only while it
+ * exists: `webContents.send` on a destroyed window throws, and the app has exactly one window, so
+ * an event with nowhere to go is simply dropped — the renderer asks for `getState` at mount.
+ */
+function sendToRenderer(channel: string, payload: unknown): void {
+  const win = mainWindow
+  if (win === null || win.isDestroyed()) return
+  win.webContents.send(channel, payload)
 }
 
 /**
@@ -340,6 +359,29 @@ if (!app.requestSingleInstanceLock()) {
       await startServices().catch((err: unknown) => {
         console.error('[services] Failed to start:', err)
       })
+      // The connection manager and the IPC router, in that order. **Nothing connects here**: the
+      // manager only derives its status from the config and the stored pins, which are offline
+      // reads, so the first request to the console stays a deliberate user action (CON-4, R9).
+      const started = getServices()
+      if (started !== null) {
+        connection = createConnectionManager({
+          services: started,
+          emit: sendToRenderer,
+          log: (line) => {
+            console.log(`[connection] ${line}`)
+          },
+        })
+      }
+      // Registered even when startup failed, so a call answers `not-ready` with a kind the UI can
+      // branch on instead of arriving as a rejected `invoke` with no handler at all.
+      disposeIpcHandlers = registerIpcHandlers(
+        ipcMain,
+        createIpcRouter({
+          getServices,
+          getManager: () => connection,
+          appVersion: () => app.getVersion(),
+        }),
+      )
       // A `second-instance` can arrive while the await above is pending and open the window first;
       // creating another one here would orphan it (only the last is tracked as mainWindow).
       if (BrowserWindow.getAllWindows().length === 0) createWindow()
@@ -354,5 +396,18 @@ if (!app.requestSingleInstanceLock()) {
 
   app.on('window-all-closed', () => {
     if (process.platform !== 'darwin') app.quit()
+  })
+
+  app.on('will-quit', () => {
+    disposeIpcHandlers?.()
+    disposeIpcHandlers = null
+    const manager = connection
+    connection = null
+    // Not awaited: `will-quit` would have to be deferred with `preventDefault()` to do that, and
+    // what is left to do — closing the devices socket and the pinned Agents — only matters while
+    // the process lives. A failure is logged rather than allowed to hold up the quit.
+    void manager?.shutdown().catch((err: unknown) => {
+      console.error('[connection] Shutdown failed:', err)
+    })
   })
 }

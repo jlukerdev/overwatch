@@ -1,14 +1,31 @@
+/*
+ * App shell and the shared primitives (P1.5/P1.6/P1.7). Feature-specific rules live next to their
+ * feature (`features/settings/settings.css`, `features/cameras/cameras.css`) so two screens cannot
+ * fight over one file.
+ *
+ * Dark only for now: `color-scheme: dark` plus fixed tokens. A camera wall is looked at in a dark
+ * room, and the prototype has no theme switch (SPEC §2.1).
+ */
 :root {
   color-scheme: dark;
   --bg: #0b0d10;
+  --bg-raised: #14181d;
+  --bg-sunken: #090b0e;
+  --border: #242a31;
   --fg: #e6e8eb;
   --muted: #8a9099;
+  --accent: #4c8dff;
+  --ok: #3fb950;
+  --warn: #d29922;
+  --error: #f85149;
+  --radius: 6px;
   font-family:
     system-ui,
     -apple-system,
     'Segoe UI',
     Roboto,
     sans-serif;
+  font-size: 14px;
 }
 
 *,
@@ -27,14 +44,73 @@ body,
   color: var(--fg);
 }
 
+/* --- shell ------------------------------------------------------------------------------------ */
+
 .app {
   display: flex;
   flex-direction: column;
+  height: 100%;
+  user-select: none;
+}
+
+.app--centred {
   align-items: center;
   justify-content: center;
-  height: 100%;
+  gap: 0.75rem;
+}
+
+.app__header {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 1rem;
+  padding: 0.5rem 1rem;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-raised);
+}
+
+.app__brand {
+  margin: 0;
+  font-size: 1rem;
+  font-weight: 600;
+}
+
+.app__nav {
+  display: flex;
   gap: 0.25rem;
-  user-select: none;
+}
+
+.app__navButton {
+  padding: 0.3rem 0.7rem;
+  border: 1px solid transparent;
+  border-radius: var(--radius);
+  background: none;
+  color: var(--muted);
+  font: inherit;
+  cursor: pointer;
+}
+
+.app__navButton:hover {
+  color: var(--fg);
+}
+
+.app__navButton--active {
+  border-color: var(--border);
+  background: var(--bg-sunken);
+  color: var(--fg);
+}
+
+/* Pushes the version to the right edge; the badges sit just before it. */
+.app__version {
+  margin-left: auto;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.app__body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
 }
 
 .app__title {
@@ -43,8 +119,160 @@ body,
   font-weight: 600;
 }
 
-.app__version {
+.app__muted {
   margin: 0;
   color: var(--muted);
-  font-variant-numeric: tabular-nums;
+}
+
+.app__error {
+  margin: 0;
+  max-width: 48ch;
+  color: var(--error);
+  text-align: center;
+}
+
+/* --- status badges (CON-5) -------------------------------------------------------------------- */
+
+.badges {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.2rem 0.55rem;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--bg-sunken);
+  font-size: 0.85rem;
+  white-space: nowrap;
+}
+
+.badge__dot {
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: 50%;
+  background: var(--muted);
+}
+
+.badge__phase {
+  color: var(--muted);
+}
+
+.badge--connected .badge__dot {
+  background: var(--ok);
+}
+
+.badge--connecting .badge__dot,
+.badge--reconnecting .badge__dot {
+  background: var(--warn);
+}
+
+.badge--error .badge__dot {
+  background: var(--error);
+}
+
+.badge--idle .badge__dot {
+  background: var(--accent);
+}
+
+/* --- shared primitives ------------------------------------------------------------------------ */
+
+.button {
+  padding: 0.4rem 0.9rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-raised);
+  color: var(--fg);
+  font: inherit;
+  cursor: pointer;
+}
+
+.button:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+
+.button:disabled {
+  color: var(--muted);
+  cursor: default;
+}
+
+.button--primary {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: #fff;
+}
+
+.button--danger {
+  border-color: var(--error);
+  color: var(--error);
+}
+
+.card {
+  padding: 1rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-raised);
+}
+
+.card__title {
+  margin: 0 0 0.25rem;
+  font-size: 1rem;
+  font-weight: 600;
+}
+
+.card__hint {
+  margin: 0 0 0.75rem;
+  color: var(--muted);
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  margin-bottom: 0.75rem;
+}
+
+.field__label {
+  color: var(--muted);
+}
+
+.field__input {
+  padding: 0.4rem 0.5rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-sunken);
+  color: var(--fg);
+  font: inherit;
+  user-select: text;
+}
+
+.field__input:focus {
+  border-color: var(--accent);
+  outline: none;
+}
+
+.field__hint {
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+.field__error {
+  color: var(--error);
+  font-size: 0.85rem;
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+/* Fingerprints and other values worth comparing character by character (CON-3). */
+.mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  user-select: text;
+  word-break: break-all;
 }

@@ -11,8 +11,11 @@
 //                   (`<cameraId>:package`). Keeping it out of `Quality` means a quality picker,
 //                   a View default or `streams.default*Quality` can never be set to `package`.
 //
-// `resolveQuality()` (cell → view → settings for the grid, view → settings for fill; QUAL-3/5)
-// lands in **P2.2** per docs/DEV_PLAN.md, together with its unit tests.
+// The bottom half of the file is `resolveQuality()` (P2.2): the "most specific setting wins" chains
+// of QUAL-2/3/5. docs/ARCHITECTURE.md §3 calls it one function; it is two here —
+// {@link resolveGridQuality} and {@link resolveFillQuality} — because the two chains have different
+// lengths and a single function would need either a mode flag or a nullable cell argument, both of
+// which a caller can get wrong silently.
 import { z } from 'zod'
 
 /** User-selectable qualities, best first. The order is the one the quality picker shows (QUAL-4). */
@@ -38,4 +41,116 @@ export function isQuality(value: string): value is Quality {
 /** Narrows an arbitrary string to a quality or the package channel. */
 export function isStreamQuality(value: string): value is StreamQuality {
   return StreamQualitySchema.safeParse(value).success
+}
+
+// -------------------------------------------------------------------------------------------------
+// resolveQuality (QUAL-2/3/5, docs/ARCHITECTURE.md §3 "Streaming details")
+//
+// The rule is "the most specific setting wins", over two chains:
+//
+//   grid: cell.quality → view.gridQuality → settings.streams.defaultGridQuality   (QUAL-3)
+//   fill:               view.fillQuality → settings.streams.defaultFillQuality    (QUAL-5)
+//
+// `null` at a level means **inherit** — exactly what `InheritedQualitySchema` in ./models encodes,
+// and why an absent key there parses to an explicit `null`: every level is `Quality | null` and
+// nobody has to tell `undefined` from `null`.
+//
+// Both functions take **one named object** whose keys are the levels, not a positional argument
+// list. Three `Quality | null` parameters in a row are impossible to pass in the wrong order
+// *visibly*: `resolveGridQuality(view.gridQuality, cell.quality, …)` would type-check and quietly
+// invert QUAL-3. With named levels, and with each level typed as the shape it comes from, the only
+// way to call these is with the real `Cell`, `View` and `StreamsConfig` objects.
+//
+// The transient fill-mode picker (QUAL-5, "applies until you leave fill mode") is deliberately
+// **not** a level here: it is not persisted, so it has no home in the config chain. P3.7 applies it
+// above the chain (`sessionPick ?? resolveFillQuality(...)`), which keeps this module about the
+// persisted model and still hard-codes nothing.
+
+/**
+ * Last resort, used only if every level is missing or malformed — which the types forbid and
+ * `SettingsSchema` prevents, but a `Quality` has to come out of here no matter what, because the
+ * player's alternative to a quality is no video at all.
+ *
+ * The *cheapest* quality, taken from the end of {@link QUALITIES} (they are listed best first)
+ * rather than written out: the QUAL preamble's "no quality is hard-coded" applies to this file most
+ * of all. Degrading downwards is the safe direction — a wrong `high` for every cell of a 4×4 View
+ * would hammer the console and the decoder (NFR-2/4). Parsed rather than cast so that a change to
+ * `QUALITIES` that broke this assumption would fail at import, not at the first stalled stream.
+ */
+const CHEAPEST_QUALITY: Quality = QualitySchema.parse(QUALITIES[QUALITIES.length - 1])
+
+/**
+ * First level that actually has a quality set, cheapest quality if none has.
+ *
+ * Levels are `unknown`, not `Quality | null`, on purpose: this is the one place that decides what
+ * "set" means, and it has to hold for values the type system did not get to see — a config field
+ * that an older schema version left `undefined`, a quality string from a hand-edited file that
+ * reached a caller without going through zod, a `''`. Anything that is not one of {@link QUALITIES}
+ * inherits, which is the same thing `null` does, instead of being passed on as a quality go2rtc
+ * would reject.
+ */
+function firstSetQuality(levels: readonly unknown[]): Quality {
+  for (const level of levels) {
+    if (typeof level === 'string' && isQuality(level)) return level
+  }
+  return CHEAPEST_QUALITY
+}
+
+/**
+ * A cell's quality override (QUAL-3). A structural subset of `Cell` (./models), so a whole `Cell`
+ * is accepted as is while this module stays free of the domain model — ./models imports *this* file
+ * for `QualitySchema`, and the reverse import would be a cycle.
+ */
+export interface CellQualityOverride {
+  /** `null` = use the View's grid quality. */
+  readonly quality: Quality | null
+}
+
+/** A View's two overrides (QUAL-2, QUAL-5). Structural subset of `View` (./models). */
+export interface ViewQualityOverrides {
+  /** `null` = use `settings.streams.defaultGridQuality`. */
+  readonly gridQuality: Quality | null
+  /** `null` = use `settings.streams.defaultFillQuality`. */
+  readonly fillQuality: Quality | null
+}
+
+/**
+ * The two app-wide defaults (QUAL-1). Structural subset of `StreamsConfig` (./models), i.e. exactly
+ * `settings.streams`. Both are non-nullable: this is where inheriting stops.
+ */
+export interface QualityDefaults {
+  readonly defaultGridQuality: Quality
+  readonly defaultFillQuality: Quality
+}
+
+/**
+ * The effective quality for one grid cell: `cell.quality ?? view.gridQuality ??
+ * streams.defaultGridQuality` (QUAL-3).
+ *
+ * Call it with the real objects — `resolveGridQuality({ cell, view, streams: settings.streams })`.
+ */
+export function resolveGridQuality(levels: {
+  readonly cell: CellQualityOverride
+  readonly view: ViewQualityOverrides
+  readonly streams: QualityDefaults
+}): Quality {
+  return firstSetQuality([
+    levels.cell.quality,
+    levels.view.gridQuality,
+    levels.streams.defaultGridQuality,
+  ])
+}
+
+/**
+ * The effective quality in fill mode: `view.fillQuality ?? streams.defaultFillQuality` (QUAL-5).
+ *
+ * There is no cell level on purpose. Fill mode shows one camera full-window, so a per-cell grid
+ * override (typically a *lower* quality, QUAL-1) must not follow the camera into fill — that is the
+ * whole point of FILL-2's low→high swap.
+ */
+export function resolveFillQuality(levels: {
+  readonly view: ViewQualityOverrides
+  readonly streams: QualityDefaults
+}): Quality {
+  return firstSetQuality([levels.view.fillQuality, levels.streams.defaultFillQuality])
 }

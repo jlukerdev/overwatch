@@ -1,8 +1,10 @@
 // App entry: window creation, single-instance lock, lifecycle, and the one place where the
 // main-process services are assembled from their parts (config, secrets, TLS pins, the shared
 // Protect request throttle and the two API clients).
-import { join } from 'node:path'
-import { app, BrowserWindow, ipcMain, safeStorage } from 'electron'
+import { basename, join } from 'node:path'
+import { app, BrowserWindow, ipcMain, safeStorage, session } from 'electron'
+import { IPC_EVENTS } from '@shared/ipc'
+import { STREAM_RUNTIME_DOWN, type StreamRuntime } from '@shared/streams'
 import { createAccessClient, type AccessClient } from './access/client'
 import { createConfigStore, type ConfigStore } from './config/store'
 import { type Config } from './config/schema'
@@ -18,6 +20,13 @@ import {
   type Secrets,
   type SecretsStore,
 } from './secrets/secrets'
+import {
+  createGo2rtcManager,
+  go2rtcBinaryPath,
+  type Go2rtcManager,
+  type Go2rtcRuntime,
+} from './streams/go2rtcManager'
+import { createStreamRegistry, type StreamRegistry } from './streams/registry'
 import { createConfigPinStore } from './tls/configPinStore'
 import { createPinRegistry, type PinRegistry } from './tls/pinning'
 
@@ -81,14 +90,98 @@ let connection: ConnectionManager | null = null
 let disposeIpcHandlers: (() => void) | null = null
 
 /**
+ * The go2rtc sidecar (P2.1) and the stream registry (P2.2). `null` if startup failed, and the
+ * sidecar is **not** running just because these exist: go2rtc starts lazily, on the first
+ * `ensureStream` (see `buildStreaming`).
+ */
+let go2rtc: Go2rtcManager | null = null
+let streams: StreamRegistry | null = null
+
+/**
  * The event sink the connection manager pushes through. Only the main window and only while it
  * exists: `webContents.send` on a destroyed window throws, and the app has exactly one window, so
  * an event with nowhere to go is simply dropped — the renderer asks for `getState` at mount.
  */
 function sendToRenderer(channel: string, payload: unknown): void {
+  // QUAL-8's "refresh on camera changes", hooked here rather than in `connection.ts`: the
+  // inventory event is *already* the signal — it is sent after every connect, reconnect and
+  // add/remove (CAM-2) — and this sink is the one place that sees it, so the registry learns about
+  // a re-read without the connection manager having to know that streams exist at all. Dropping a
+  // cached URL interrupts nothing (see `StreamRegistry.invalidate`), so doing it on every inventory
+  // event rather than diffing the list costs at most one GET per camera/quality next time.
+  if (channel === IPC_EVENTS.cameras.channel) streams?.invalidate()
   const win = mainWindow
   if (win === null || win.isDestroyed()) return
   win.webContents.send(channel, payload)
+}
+
+/**
+ * The bundled go2rtc binary for this platform, in both layouts it can be in.
+ *
+ * Unpackaged (`npm run dev`, `electron .`) it sits where `scripts/fetch-go2rtc.ts` installs it:
+ * `<repo>/resources/bin/<platform>-<arch>/go2rtc[.exe]`, which is exactly what `go2rtcBinaryPath`
+ * builds. Packaged, `electron-builder.yml` copies **one** target's folder with `extraResources:
+ * from: resources/bin/<platform>-${arch}, to: bin`, which **flattens** the platform-arch segment
+ * away: the binary is at `<process.resourcesPath>/bin/go2rtc[.exe]`. The file name still comes from
+ * `go2rtcBinaryPath` (via `basename`) so the `.exe` suffix is decided in one place.
+ *
+ * Resolved per start, not at import, so a path problem is reportable rather than fatal at launch.
+ */
+function go2rtcBinary(): string {
+  const unpackaged = go2rtcBinaryPath(join(app.getAppPath(), 'resources'))
+  return app.isPackaged ? join(process.resourcesPath, 'bin', basename(unpackaged)) : unpackaged
+}
+
+/**
+ * SPEC §5.3 "Renderer isolation". Injects go2rtc's `Authorization: Basic …` and rewrites `Origin`
+ * for the **current** go2rtc port, and nothing else.
+ *
+ * Both halves are required and both are deliberately narrow:
+ *
+ *  - The `Origin` rewrite is what lets go2rtc keep its strict default origin check (`api.origin:
+ *    ""`). go2rtc accepts a WebSocket only when the `Origin` host equals the `Host`, which rejects
+ *    the `file://` page and the dev server's origin alike. **Never `origin: "*"`** — any website
+ *    open in the user's browser could then attach to the loopback port and watch the cameras.
+ *  - The header injection is what keeps the credential in main (CON-2, NFR-9): the renderer is given
+ *    a port and a stream name and can neither authenticate nor name a stream on its own.
+ *
+ * The filter is rebuilt on every runtime change because **the port changes on every (re)start**
+ * (P2.1): a stale filter would keep injecting the credential at a port some other local process may
+ * now hold. While go2rtc is down the listener is removed entirely, so nothing is injected anywhere;
+ * `authHeader()` is also re-read per request, so even a request that races a restart cannot be sent
+ * with the previous launch's credential.
+ */
+function applyGo2rtcHeaderInjection(runtime: Go2rtcRuntime | null): void {
+  const { webRequest } = session.defaultSession
+  if (runtime === null) {
+    // go2rtc is not up: no port is ours, so nothing may be injected (not even an Origin).
+    webRequest.onBeforeSendHeaders(null)
+    return
+  }
+  const port = String(runtime.port)
+  const origin = `http://127.0.0.1:${port}`
+  webRequest.onBeforeSendHeaders(
+    { urls: [`ws://127.0.0.1:${port}/*`, `${origin}/*`] },
+    (details, callback) => {
+      const header = go2rtc?.authHeader() ?? null
+      if (header === null) {
+        // Between a crash and the restart the credential is gone: send the request unchanged rather
+        // than with a header from the previous launch. go2rtc answers 401 and the player retries.
+        callback({ requestHeaders: details.requestHeaders })
+        return
+      }
+      callback({
+        requestHeaders: { ...details.requestHeaders, Origin: origin, Authorization: header },
+      })
+    },
+  )
+}
+
+/** `IPC_EVENTS.streamRuntime`'s payload for a runtime (SPEC §6.1). */
+function streamRuntimePayload(runtime: Go2rtcRuntime | null): StreamRuntime {
+  return runtime === null
+    ? STREAM_RUNTIME_DOWN
+    : { state: 'up', port: runtime.port, epoch: runtime.epoch }
 }
 
 /**
@@ -274,6 +367,65 @@ function message(err: unknown): string {
   return err instanceof Error ? err.message : String(err)
 }
 
+/**
+ * The streaming half of main (P2.1/P2.2): the go2rtc sidecar and the stream registry, built next to
+ * the connection manager and from the same live services.
+ *
+ * **Nothing is spawned here.** go2rtc starts lazily, on the first `ensureStream` (`registry.ts`), so
+ * a user who only opens Settings never gets a sidecar — and the app never holds an upstream RTSPS
+ * session nobody is watching. NFR-6 ("streams live within 5 s of launch") may later want a
+ * *pre-start* as soon as a View is restored, i.e. `void go2rtc.start()` once P3's last-View restore
+ * exists (P3/P6); it is deliberately not done now, because today there is no View to open and the
+ * only thing a pre-start could do is spawn a process for nothing.
+ */
+function buildStreaming(started: Services, manager: ConnectionManager): void {
+  /**
+   * The pinned console host (CON-3, R4), read per call so a mid-session address change is picked
+   * up. `null` while nothing is configured: `protectEndpoint` throws a `ConsoleEndpointError` then,
+   * and "no host" is exactly what R4's check must see rather than an exception (CON-1).
+   */
+  const consoleHost = (): string | null => {
+    try {
+      return protectEndpoint(started.current.console).host
+    } catch {
+      return null
+    }
+  }
+
+  const sidecar = createGo2rtcManager({
+    // ARCHITECTURE §4: the generated config lives beside config.json, and holds RTSPS URLs, so the
+    // manager writes it 0600 and deletes it as soon as go2rtc has read it (SPEC §5.3).
+    configDir: app.getPath('userData'),
+    binaryPath: go2rtcBinary,
+    consoleHost,
+    log: (line) => {
+      // Already redacted by the manager: no credential and no source URL (CON-2, NFR-9).
+      console.log(`[go2rtc] ${line}`)
+    },
+  })
+  go2rtc = sidecar
+
+  streams = createStreamRegistry({
+    manager: sidecar,
+    // Per call, not bound once: the client is rebuilt when the console address changes.
+    protect: () => started.protect(),
+    // CAM-1: `GET /v1/cameras` is the authority and the manager caches its last read.
+    cameras: () => manager.cachedCameras(),
+    consoleHost,
+    log: (line) => {
+      console.log(`[streams] ${line}`)
+    },
+  })
+
+  // The port changes on every (re)start, so both the header filter and the renderer follow the
+  // runtime instead of remembering a port (P2.1, SPEC §5.3). The runtime is deliberately **not**
+  // part of `AppState` (SPEC §6.1), which is why it is pushed.
+  sidecar.onRuntimeChange((runtime) => {
+    applyGo2rtcHeaderInjection(runtime)
+    sendToRenderer(IPC_EVENTS.streamRuntime.channel, streamRuntimePayload(runtime))
+  })
+}
+
 const rendererIndexPath = join(__dirname, '../renderer/index.html')
 // The dev server URL is only honoured in unpackaged runs.
 const rendererDevUrl = app.isPackaged ? undefined : process.env.ELECTRON_RENDERER_URL
@@ -305,6 +457,17 @@ function createWindow(): void {
   win.once('ready-to-show', () => {
     win.show()
   })
+  // The go2rtc runtime is not part of `AppState` (SPEC §6.1), so a renderer that mounts after the
+  // sidecar came up would never hear about it: `onRuntimeChange` had already fired, and the next
+  // push may be hours away. One push per completed load — including a reload — is what makes the
+  // `streamRuntime` event complete. Sent even when go2rtc is down (as `down`), so the player knows
+  // the difference between "no gateway" and "no news yet".
+  win.webContents.on('did-finish-load', () => {
+    sendToRenderer(
+      IPC_EVENTS.streamRuntime.channel,
+      streamRuntimePayload(go2rtc?.runtime() ?? null),
+    )
+  })
   // If the renderer fails to load, ready-to-show may never fire: show the window anyway.
   win.webContents.on('did-fail-load', (_event, errorCode, errorDescription, validatedURL) => {
     if (errorCode === ERR_ABORTED) return
@@ -320,6 +483,17 @@ function createWindow(): void {
     console.error('Failed to load renderer:', err)
   })
 }
+
+// SPEC §5.3: never answer an auth challenge — from go2rtc or from anything else — with a prompt or
+// with credentials. Without this, a request that reaches the loopback port *without* the injected
+// header (a stale filter, a restart in flight, a renderer-built URL) turns go2rtc's 401 into a
+// Basic-auth dialog in front of the user's video wall, and a password typed into it would be sent
+// to whatever holds that port. `preventDefault()` plus an empty `callback()` cancels the request
+// instead, which is the honest outcome: the player sees it fail and re-asks `ensureStream`.
+app.on('login', (event, _webContents, _details, _authInfo, callback) => {
+  event.preventDefault()
+  callback()
+})
 
 // Security baseline for every web contents the app creates.
 app.on('web-contents-created', (_event, contents) => {
@@ -371,6 +545,8 @@ if (!app.requestSingleInstanceLock()) {
             console.log(`[connection] ${line}`)
           },
         })
+        // P2.1/P2.2, after the connection manager because the registry reads its cached inventory.
+        buildStreaming(started, connection)
       }
       // Registered even when startup failed, so a call answers `not-ready` with a kind the UI can
       // branch on instead of arriving as a rejected `invoke` with no handler at all.
@@ -379,6 +555,7 @@ if (!app.requestSingleInstanceLock()) {
         createIpcRouter({
           getServices,
           getManager: () => connection,
+          getRegistry: () => streams,
           appVersion: () => app.getVersion(),
         }),
       )
@@ -403,6 +580,17 @@ if (!app.requestSingleInstanceLock()) {
     disposeIpcHandlers = null
     const manager = connection
     connection = null
+    const sidecar = go2rtc
+    go2rtc = null
+    // The registry only holds caches; the sidecar is a process, so it is the one that has to be
+    // told. Same not-awaited, failure-logged pattern as the connection shutdown below, and for the
+    // same reason: `will-quit` would have to be deferred with `preventDefault()` to await it, and
+    // the manager SIGKILLs the child after its grace period anyway (P2.1).
+    streams?.shutdown()
+    streams = null
+    void sidecar?.stop().catch((err: unknown) => {
+      console.error('[go2rtc] Shutdown failed:', err)
+    })
     // Not awaited: `will-quit` would have to be deferred with `preventDefault()` to do that, and
     // what is left to do — closing the devices socket and the pinned Agents — only matters while
     // the process lives. A failure is logged rather than allowed to hold up the quit.

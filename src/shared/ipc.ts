@@ -29,6 +29,13 @@ import {
   type Camera,
   type CameraStateChange,
 } from './models'
+import { StreamQualitySchema } from './quality'
+import {
+  StreamHandleSchema,
+  StreamRuntimeSchema,
+  type StreamHandle,
+  type StreamRuntime,
+} from './streams'
 
 /** Global name the preload exposes the API under (`window.viewProtect`). */
 export const BRIDGE_KEY = 'viewProtect'
@@ -66,6 +73,15 @@ export const IPC_ERROR_KINDS = [
   'bad-request',
   /** The console answered that the resource is unavailable — e.g. a snapshot of an offline camera. */
   'unavailable',
+  /**
+   * The local go2rtc gateway is not up: it crashed, is restarting, or never came up (P2.1). Added
+   * in P2.2 for `ensureStream`, and distinct from the kinds around it on purpose — the cell has to
+   * show "video unavailable, retrying" rather than CAM-3's *camera* offline placeholder or a
+   * Settings problem, because nothing the user can do in Settings fixes it and the camera itself is
+   * fine. Always `retryable`: main restarts go2rtc and announces the new runtime
+   * (`IPC_EVENTS.streamRuntime`).
+   */
+  'gateway-down',
   'server',
   'timeout',
   'network',
@@ -392,6 +408,22 @@ export const SnapshotInputSchema = z.object({
 })
 export type SnapshotInput = z.infer<typeof SnapshotInputSchema>
 
+/**
+ * One camera at one quality, for `ensureStream` (QUAL-8). `quality` is a `StreamQuality` so a
+ * doorbell's package channel is addressable (CAM-4); the quality picker can still only produce a
+ * `Quality`, because that is what the persisted model holds (src/shared/quality.ts).
+ *
+ * The renderer sends the **effective** quality it resolved with `resolveGridQuality` /
+ * `resolveFillQuality`, never a constant (ARCHITECTURE §3). `cameraId` is the plain Protect id: the
+ * package channel is the `quality` here, not a `<cameraId>:package` suffix, so main does not have to
+ * re-split a composite id before building `<cameraId>_<quality>`.
+ */
+export const EnsureStreamInputSchema = z.object({
+  cameraId: z.string().min(1),
+  quality: StreamQualitySchema,
+})
+export type EnsureStreamInput = z.infer<typeof EnsureStreamInputSchema>
+
 // -------------------------------------------------------------------------------------------------
 // The channel table
 //
@@ -441,6 +473,17 @@ export const IPC = {
   listCameras: call('vp:cameras/list', NoInput, z.array(CameraSchema)),
   /** CAM-1/3: one thumbnail. */
   snapshot: call('vp:cameras/snapshot', SnapshotInputSchema, SnapshotResultSchema),
+  /**
+   * QUAL-8: make a camera/quality pair playable and answer with its loopback handle. Main GETs the
+   * camera's RTSPS streams, POSTs only the missing quality, registers `<cameraId>_<quality>` in
+   * go2rtc and returns a {@link StreamHandle} — never the RTSPS URL (rule 1).
+   *
+   * Called the first time a cell needs a pair, and again after a `streamRuntime` event, because the
+   * port in a handle from the previous go2rtc epoch is dead. Idempotent and cheap to repeat: an
+   * already-registered stream costs nothing while no consumer is attached (ARCHITECTURE §2 rule 3),
+   * which is also why there is no release call — see the Phase 2 note under IPC_EVENTS.
+   */
+  ensureStream: call('vp:streams/ensure', EnsureStreamInputSchema, StreamHandleSchema),
 } as const
 
 /**
@@ -459,7 +502,33 @@ export const IPC_EVENTS = {
   cameras: { channel: 'vp:event/cameras', payload: z.array(CameraSchema) },
   /** CAM-2/3: one camera's `state` changed on the devices feed. The G1 10-second path. */
   cameraState: { channel: 'vp:event/cameraState', payload: CameraStateChangeSchema },
+  /**
+   * P2.1/P2.2: the go2rtc gateway came up on a (new) port, or went down. Every attached player
+   * re-asks `ensureStream` on an `up` with an epoch it does not hold, and shows its placeholder on
+   * a `down` — see {@link StreamRuntime} for why this is a union and not a nullable port.
+   *
+   * Pushed rather than polled because a crash-and-restart is invisible from the renderer otherwise:
+   * a closed WebSocket looks the same as a network blip, and gate G2 asks for recovery without the
+   * user doing anything.
+   */
+  streamRuntime: { channel: 'vp:event/streamRuntime', payload: StreamRuntimeSchema },
 } as const
+
+// What Phase 2 deliberately does **not** add to this contract:
+//  - **No `releaseStream`.** go2rtc opens the upstream RTSPS session only while a consumer is
+//    attached and drops it when the last one leaves (ARCHITECTURE §2 rule 3, SPEC §5.3), so closing
+//    the player's WebSocket *is* the release. A release call would be a second, contradictory
+//    lifecycle for the renderer to get wrong, and the app never deletes Protect streams anyway
+//    (QUAL-8: they may be shared with other integrations).
+//  - **No stream list, no `/api/streams` passthrough and no go2rtc config.** Those carry source
+//    URLs, i.e. RTSPS URLs (rule 1). Codec detection (SPEC R7) reads `/api/streams` in *main* and,
+//    if the player ever needs it, will arrive as a field on the handle — not as a new channel.
+//  - **No port-only "where is go2rtc" call.** A port without a registered stream name is useless,
+//    and a renderer that can ask for the port alone can try to attach to streams it never
+//    requested. `ensureStream` plus the `streamRuntime` event cover everything the player needs.
+//  - **`AppState` is unchanged.** The go2rtc runtime is not persisted config and changes on its own
+//    schedule, so folding it into the state every mutation returns (rule 3) would make an unrelated
+//    `setConsole` reply the carrier of gateway news.
 
 /** Every channel string, for the handler-coverage test and for a `removeHandler` sweep. */
 export const IPC_CHANNELS: readonly string[] = Object.values(IPC).map((c) => c.channel)
@@ -490,12 +559,17 @@ export interface ViewProtectApi {
   disconnect(): Promise<IpcResult<AppState>>
   listCameras(): Promise<IpcResult<Camera[]>>
   snapshot(input: SnapshotInput): Promise<IpcResult<SnapshotResult>>
+  /** QUAL-8: on demand, per camera/quality pair, and again after a `streamRuntime` event. */
+  ensureStream(input: EnsureStreamInput): Promise<IpcResult<StreamHandle>>
 
   onConnection(listener: (status: ConnectionStatus) => void): Unsubscribe
   onCameras(listener: (cameras: Camera[]) => void): Unsubscribe
   onCameraState(listener: (change: CameraStateChange) => void): Unsubscribe
+  onStreamRuntime(listener: (runtime: StreamRuntime) => void): Unsubscribe
 }
 
 // Imported for the signatures above; re-exported so the renderer can take the whole contract plus
 // the domain types it carries from one module.
 export type { Camera, CameraStateChange, Settings } from './models'
+export type { StreamHandle, StreamRuntime } from './streams'
+export type { Quality, StreamQuality } from './quality'

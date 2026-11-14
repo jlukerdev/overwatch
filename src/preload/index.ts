@@ -26,6 +26,8 @@ import {
   type IpcResult,
   type PinCheck,
   type SnapshotResult,
+  type StreamHandle,
+  type StreamRuntime,
   type TestConnection,
   type Unsubscribe,
   type ViewProtectApi,
@@ -118,6 +120,7 @@ const impl: ViewProtectApi = {
   disconnect: (): Promise<IpcResult<AppState>> => call(IPC.disconnect, undefined),
   listCameras: (): Promise<IpcResult<Camera[]>> => call(IPC.listCameras, undefined),
   snapshot: (input): Promise<IpcResult<SnapshotResult>> => call(IPC.snapshot, input),
+  ensureStream: (input): Promise<IpcResult<StreamHandle>> => call(IPC.ensureStream, input),
 
   onConnection: (listener: (status: ConnectionStatus) => void): Unsubscribe =>
     subscribe(IPC_EVENTS.connection, listener),
@@ -125,6 +128,10 @@ const impl: ViewProtectApi = {
     subscribe(IPC_EVENTS.cameras, listener),
   onCameraState: (listener: (change: CameraStateChange) => void): Unsubscribe =>
     subscribe(IPC_EVENTS.cameraState, listener),
+  // Validated like every other push: a malformed runtime frame would otherwise send every player
+  // to a port that is not go2rtc's (P2.2, SPEC §5.3 "Renderer isolation").
+  onStreamRuntime: (listener: (runtime: StreamRuntime) => void): Unsubscribe =>
+    subscribe(IPC_EVENTS.streamRuntime, listener),
 }
 
 contextBridge.exposeInMainWorld(BRIDGE_KEY, Object.freeze(impl))

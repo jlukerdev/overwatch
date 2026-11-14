@@ -16,6 +16,7 @@ import {
   type CameraStateChange,
   type ConnectionStatus,
   type IpcResult,
+  type StreamRuntime,
   type ViewProtectApi,
 } from '@shared/ipc'
 import { applyCameraState, useAppStore } from '../../src/renderer/src/state/appStore'
@@ -94,6 +95,7 @@ function fakeBridge(overrides: Partial<ViewProtectApi> = {}): FakeBridge {
   const connectionListeners = new Set<Listener<ConnectionStatus>>()
   const cameraListeners = new Set<Listener<Camera[]>>()
   const stateListeners = new Set<Listener<CameraStateChange>>()
+  const runtimeListeners = new Set<Listener<StreamRuntime>>()
   let offs = 0
 
   const subscribeTo = <T>(set: Set<Listener<T>>, listener: Listener<T>): (() => void) => {
@@ -121,9 +123,13 @@ function fakeBridge(overrides: Partial<ViewProtectApi> = {}): FakeBridge {
     disconnect: unimplemented('disconnect'),
     listCameras: unimplemented('listCameras'),
     snapshot: unimplemented('snapshot'),
+    // P2.2: on the bridge, so the store's `ViewProtectApi` is complete. The player asks for streams
+    // itself (P2.3), so no store test drives these yet.
+    ensureStream: unimplemented('ensureStream'),
     onConnection: (listener) => subscribeTo(connectionListeners, listener),
     onCameras: (listener) => subscribeTo(cameraListeners, listener),
     onCameraState: (listener) => subscribeTo(stateListeners, listener),
+    onStreamRuntime: (listener) => subscribeTo(runtimeListeners, listener),
     ...overrides,
   }
 

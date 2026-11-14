@@ -9,8 +9,22 @@ Recorded with the P2.5 perf harness (`npm run perf`, `scripts/perf/` + `src/main
 | Machine | Quality | Streams | CPU total % (mean / p95) | Renderer % | GPU proc % | go2rtc % | GPU util % (mean / p95) | RAM MB (mean / max) | RAM growth MB/h | Buffer lag s (mean / p95 / max) | Dropped % | Not playing (max cells / samples) | Decoder | Run |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
 | | low | | | | | | | | | | | | | not run yet |
-| | medium | | | | | | | | | | | | | not run yet |
-| | high | | | | | | | | | | | | | not run yet |
+| macOS 27.2.1 (arm64, Apple M5 Pro, 15 cores, 64 GB) | medium | 9 | 51.5 / 53.4 | 22.1 / 24.0 | 18.6 / 19.4 | 5.4 / 5.8 | 0 / 0 | 777 / 837 | 347.9 | 0.99 / 1.04 / 1.27 | 0.78 | 1 / 1 | VideoToolboxVideoDecoder (platform; gpu enabled) | 2026-11-14, 30 min |
+| macOS 27.2.1 (arm64, Apple M5 Pro, 15 cores, 64 GB) | high | 9 (10 seen) | 51.4 / 55.0 | 20.7 / 22.2 | 18.0 / 19.6 | 5.8 / 6.2 | 3 / 13 | 928 / 998 | 396.0 | 0.99 / 1.04 / 1.09 | 0.86 | 1 / 2 | VideoToolboxVideoDecoder (platform; gpu enabled) | 2026-11-14, 30 min |
+
+**Reading the macOS runs (2026-11-14):**
+
+- **CPU (NFR-4):** about 51 % of one core at both `medium` and `high`, which is about 3.4 % of this 15-core machine. The renderer and the GPU process take about 20 % each, and go2rtc about 6 %. CPU barely changes between `medium` and `high`, because decoding is in hardware (VideoToolbox on every player, NFR-3).
+- **Latency proxy (NFR-5):** buffer lag is 0.99 s mean and 1.04 s p95 at both qualities. Dropped frames are under 1 %.
+- **RAM (G2) is not settled.** Nearly all of the growth is in the renderer, and it slows down over the run. Renderer RSS every 150 s:
+
+  | Quality | 0 min | 5 min | 10 min | 15 min | 20 min | 25 min | 30 min |
+  |---|---|---|---|---|---|---|---|
+  | medium | 213 | 262 | 301 | 336 | 356 | 368 | 375 |
+  | high | 311 | 381 | 424 | 455 | 485 | 498 | 506 |
+
+  So the linear slope (350–400 MB/h) overstates it. Over the last 7.5 minutes it is still about 70 MB/h at `medium` and about 110 MB/h at `high`. Main, GPU, utility and go2rtc stay flat (±5 MB). 30 minutes is not long enough to tell a plateau from a slow leak.
+- **Reconnects:** the camera in cell 7 (index 6) changed its `<video>` 5 times in the `high` run and once in the `medium` run, and cell 8 changed twice at `high`. That is the player retrying (NFR-7). Each time it recovered within one or two samples: "Not playing" peaked at 1 cell, in 1–2 samples.
 
 ### Windows — pending
 

@@ -24,7 +24,8 @@ Recorded with the P2.5 perf harness (`npm run perf`, `scripts/perf/` + `src/main
   | high | 311 | 381 | 424 | 455 | 485 | 498 | 506 |
 
   So the linear slope (350–400 MB/h) overstates it. Over the last 7.5 minutes it is still about 70 MB/h at `medium` and about 110 MB/h at `high`. Main, GPU, utility and go2rtc stay flat (±5 MB). 30 minutes is not long enough to tell a plateau from a slow leak.
-- **Reconnects:** the camera in cell 7 (index 6) changed its `<video>` 5 times in the `high` run and once in the `medium` run, and cell 8 changed twice at `high`. That is the player retrying (NFR-7). Each time it recovered within one or two samples: "Not playing" peaked at 1 cell, in 1–2 samples.
+- **Reconnects:** the camera in cell 7 (index 6) changed its `<video>` 5 times in the `high` run and once in the `medium` run, and cell 8 changed twice at `high`. That is the player retrying (NFR-7). Each time it recovered within one or two samples: "Not playing" peaked at 1 cell, in 1–2 samples. Both cameras are on a weaker Wi-Fi link, so the drops are expected; what matters is that the player recovered each time without help.
+- **First frame (`FIRST_FRAME_TIMEOUT_MS` = 10 s, P2.3):** the harness does not time first frames. In these runs the user saw every cell's first frame within 10 s, so 10 s is not too tight. It is kept as is.
 
 ### Windows — pending
 

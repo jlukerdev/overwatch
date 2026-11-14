@@ -32,18 +32,19 @@ Recorded with the P2.5 perf harness (`npm run perf`, `scripts/perf/` + `src/main
 | Machine | Quality | Streams | CPU total % (mean / p95) | Renderer % | GPU proc % | go2rtc % | GPU util % (mean / p95) | RAM MB (mean / max) | RAM growth MB/h | Buffer lag s (mean / p95 / max) | Dropped % | Not playing (max cells / samples) | Decoder | Run |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
 | Windows 11 (10.0.26200, x64, i7-1185G7 / Iris Xe, 8 cores, 16 GB) | medium | 9 | 56.9 / 64.7 | 23.1 / 26.4 | 25.8 / 29.2 | – | – | 1095 / 1199 | 614.8 | 1.00 / 1.05 / 1.18 | 0.98 | 0 / 0 | D3D11VideoDecoder (platform; gpu enabled) | 2026-11-14, 30 min |
+| Windows 11 (10.0.26200, x64, i7-1185G7 / Iris Xe, 8 cores, 16 GB) | high | 9 | 60.3 / 71.6 | 24.9 / 29.6 | 26.5 / 31.2 | – | – | 1616 / 1829 | 785.0 | 1.00 / 1.05 / 1.42 | 0.84 | 1 / 1 | D3D11VideoDecoder (platform; gpu enabled) | 2026-11-14, 30 min |
 
 The harness works on Windows with two gaps:
 
 - **CPU and memory are measured differently.** Electron's processes use `app.getAppMetrics()` CPU × core count and working-set memory, because Windows has no `ps`. So the RAM figures can't be compared directly with the macOS RSS figures.
 - **Two columns are not measured.** go2rtc's CPU and memory, and GPU utilisation, show "–". Sampling them on Windows is future work.
 
-**Reading the Windows `medium` run (2026-11-14):**
+**Reading the Windows runs (2026-11-14):**
 
-- **CPU (NFR-4):** about 57 % of one core, which is about 7 % of this 8-core laptop. The renderer takes about 23 % and the GPU process about 26 %. That passes NFR-4 easily, on a machine much closer to "mid-range" than the M5 Pro.
+- **CPU (NFR-4):** about 57 % of one core at `medium` and 60 % at `high`, which is about 7–8 % of this 8-core laptop. The renderer and the GPU process take about 23–26 % each. `high` has short peaks: the total reached 120 % at most, and its p95 was 72 %. That passes NFR-4 easily, on a machine much closer to "mid-range" than the M5 Pro.
 - **Decode (NFR-3):** `D3D11VideoDecoder` with the platform decoder on every player.
-- **Latency proxy (NFR-5):** 1.00 s mean and 1.05 s p95. Dropped frames were 0.98 %, and every cell played throughout.
-- **RAM (G2) is not settled here either.** The GPU process is the largest at 578 MB mean (640 MB max), and the renderer averages 253 MB (301 MB max). Both rise during the run, and the summary does not show whether they slow down the way macOS did. If it is needed, the curve is in `samples.jsonl` in that run's output folder on the laptop.
+- **Latency proxy (NFR-5):** 1.00 s mean and 1.05 s p95 at both qualities. Dropped frames were under 1 %. One cell missed one sample at `high`.
+- **RAM (G2) is not settled here either, and the GPU process is the concern.** The GPU process averages 578 MB (640 MB max) at `medium` and 1055 MB (1213 MB max) at `high`. The renderer averages 253 MB at `medium` and 294 MB at `high`. Total working set rose at about 615 MB/h at `medium` and 785 MB/h at `high`. On macOS the GPU process stayed flat at about 105–121 MB, so this growth is specific to Windows (most likely D3D11 decode surfaces or textures, not yet confirmed). The summary does not show whether it levels off. The curve is in `samples.jsonl` in each run's output folder on the laptop. On a 16 GB machine, `high` in the grid costs about 0.5 GB more than `medium`. That supports keeping the default grid quality at `low` (QUAL-1).
 
 ## Method
 

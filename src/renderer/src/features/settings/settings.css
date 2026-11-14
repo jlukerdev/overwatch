@@ -1,0 +1,133 @@
+/*
+ * Layout for the Settings screen only (P1.6). Everything a form shares with the rest of the app —
+ * `.card`, `.field`, `.button`, `.row`, `.mono`, `.badge` — comes from src/renderer/src/styles.css;
+ * what is here is the column of cards, the fingerprint block and the mismatch warning.
+ *
+ * The mismatch rules are the one place where this file carries meaning rather than spacing: CON-3
+ * asks for the warning to be the loudest thing on the screen, so it gets the error colour, a filled
+ * background and a border no other panel has.
+ */
+
+.settings {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  max-width: 64rem;
+  padding: 1rem;
+}
+
+/* A card's heading row: title, state, and the action pushed to the right edge. */
+.settings__cardHead {
+  margin-bottom: 0.25rem;
+}
+
+.settings__push {
+  margin-left: auto;
+}
+
+.settings__grow {
+  flex: 1;
+  min-width: 0;
+}
+
+.settings__actions {
+  flex-wrap: wrap;
+  margin-top: 0.5rem;
+}
+
+.settings__facts {
+  display: grid;
+  grid-template-columns: 6rem 1fr;
+  gap: 0.25rem 0.75rem;
+  margin: 0 0 0.5rem;
+}
+
+.settings__facts dd {
+  margin: 0;
+}
+
+.settings__probes {
+  margin-top: 0.75rem;
+  padding-top: 0.75rem;
+  border-top: 1px solid var(--border);
+}
+
+.settings__factValue {
+  color: var(--muted);
+}
+
+.settings__ok {
+  margin: 0;
+  color: var(--ok);
+}
+
+.settings__note {
+  margin: 0 0 0.5rem;
+  color: var(--ok);
+}
+
+/* "stored" next to a write-only field (CON-2): a fact, not a value. */
+.settings__stored {
+  color: var(--ok);
+  font-size: 0.85rem;
+}
+
+.settings__certBody {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.5rem;
+}
+
+/*
+ * A fingerprint is compared character by character against another screen, so it gets a line of its
+ * own, room to breathe, and no wrapping mid-group (`formatFingerprint` groups the octets).
+ */
+.settings__fingerprint {
+  margin: 0;
+  padding: 0.4rem 0.5rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-sunken);
+  font-size: 0.95rem;
+  line-height: 1.5;
+}
+
+.settings__prints {
+  display: grid;
+  grid-template-columns: 9rem 1fr;
+  gap: 0.35rem 0.75rem;
+  align-items: center;
+  margin: 0;
+  width: 100%;
+}
+
+.settings__prints dd {
+  margin: 0;
+}
+
+/* --- the blocked states: a mismatched pin (CON-3) and a missing keystore (CON-2) -------------- */
+
+.settings__mismatch,
+.settings__keystore {
+  padding: 0.75rem;
+  border: 2px solid var(--error);
+  border-radius: var(--radius);
+  background: color-mix(in srgb, var(--error) 12%, var(--bg-sunken));
+}
+
+.settings__mismatchTitle {
+  margin: 0;
+  color: var(--error);
+  font-size: 1.1rem;
+  font-weight: 700;
+}
+
+.settings__mismatchText {
+  margin: 0;
+  max-width: 68ch;
+}
+
+.settings__keystore .card__title {
+  color: var(--error);
+}

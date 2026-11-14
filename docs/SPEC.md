@@ -56,13 +56,16 @@ IDs are referenced in `DEV_PLAN.md` and in commit messages.
 
 ### Connection (CON)
 - **CON-1** The user enters a console host (IP or hostname) and a Protect Integration API key. If Access is enabled (DOOR-0), they also enter an Access API token.
-- **CON-2** Secrets are encrypted at rest with the OS keystore (Electron `safeStorage`: Keychain on macOS, DPAPI on Windows). They are never written in plaintext and never logged.
+- **CON-2** Secrets are encrypted at rest with the OS keystore (Electron `safeStorage`: Keychain on macOS, DPAPI on Windows). They are never written in plaintext and never logged. The renderer can **write** a credential and clear it, but never read one back: it is told only *whether* one is stored (P1.5, §6.1). When the keystore is unavailable there is no plaintext fallback — Settings says so, and the key has to be re-entered next launch.
 - **CON-3** TLS uses **trust-on-first-use pinning**. On first connect the app shows the certificate's SHA-256 fingerprint and the user accepts it. After that, a mismatched fingerprint blocks the connection with a clear warning. Disabling TLS verification globally is not allowed.
-- **CON-4** A "Test connection" button calls `GET /meta/info` (Protect) and, when Access is enabled, lists doors (Access), then shows the versions or the error.
-- **CON-5** Connection status is always visible (connected / reconnecting / error).
+  - A pin belongs to one `host:port`. **Changing the console address clears the pin for the endpoint whose address changed** (P1.5), so a fingerprint accepted for one console can never be applied to a different one.
+  - The app pins the fingerprint the user was *shown*: accepting re-reads the leaf certificate and refuses if it has changed in between.
+  - Replacing an existing pin after a mismatch needs a second, explicit confirmation. Nothing re-pins on its own.
+- **CON-4** A "Test connection" button calls `GET /meta/info` (Protect) and, when Access is enabled, lists doors (Access), then shows the versions or the error. Each half reports on its own — a working Protect key with a wrong Access token is a normal, informative result. **Nothing connects on launch:** resolving an address and reading a pin are offline, and the first request is always something the user asked for, which also keeps R9's per-key budget free for the streams.
+- **CON-5** Connection status is always visible (connected / reconnecting / error), per endpoint, outside any one screen. The phases the app distinguishes (P1.5): `disabled` (Access off, DOOR-0), `unconfigured` (no host, no credential, or an address that will not parse), `idle` (ready, nothing asked of it yet), `connecting`, `connected`, `reconnecting`, `error`.
 
 ### Cameras (CAM)
-- **CAM-1** List all adopted cameras with name (fall back to model `type` when `name` is null), model, `state`, mic availability (`featureFlags.hasMic && isMicEnabled`), and a snapshot thumbnail.
+- **CAM-1** List all adopted cameras with name (fall back to model `type` when `name` is null), model, `state`, mic availability (`featureFlags.hasMic && isMicEnabled`), and a snapshot thumbnail. Thumbnails are fetched a few at a time and refreshed on demand, never on a timer: 15 snapshots at once would spend the whole 10 req/s budget (R9) and delay the device feed, and Phase 2 replaces them with live streams anyway.
 - **CAM-2** Camera state stays current through `/v1/subscribe/devices`: `state` changes, renames, adds and removals.
 - **CAM-3** A cell whose camera is not `CONNECTED` shows an "Offline" (or "Connecting…") placeholder and resumes on its own when the camera comes back. The contract says the snapshot endpoint returns 503 for offline cameras; treat that as normal, not an error. **Unobserved:** every camera was online throughout P0.3, so the 503 path was never seen (R11). Tolerate either a 503 or some other failure for an offline camera.
 - **CAM-4** For doorbells with `hasPackageCamera`, the package camera can be put in a cell as its own source (`<cameraId>:package`). **Unverified:** the development network has no doorbell, so nothing with `hasPackageCamera` was exercised (P0.3 §2).
@@ -295,6 +298,18 @@ go2rtc:   rtspx://<console-host>:7441/<alias>
 **`console.host` and `console.accessBaseUrl`** (the rules `src/main/console/endpoints.ts` encodes, added in P1.3/P1.4). `host` is an IP or host name and may carry a non-default port (`udm.local:8443`); a scheme other than `https://` is refused rather than upgraded, since the API key may only travel over TLS (CON-2, R5), and an IPv6 literal needs brackets to tell the address from a port. `accessBaseUrl` is the **API root** — origin *and* path, the same value the P0.4 spike takes as `VP_ACCESS_BASE_URL` — so the §5.2 alternative behind the console proxy and the local mock are both just a different value here. `null` derives `https://<console.host>:12445/api/v1/developer`, **ignoring any port in `host`**, because the developer API has its own.
 
 **Two certificate fingerprints, not one:** pinning is per host:port (§5.2, P0.4 §4), and the Access developer API answers on 12445 while Protect is behind 443, so `certFingerprint` pins the console and `accessCertFingerprint` pins the Access endpoint; both are `null` until the user accepts them (CON-3). The schema is validated with zod on load. Unknown or older `schemaVersion` values go through migrations in `src/main/config/migrations.ts`.
+
+### 6.1 What crosses IPC (P1.5)
+
+The contract is `src/shared/ipc.ts`: one zod schema per request and per reply, validated in the preload *and* again in main. Three rules decide what may be in it.
+
+**No secrets, ever** (CON-2, NFR-9). The API key, the Access token and every RTSPS URL stay in main. The renderer receives two booleans saying whether each credential is stored, the camera models of §5.1 trimmed to the shared `Camera`, snapshot **bytes**, door models, and — from Phase 2 — loopback go2rtc stream names. The certificate fingerprints do cross: they are public values from a plain-text file, not secrets.
+
+**Failure is a value, not a throw.** Every call answers `{ ok: true, value }` or `{ ok: false, error }`, where the error is a `kind` the UI can branch on plus one sentence written for a person — no stack, no cause chain, no URL and no query string. An exception thrown out of a handler would otherwise reach the renderer as main's stack glued to a string, which is both useless to the UI and the easiest way to leak a path.
+
+**Every mutation answers with the whole app state.** Saving a host, storing a key or accepting a certificate changes several things at once (the pin, what is resolvable, whether Access is on), so main returns the new truth rather than having the renderer patch its own copy and drift.
+
+Main pushes three things, and only these: the connection status (CON-5), the whole camera inventory after each connect, reconnect or add/remove (CAM-2 — `GET /v1/cameras` stays the authority, because the devices feed's shapes are unverified, R11), and single camera `state` changes, which is the path gate G1 times at ten seconds.
 
 ---
 

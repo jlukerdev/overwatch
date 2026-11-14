@@ -1,0 +1,769 @@
+// P1.5: the connection manager (src/main/connection.ts) — CON-1…5, CAM-1/2/3, R9, R11.
+//
+// Everything here runs on fakes: a services object the test can edit between calls (as Settings
+// does at runtime), a devices subscription the test drives by hand, and a recorded `emit` instead of
+// a window. So no test opens a socket, waits out a backoff or needs Electron, and the four things
+// that are genuinely hard to get right are asserted directly rather than inferred:
+//
+//  - the **derived** parts of the status (CON-5): `disabled`, `unconfigured`, `pinned` and
+//    `hostPort` are recomputed from the live config on every read, so they cannot go stale;
+//  - `GET /v1/cameras` is the authority after every connect and every feed change (R11), and a
+//    failed re-read must not take the feed down with it;
+//  - CAM-3's split: an offline camera is `unavailable`, a bad key is a real error;
+//  - **the pin clearing on a host change** (CON-3). That one is a security rule: a fingerprint the
+//    user accepted for one console must never be applied to a different machine.
+import { CameraSchema, ConsoleConfigSchema, type Camera } from '@shared/models'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { createConnectionManager, type ConnectionServices } from '../../src/main/connection'
+import { ConfigSchema, type Config } from '../../src/main/config/schema'
+import { accessEndpoint, protectEndpoint } from '../../src/main/console/endpoints'
+import { createRateLimiter } from '../../src/main/net/rateLimiter'
+import { ProtectApiError } from '../../src/main/protect/errors'
+import type {
+  ProtectSubscription,
+  SubscriptionState,
+  createDevicesSubscription,
+} from '../../src/main/protect/subscriptions'
+import { PinRequiredError, hostPortKey } from '../../src/main/tls/pinning'
+import { IPC_EVENTS } from '@shared/ipc'
+
+const FP =
+  '7B:12:B7:0C:1A:2B:3C:4D:5E:6F:70:81:92:A3:B4:C5:D6:E7:F8:09:1A:2B:3C:4D:5E:6F:70:81:92:A3:B4:C5'
+
+const API_KEY = 'vp-test-api-key-NEVER-LOG-THIS'
+const ACCESS_TOKEN = 'vp-test-access-token-NEVER-LOG-THIS'
+
+function camera(id: string, extra: Partial<Camera> = {}): Camera {
+  return CameraSchema.parse({ id, ...extra })
+}
+
+/** The devices feed as a hand-driven fake: nothing is sent and nothing is scheduled. */
+type DevicesOptions = Parameters<typeof createDevicesSubscription>[0]
+
+interface FeedHandle {
+  readonly options: DevicesOptions
+  starts: number
+  stops: number
+  /** Pushes a `SubscriptionState` as the real subscription would. */
+  emitState(next: SubscriptionState): void
+}
+
+function createFeedFactory(): {
+  factory: typeof createDevicesSubscription
+  feeds: FeedHandle[]
+  last(): FeedHandle
+} {
+  const feeds: FeedHandle[] = []
+  const factory: typeof createDevicesSubscription = (options) => {
+    let state: SubscriptionState = 'idle'
+    const handle: FeedHandle = {
+      options,
+      starts: 0,
+      stops: 0,
+      emitState(next) {
+        state = next
+        options.onStateChange?.(next)
+      },
+    }
+    const subscription: ProtectSubscription = {
+      start() {
+        handle.starts += 1
+        handle.emitState('connecting')
+      },
+      stop() {
+        handle.stops += 1
+        handle.emitState('stopped')
+        return Promise.resolve()
+      },
+      get state() {
+        return state
+      },
+    }
+    feeds.push(handle)
+    return subscription
+  }
+  const last = (): FeedHandle => {
+    const feed = feeds.at(-1)
+    if (feed === undefined) throw new Error('no devices subscription has been created')
+    return feed
+  }
+  return { factory, feeds, last }
+}
+
+interface SetupOptions {
+  readonly host?: string
+  readonly accessEnabled?: boolean
+  readonly accessBaseUrl?: string | null
+  readonly certFingerprint?: string | null
+  readonly accessCertFingerprint?: string | null
+  readonly apiKey?: string | null
+  readonly accessToken?: string | null
+  /** `host:port` keys that have an accepted certificate. */
+  readonly pinned?: readonly string[]
+  readonly cameras?: readonly Camera[]
+}
+
+function setup(options: SetupOptions = {}) {
+  const consoleConfig = ConsoleConfigSchema.parse({
+    host: options.host ?? '192.0.2.10',
+    accessEnabled: options.accessEnabled ?? false,
+    accessBaseUrl: options.accessBaseUrl ?? null,
+    certFingerprint: options.certFingerprint ?? null,
+    accessCertFingerprint: options.accessCertFingerprint ?? null,
+  })
+  let current: Config = ConfigSchema.parse({ schemaVersion: 1, console: consoleConfig })
+  const pinned = new Set(options.pinned ?? [])
+  let inventory: Camera[] = [...(options.cameras ?? [camera('cam-1'), camera('cam-2')])]
+
+  const emitted: { channel: string; payload: unknown }[] = []
+  const logged: string[] = []
+
+  const protect = {
+    metaInfo: vi.fn(() => Promise.resolve({ applicationVersion: '7.3.74' })),
+    cameras: vi.fn(() => Promise.resolve([...inventory])),
+    snapshot: vi.fn(() =>
+      Promise.resolve({ bytes: new Uint8Array([1, 2, 3]), contentType: 'image/jpeg' }),
+    ),
+  }
+  const access = { doors: vi.fn(() => Promise.resolve([])) }
+  const pins = {
+    pinnedFingerprint: vi.fn((host: string, port: number) =>
+      pinned.has(hostPortKey(host, port)) ? FP : null,
+    ),
+    agentFor: vi.fn((host: string, port: number) => {
+      if (!pinned.has(hostPortKey(host, port))) throw new PinRequiredError(hostPortKey(host, port))
+      return {} as never
+    }),
+    invalidate: vi.fn(),
+    closeAll: vi.fn(() => Promise.resolve()),
+  }
+  const save = vi.fn((next: Config) => Promise.resolve(ConfigSchema.parse(next)))
+
+  const services: ConnectionServices = {
+    config: { save },
+    get current() {
+      return current
+    },
+    set current(next: Config) {
+      current = next
+    },
+    credentials: {
+      ...(options.apiKey === null ? {} : { protectApiKey: options.apiKey ?? API_KEY }),
+      ...(options.accessToken === null ? {} : { accessToken: options.accessToken ?? ACCESS_TOKEN }),
+    },
+    pins,
+    limiter: createRateLimiter(),
+    protect: () => protect,
+    access: () => access,
+  }
+
+  const feeds = createFeedFactory()
+  let clock = 1000
+  const manager = createConnectionManager({
+    services,
+    emit: (channel, payload) => {
+      emitted.push({ channel, payload })
+    },
+    createDevices: feeds.factory,
+    now: () => {
+      clock += 1
+      return clock
+    },
+    log: (line) => {
+      logged.push(line)
+    },
+  })
+
+  return {
+    manager,
+    services,
+    protect,
+    access,
+    pins,
+    save,
+    feeds,
+    emitted,
+    logged,
+    /** What the console answers to the next `GET /v1/cameras`. */
+    setInventory(next: readonly Camera[]) {
+      inventory = [...next]
+    },
+    payloads(channel: string): unknown[] {
+      return emitted.filter((event) => event.channel === channel).map((event) => event.payload)
+    },
+    get console() {
+      return current.console
+    },
+  }
+}
+
+type Harness = ReturnType<typeof setup>
+
+/** Lets the manager's fire-and-forget re-reads (R11) settle. */
+const flush = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0))
+
+let h: Harness
+
+beforeEach(() => {
+  h = setup()
+})
+
+describe('status derivation (CON-5)', () => {
+  const cases: {
+    name: string
+    options: SetupOptions
+    protectPhase: string
+    accessPhase: string
+  }[] = [
+    {
+      name: 'no console address yet (CON-1)',
+      options: { host: '' },
+      protectPhase: 'unconfigured',
+      accessPhase: 'disabled',
+    },
+    {
+      name: 'an address that cannot be parsed at all',
+      options: { host: 'http://192.0.2.10' },
+      protectPhase: 'unconfigured',
+      accessPhase: 'disabled',
+    },
+    {
+      name: 'an address but no API key (CON-1)',
+      options: { apiKey: null },
+      protectPhase: 'unconfigured',
+      accessPhase: 'disabled',
+    },
+    {
+      name: 'configured and idle: nothing connects at startup (CON-4, R9)',
+      options: {},
+      protectPhase: 'idle',
+      accessPhase: 'disabled',
+    },
+    {
+      name: 'Access on with a token',
+      options: { accessEnabled: true },
+      protectPhase: 'idle',
+      accessPhase: 'idle',
+    },
+    {
+      name: 'Access on without a token',
+      options: { accessEnabled: true, accessToken: null },
+      protectPhase: 'idle',
+      accessPhase: 'unconfigured',
+    },
+    {
+      name: 'Access off, which wins over everything else (DOOR-0)',
+      options: { accessEnabled: false, accessToken: ACCESS_TOKEN },
+      protectPhase: 'idle',
+      accessPhase: 'disabled',
+    },
+  ]
+
+  for (const { name, options, protectPhase, accessPhase } of cases) {
+    it(`reports ${protectPhase}/${accessPhase} for ${name}`, () => {
+      const status = setup(options).manager.status()
+      expect(status.protect.phase).toBe(protectPhase)
+      expect(status.access.phase).toBe(accessPhase)
+    })
+  }
+
+  it('derives hostPort for both endpoints and null while the address is unusable', () => {
+    const ready = setup({ host: 'udm.local:8443', accessEnabled: true }).manager.status()
+    expect(ready.protect.hostPort).toBe('udm.local:8443')
+    // The Access developer API has its own port, whatever `host` says (SPEC §6).
+    expect(ready.access.hostPort).toBe('udm.local:12445')
+
+    const unset = setup({ host: '' }).manager.status()
+    expect(unset.protect.hostPort).toBeNull()
+    expect(unset.access.hostPort).toBeNull()
+  })
+
+  it('reads `pinned` per host:port, not per host (CON-3, P0.4 §4)', () => {
+    const status = setup({ accessEnabled: true, pinned: ['192.0.2.10:443'] }).manager.status()
+    expect(status.protect.pinned).toBe(true)
+    expect(status.access.pinned).toBe(false)
+  })
+
+  it('reports credentialStored without ever carrying the value (CON-2, NFR-9)', () => {
+    const status = setup({ accessEnabled: true }).manager.status()
+    expect(status.protect.credentialStored).toBe(true)
+    expect(status.access.credentialStored).toBe(true)
+    expect(JSON.stringify(status)).not.toContain(API_KEY)
+    expect(JSON.stringify(status)).not.toContain(ACCESS_TOKEN)
+  })
+
+  it('follows the live config rather than a snapshot taken at construction', () => {
+    expect(h.manager.status().protect.hostPort).toBe('192.0.2.10:443')
+    h.services.current = ConfigSchema.parse({
+      schemaVersion: 1,
+      console: { host: 'udm.local' },
+    })
+    expect(h.manager.status().protect.hostPort).toBe('udm.local:443')
+  })
+})
+
+describe('connect (CAM-1/2)', () => {
+  it('reads the inventory, emits it, and opens exactly one feed', async () => {
+    await h.manager.connect()
+    expect(h.protect.cameras).toHaveBeenCalledTimes(1)
+    expect(h.payloads(IPC_EVENTS.cameras.channel)).toEqual([[camera('cam-1'), camera('cam-2')]])
+    expect(h.feeds.feeds).toHaveLength(1)
+    expect(h.feeds.last().starts).toBe(1)
+    expect(h.manager.status().protect.phase).toBe('connecting')
+    expect(h.manager.cachedCameras()).toEqual([camera('cam-1'), camera('cam-2')])
+  })
+
+  it('subscribes to the devices channel of the configured console', async () => {
+    await h.manager.connect()
+    expect(h.feeds.last().options.url).toBe(
+      'wss://192.0.2.10/proxy/protect/integration/v1/subscribe/devices',
+    )
+  })
+
+  it('is idempotent: a second connect re-reads the inventory instead of opening a socket', async () => {
+    await h.manager.connect()
+    h.feeds.last().emitState('open')
+    await h.manager.connect()
+    expect(h.protect.cameras).toHaveBeenCalledTimes(2)
+    expect(h.feeds.feeds).toHaveLength(1)
+    expect(h.manager.status().protect.phase).toBe('connected')
+  })
+
+  it('refuses with a not-configured failure while there is no address (CON-1)', async () => {
+    const unset = setup({ host: '' })
+    await expect(unset.manager.connect()).rejects.toThrow(/No console address/)
+    expect(unset.feeds.feeds).toHaveLength(0)
+  })
+
+  it('refuses with an auth failure while there is no API key (CON-4)', async () => {
+    const noKey = setup({ apiKey: null })
+    const err: unknown = await noKey.manager.connect().then(
+      () => null,
+      (reason: unknown) => reason,
+    )
+    expect(err).toBeInstanceOf(ProtectApiError)
+    expect((err as ProtectApiError).kind).toBe('auth')
+    // Nothing was sent: a doomed connect must not spend a permit (R9).
+    expect(noKey.protect.cameras).not.toHaveBeenCalled()
+  })
+
+  it('reports a failed first read as the status error and opens no feed', async () => {
+    h.protect.cameras.mockRejectedValueOnce(
+      new ProtectApiError('GET /v1/cameras failed with HTTP 401.', {
+        kind: 'auth',
+        endpoint: '192.0.2.10:443',
+      }),
+    )
+    await expect(h.manager.connect()).rejects.toThrow(/401/)
+    const status = h.manager.status()
+    expect(status.protect.phase).toBe('error')
+    expect(status.protect.error?.kind).toBe('auth')
+    expect(h.feeds.feeds).toHaveLength(0)
+  })
+})
+
+describe('the devices feed (CAM-2, R11)', () => {
+  beforeEach(async () => {
+    await h.manager.connect()
+    h.feeds.last().emitState('open')
+  })
+
+  it('pushes a camera state change and updates the cached camera', () => {
+    h.feeds.last().options.onCameraState({ cameraId: 'cam-2', state: 'DISCONNECTED' })
+    expect(h.payloads(IPC_EVENTS.cameraState.channel)).toEqual([
+      { cameraId: 'cam-2', state: 'DISCONNECTED' },
+    ])
+    expect(h.manager.cachedCameras()).toEqual([
+      camera('cam-1'),
+      camera('cam-2', { state: 'DISCONNECTED' }),
+    ])
+  })
+
+  it('re-reads GET /v1/cameras when a camera is added or removed', async () => {
+    h.setInventory([camera('cam-1')])
+    h.feeds.last().options.onInventoryChanged('remove')
+    await flush()
+    expect(h.protect.cameras).toHaveBeenCalledTimes(2)
+    expect(h.manager.cachedCameras()).toEqual([camera('cam-1')])
+  })
+
+  it('re-reads GET /v1/cameras after every connect, because the feed sends no initial state', async () => {
+    h.feeds.last().options.onConnected?.({ reconnect: true })
+    await flush()
+    expect(h.protect.cameras).toHaveBeenCalledTimes(2)
+    expect(h.payloads(IPC_EVENTS.cameras.channel)).toHaveLength(2)
+  })
+
+  it('keeps the subscription alive when a re-read fails, and reports it in the status', async () => {
+    h.protect.cameras.mockRejectedValueOnce(
+      new ProtectApiError('GET /v1/cameras failed: the console did not answer in time.', {
+        kind: 'timeout',
+        endpoint: '192.0.2.10:443',
+      }),
+    )
+    h.feeds.last().options.onConnected?.({ reconnect: true })
+    await flush()
+    const status = h.manager.status()
+    expect(status.protect.error?.kind).toBe('timeout')
+    // The socket is the only live signal there is: a failed GET must not cost it.
+    expect(h.feeds.last().stops).toBe(0)
+    expect(status.protect.phase).toBe('connected')
+    // And the previous inventory is still there, rather than emptied (CAM-1).
+    expect(h.manager.cachedCameras()).toHaveLength(2)
+  })
+
+  it('maps the feed states onto the CON-5 phases and emits each one', () => {
+    const feed = h.feeds.last()
+    feed.emitState('reconnecting')
+    expect(h.manager.status().protect.phase).toBe('reconnecting')
+    feed.emitState('connecting')
+    expect(h.manager.status().protect.phase).toBe('connecting')
+    feed.emitState('open')
+    expect(h.manager.status().protect.phase).toBe('connected')
+    expect(h.payloads(IPC_EVENTS.connection.channel).length).toBeGreaterThanOrEqual(3)
+  })
+
+  it('becomes `error` when the feed stops of its own accord after a failure', () => {
+    const feed = h.feeds.last()
+    feed.options.onError?.(
+      new ProtectApiError('The Protect subscription was refused with HTTP 401.', {
+        kind: 'auth',
+        endpoint: '192.0.2.10:443',
+      }),
+    )
+    feed.emitState('stopped')
+    const status = h.manager.status()
+    expect(status.protect.phase).toBe('error')
+    expect(status.protect.error?.kind).toBe('auth')
+  })
+
+  it('forgets a stopped subscription, so the next connect opens a new one', async () => {
+    h.feeds.last().emitState('stopped')
+    await h.manager.connect()
+    expect(h.feeds.feeds).toHaveLength(2)
+  })
+})
+
+describe('disconnect', () => {
+  it('stops the feed, goes back to idle and keeps the inventory', async () => {
+    await h.manager.connect()
+    h.feeds.last().emitState('open')
+    await h.manager.disconnect()
+    expect(h.feeds.last().stops).toBe(1)
+    const status = h.manager.status()
+    expect(status.protect.phase).toBe('idle')
+    expect(status.protect.error).toBeNull()
+    expect(h.manager.cachedCameras()).toHaveLength(2)
+  })
+
+  it('is safe with nothing connected', async () => {
+    await h.manager.disconnect()
+    expect(h.manager.status().protect.phase).toBe('idle')
+  })
+})
+
+describe('a cleared credential (CON-1/2)', () => {
+  it('closes the feed, empties the inventory and reports what the config now derives', async () => {
+    await h.manager.connect()
+    h.feeds.last().emitState('open')
+    // What the `clearSecret` handler does before telling the manager: the clients read this object
+    // synchronously, so the key is gone by the time anything is emitted.
+    delete h.services.credentials.protectApiKey
+    await h.manager.credentialCleared()
+
+    expect(h.feeds.last().stops).toBe(1)
+    const status = h.manager.status()
+    expect(status.protect.phase).toBe('unconfigured')
+    expect(status.protect.credentialStored).toBe(false)
+    expect(status.protect.version).toBeNull()
+    expect(h.manager.cachedCameras()).toEqual([])
+    expect(h.payloads(IPC_EVENTS.cameras.channel).at(-1)).toEqual([])
+  })
+
+  it('lets a later connect open a new feed once a key is entered again', async () => {
+    await h.manager.connect()
+    h.feeds.last().emitState('open')
+    await h.manager.credentialCleared()
+    await h.manager.connect()
+    expect(h.feeds.feeds).toHaveLength(2)
+  })
+})
+
+describe('serialization (one at a time)', () => {
+  it('opens exactly one feed for two overlapping connects', async () => {
+    // Both calls would otherwise read `subscription === null` before either had opened its socket,
+    // and the first WebSocket would leak for the life of the process — doubling the events and the
+    // inventory re-reads against the R9 budget.
+    await Promise.all([h.manager.connect(), h.manager.connect()])
+    expect(h.feeds.feeds).toHaveLength(1)
+    expect(h.feeds.last().starts).toBe(1)
+  })
+
+  it('leaves no feed on the old address when a console change interleaves with a connect', async () => {
+    const changing = setup({ certFingerprint: FP, pinned: ['192.0.2.10:443'] })
+    const next = { ...changing.console, host: '198.51.100.7' }
+    await Promise.all([
+      changing.manager.connect(),
+      changing.manager.applyConsoleChange(next),
+      // A connect that slipped through here used to start a feed against the *pre-save* endpoint,
+      // which the save then re-labelled `idle` while `subscription !== null` kept anything from
+      // ever replacing it.
+    ])
+    for (const feed of changing.feeds.feeds) {
+      if (feed.options.url.includes('192.0.2.10')) expect(feed.stops).toBe(1)
+    }
+    expect(changing.services.current.console.host).toBe('198.51.100.7')
+    expect(changing.manager.status().protect.phase).toBe('idle')
+  })
+
+  it('keeps each caller`s own result when one of them fails', async () => {
+    h.protect.cameras.mockRejectedValueOnce(
+      new ProtectApiError('GET /v1/cameras failed with HTTP 401.', { kind: 'auth' }),
+    )
+    const settled = await Promise.allSettled([h.manager.connect(), h.manager.connect()])
+    // A failed call must not poison the queue for the one behind it.
+    expect(settled.map((outcome) => outcome.status)).toEqual(['rejected', 'fulfilled'])
+  })
+})
+
+describe('testConnection (CON-4)', () => {
+  it('probes both halves and records Protect`s version', async () => {
+    const enabled = setup({ accessEnabled: true, cameras: [] })
+    enabled.access.doors.mockResolvedValueOnce([])
+    const result = await enabled.manager.testConnection()
+    expect(result.protect).toEqual({ state: 'ok', applicationVersion: '7.3.74' })
+    expect(result.access).toEqual({ state: 'ok', doorCount: 0 })
+    expect(result.connection.protect.version).toBe('7.3.74')
+  })
+
+  it('makes no Access call at all while Access is off (DOOR-0)', async () => {
+    const result = await h.manager.testConnection()
+    expect(result.access).toEqual({ state: 'disabled' })
+    expect(h.access.doors).not.toHaveBeenCalled()
+  })
+
+  it('reports each half independently: a good key with a bad token is a normal answer', async () => {
+    const enabled = setup({ accessEnabled: true })
+    const { AccessApiError } = await import('../../src/main/access/client')
+    enabled.access.doors.mockRejectedValueOnce(
+      new AccessApiError('GET /doors failed with HTTP 401 CODE_AUTH_FAILED.', {
+        kind: 'auth',
+        status: 401,
+        endpoint: '192.0.2.10:12445',
+      }),
+    )
+    const result = await enabled.manager.testConnection()
+    expect(result.protect.state).toBe('ok')
+    expect(result.access).toMatchObject({ state: 'error', error: { kind: 'auth' } })
+    expect(result.connection.access.phase).toBe('error')
+    // The Protect half is untouched by the Access failure.
+    expect(result.connection.protect.phase).toBe('idle')
+  })
+
+  it('does not overwrite a live feed phase with a failed probe', async () => {
+    await h.manager.connect()
+    h.feeds.last().emitState('open')
+    h.protect.metaInfo.mockRejectedValueOnce(
+      new ProtectApiError('GET /v1/meta/info failed: connect ECONNREFUSED.', {
+        kind: 'network',
+        endpoint: '192.0.2.10:443',
+      }),
+    )
+    const result = await h.manager.testConnection()
+    expect(result.protect.state).toBe('error')
+    expect(result.connection.protect.phase).toBe('connected')
+  })
+})
+
+describe('snapshot (CAM-3, R11)', () => {
+  beforeEach(async () => {
+    h = setup({
+      cameras: [camera('hd', { supportsFullHdSnapshot: true }), camera('sd')],
+    })
+    await h.manager.cameras()
+  })
+
+  it('returns the bytes as they arrived, with no data URL and no stream URL', async () => {
+    const result = await h.manager.snapshot({ cameraId: 'sd', highQuality: false })
+    expect(result).toMatchObject({ state: 'ok', mimeType: 'image/jpeg' })
+    expect(result.state === 'ok' && result.bytes).toEqual(new Uint8Array([1, 2, 3]))
+  })
+
+  it('sends highQuality only for a camera whose flag is set (SPEC §5.1)', async () => {
+    await h.manager.snapshot({ cameraId: 'hd', highQuality: true })
+    expect(h.protect.snapshot).toHaveBeenLastCalledWith('hd', { highQuality: true })
+  })
+
+  it('drops highQuality for a camera without the flag, and says so in the log', async () => {
+    await h.manager.snapshot({ cameraId: 'sd', highQuality: true })
+    expect(h.protect.snapshot).toHaveBeenLastCalledWith('sd', {})
+    expect(h.logged.join('\n')).toMatch(/dropped highQuality/)
+  })
+
+  const unavailable: { name: string; error: ProtectApiError }[] = [
+    {
+      name: 'the documented 503 for an offline camera',
+      error: new ProtectApiError('GET /v1/cameras/{id}/snapshot failed with HTTP 503.', {
+        kind: 'unavailable',
+      }),
+    },
+    {
+      name: 'anything else at all, because the 503 path is unverified (R11)',
+      error: new ProtectApiError('GET /v1/cameras/{id}/snapshot failed: socket hang up.', {
+        kind: 'network',
+      }),
+    },
+    {
+      name: 'a 404 for a camera that has been removed',
+      error: new ProtectApiError('GET /v1/cameras/{id}/snapshot failed with HTTP 404.', {
+        kind: 'not-found',
+      }),
+    },
+  ]
+
+  for (const { name, error } of unavailable) {
+    it(`reports ${name} as unavailable, not as an error`, async () => {
+      h.protect.snapshot.mockRejectedValueOnce(error)
+      const result = await h.manager.snapshot({ cameraId: 'sd', highQuality: false })
+      expect(result).toEqual({ state: 'unavailable', reason: error.message })
+    })
+  }
+
+  const reported: { name: string; error: Error }[] = [
+    {
+      name: 'an expired key',
+      error: new ProtectApiError('GET /v1/cameras/{id}/snapshot failed with HTTP 401.', {
+        kind: 'auth',
+      }),
+    },
+    {
+      name: 'a console whose certificate has not been accepted',
+      error: new PinRequiredError('192.0.2.10:443'),
+    },
+    {
+      name: 'the rate limit, which is about the app and not the camera (R9)',
+      error: new ProtectApiError('GET /v1/cameras/{id}/snapshot failed with HTTP 429.', {
+        kind: 'rate-limit',
+      }),
+    },
+  ]
+
+  for (const { name, error } of reported) {
+    it(`reports ${name} as a real error, because that is Settings' business`, async () => {
+      h.protect.snapshot.mockRejectedValueOnce(error)
+      await expect(h.manager.snapshot({ cameraId: 'sd', highQuality: false })).rejects.toBe(error)
+    })
+  }
+
+  it('asks for no highQuality for a camera the inventory does not know yet', async () => {
+    await h.manager.snapshot({ cameraId: 'unknown', highQuality: true })
+    expect(h.protect.snapshot).toHaveBeenLastCalledWith('unknown', {})
+  })
+})
+
+describe('applyConsoleChange (CON-1/3, DOOR-0)', () => {
+  function nextConsole(h: Harness, patch: Partial<ReturnType<typeof ConsoleConfigSchema.parse>>) {
+    return { ...h.console, ...patch }
+  }
+
+  beforeEach(() => {
+    h = setup({
+      accessEnabled: true,
+      certFingerprint: FP,
+      accessCertFingerprint: FP,
+      pinned: ['192.0.2.10:443', '192.0.2.10:12445'],
+    })
+  })
+
+  it('clears both pins when the console host changes (CON-3)', async () => {
+    await h.manager.applyConsoleChange(nextConsole(h, { host: '198.51.100.7' }))
+    // The security rule: a fingerprint accepted for one console must not be applied to another.
+    expect(h.console.certFingerprint).toBeNull()
+    expect(h.console.accessCertFingerprint).toBeNull()
+    expect(h.console.host).toBe('198.51.100.7')
+  })
+
+  it('keeps both pins when nothing about either endpoint moved', async () => {
+    await h.manager.applyConsoleChange(nextConsole(h, { accessEnabled: false }))
+    expect(h.console.certFingerprint).toBe(FP)
+    expect(h.console.accessCertFingerprint).toBe(FP)
+  })
+
+  it('clears only the Access pin when only the Access endpoint moved', async () => {
+    await h.manager.applyConsoleChange(
+      nextConsole(h, { accessBaseUrl: 'https://192.0.2.10/proxy/access/api/v1/developer' }),
+    )
+    expect(h.console.certFingerprint).toBe(FP)
+    expect(h.console.accessCertFingerprint).toBeNull()
+  })
+
+  it('clears the Protect pin when only its port changed, because a pin is per host:port', async () => {
+    await h.manager.applyConsoleChange(nextConsole(h, { host: '192.0.2.10:8443' }))
+    expect(h.console.certFingerprint).toBeNull()
+    // Access keeps its own: `accessBaseUrl` is null, so it still resolves to 12445 on the same host.
+    expect(h.console.accessCertFingerprint).toBe(FP)
+  })
+
+  it('clears a pin when the address becomes unusable, so the next one cannot inherit it', async () => {
+    await h.manager.applyConsoleChange(nextConsole(h, { host: '' }))
+    expect(h.console.certFingerprint).toBeNull()
+    expect(h.console.accessCertFingerprint).toBeNull()
+  })
+
+  it('closes the feed and invalidates the old pinned Agents before switching', async () => {
+    await h.manager.connect()
+    h.feeds.last().emitState('open')
+    const before = {
+      protect: protectEndpoint(h.console),
+      access: accessEndpoint(h.console),
+    }
+    await h.manager.applyConsoleChange(nextConsole(h, { host: '198.51.100.7' }))
+    expect(h.feeds.last().stops).toBe(1)
+    expect(h.pins.invalidate).toHaveBeenCalledWith(before.protect.host, before.protect.port)
+    expect(h.pins.invalidate).toHaveBeenCalledWith(before.access.host, before.access.port)
+    // Back to idle for the new console: nothing has been asked of it yet (CON-4).
+    expect(h.manager.status().protect.phase).toBe('idle')
+    expect(h.manager.status().protect.pinned).toBe(false)
+  })
+
+  it('empties the inventory when the Protect endpoint moved', async () => {
+    await h.manager.connect()
+    expect(h.manager.cachedCameras()).toHaveLength(2)
+    await h.manager.applyConsoleChange(nextConsole(h, { host: '198.51.100.7' }))
+    // The ids belong to the console that has just been left: a snapshot taken from a stale list
+    // would send one of them to the new host.
+    expect(h.manager.cachedCameras()).toEqual([])
+    expect(h.payloads(IPC_EVENTS.cameras.channel).at(-1)).toEqual([])
+  })
+
+  it('keeps the inventory when only the Access endpoint moved', async () => {
+    await h.manager.connect()
+    await h.manager.applyConsoleChange(
+      nextConsole(h, { accessBaseUrl: 'https://192.0.2.10/proxy/access/api/v1/developer' }),
+    )
+    // The inventory comes from Protect alone, so every id is still valid.
+    expect(h.manager.cachedCameras()).toHaveLength(2)
+  })
+
+  it('persists the change and makes it the live config', async () => {
+    await h.manager.applyConsoleChange(nextConsole(h, { host: 'udm.local' }))
+    expect(h.save).toHaveBeenCalledTimes(1)
+    expect(h.services.current.console.host).toBe('udm.local')
+    expect(h.manager.status().protect.hostPort).toBe('udm.local:443')
+  })
+
+  it('emits the new status, so the indicator updates from the save', async () => {
+    await h.manager.applyConsoleChange(nextConsole(h, { host: 'udm.local' }))
+    expect(h.payloads(IPC_EVENTS.connection.channel).length).toBeGreaterThan(0)
+  })
+})
+
+describe('shutdown', () => {
+  it('stops the feed and closes every pinned Agent', async () => {
+    await h.manager.connect()
+    h.feeds.last().emitState('open')
+    await h.manager.shutdown()
+    expect(h.feeds.last().stops).toBe(1)
+    expect(h.pins.closeAll).toHaveBeenCalledTimes(1)
+  })
+})

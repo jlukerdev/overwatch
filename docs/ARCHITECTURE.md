@@ -33,6 +33,7 @@
 │   ├─ config/    JSON store (zod, migrations)                   │
 │   ├─ secrets/   safeStorage wrapper                            │
 │   ├─ tls/       TOFU cert pinning (undici Agent)               │
+│   ├─ connection.ts  inventory, device feed, status (CON-5)     │
 │   └─ ipc/       typed handlers (contract in src/shared)        │
 │            ▲  contextBridge (typed, validated)                 │
 │  PRELOAD ──┘                                                   │
@@ -55,6 +56,8 @@
 2. **go2rtc binds to `127.0.0.1` on a random free port.** Main writes its config into the userData dir at launch. The API and WebRTC listeners are turned off except for the loopback HTTP/WS listener.
 3. **Stream naming:** `<cameraId>_<quality>` for `high`, `medium`, `low` (and `package`). Main registers a go2rtc stream (`PUT /api/streams`) **the first time a quality is requested** (QUAL-8), creating the Protect RTSPS URL first if it's missing. go2rtc only opens the upstream while a consumer is attached, so registered-but-unused qualities cost nothing.
 4. **Events:** main holds the Protect `/subscribe/events` and `/subscribe/devices` sockets. It sends trimmed, typed events (`motion`, `smartDetect`, `cameraState`) to the renderer over IPC.
+   - The inventory is **not** rebuilt from the device feed. `GET /v1/cameras` stays the authority and is re-read after every connect, reconnect and add/remove, because the feed sends no initial state and its message shapes are unverified (SPEC R11). The feed is used for the one thing it states plainly: a camera's `state`.
+   - Every IPC call answers `{ ok, value | error }` rather than throwing, and every mutating call answers with the whole app state. SPEC §6.1 says why.
 5. **The cell logic is pure.** The rotation/motion scheduler is a pure reducer in `src/renderer/src/features/cells/cellScheduler.ts`, so it can be unit-tested.
 
 ## 3. Streaming details

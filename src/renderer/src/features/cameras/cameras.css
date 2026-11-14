@@ -1,0 +1,145 @@
+/*
+ * The camera list screen (P1.7, CAM-1/CAM-3). Lives next to its feature so it cannot fight with
+ * Settings over one file; the tokens and the primitives (.card, .button, .row, .badge, .mono) come
+ * from src/renderer/src/styles.css.
+ *
+ * The grid is `auto-fill` rather than a fixed column count: this screen is an inventory, not a
+ * View, and the real layout engine arrives with VIEW-5 in Phase 3.
+ */
+
+.cameras {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  padding: 1rem;
+}
+
+.cameras__header {
+  gap: 0.75rem;
+}
+
+.cameras__title {
+  margin: 0;
+  font-size: 1.1rem;
+  font-weight: 600;
+}
+
+/* Pushes Refresh and Settings to the right edge, as in the app header. */
+.cameras__actions {
+  margin-left: auto;
+}
+
+.cameras__notice {
+  max-width: 60ch;
+}
+
+.cameras__gaps {
+  margin: 0 0 0.75rem;
+  padding-left: 1.2rem;
+  color: var(--warn);
+}
+
+/* Missing setup on a console that has already listed its cameras: a warning above the rows, not a
+   card instead of them. */
+.cameras__warning {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid var(--warn);
+  border-radius: var(--radius);
+  background: var(--bg-raised);
+}
+
+.cameras__warningText {
+  flex: 1;
+  color: var(--warn);
+}
+
+.cameras__problem {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid var(--error);
+  border-radius: var(--radius);
+  background: var(--bg-raised);
+}
+
+.cameras__problemText {
+  flex: 1;
+  color: var(--error);
+}
+
+.cameras__grid {
+  display: grid;
+  gap: 0.75rem;
+  margin: 0;
+  padding: 0;
+  grid-template-columns: repeat(auto-fill, minmax(15rem, 1fr));
+  list-style: none;
+}
+
+.cameraCard {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  padding: 0.6rem;
+}
+
+/* A fixed 16:9 box, so the grid does not reflow as thumbnails of different sizes land — a default
+   snapshot is 640×360 on most cameras and 2688×1512 on one (SPEC §5.1). */
+.cameraCard__thumb {
+  display: flex;
+  overflow: hidden;
+  aspect-ratio: 16 / 9;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-sunken);
+}
+
+.cameraCard__image {
+  width: 100%;
+  height: 100%;
+  /* VIEW-5's rule, early: never distort a camera's aspect ratio. */
+  object-fit: contain;
+}
+
+.cameraCard__placeholder {
+  color: var(--fg);
+  font-size: 0.9rem;
+}
+
+/* "Loading…" and CAM-3's "No snapshot": states to read past, not to notice. */
+.cameraCard__placeholder--muted {
+  color: var(--muted);
+}
+
+.cameraCard__name {
+  overflow: hidden;
+  margin: 0;
+  font-size: 0.95rem;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cameraCard__meta {
+  gap: 0.4rem;
+}
+
+.cameraCard__audio {
+  color: var(--muted);
+  font-size: 0.75rem;
+}
+
+.cameraCard__model {
+  overflow: hidden;
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.8rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

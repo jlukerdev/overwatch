@@ -11,6 +11,8 @@
 // one the user was shown.
 import { IPC, IPC_CHANNELS, ipcResultSchema, type IpcError, type IpcResult } from '@shared/ipc'
 import { CameraSchema, ConsoleConfigSchema } from '@shared/models'
+import type { StreamQuality } from '@shared/quality'
+import { streamHandle } from '@shared/streams'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { ConfigSchema, type Config } from '../../src/main/config/schema'
 import type { ConnectionManager } from '../../src/main/connection'
@@ -26,6 +28,11 @@ import { ConsoleEndpointError } from '../../src/main/console/endpoints'
 import { toIpcError } from '../../src/main/ipc/errors'
 import { ProtectApiError } from '../../src/main/protect/errors'
 import { SecretsError } from '../../src/main/secrets/secrets'
+import {
+  StreamRegistryError,
+  type StreamRegistry,
+  type StreamRegistryErrorKind,
+} from '../../src/main/streams/registry'
 import { PinMismatchError, PinRequiredError } from '../../src/main/tls/pinning'
 import type { LeafCertInfo, PinCheckResult } from '../../src/main/tls/pinning'
 import type { z } from 'zod'
@@ -36,6 +43,10 @@ const FP_B =
   '0A:1B:2C:3D:4E:5F:60:71:82:93:A4:B5:C6:D7:E8:F9:0A:1B:2C:3D:4E:5F:60:71:82:93:A4:B5:C6:D7:E8:F9'
 
 const API_KEY = 'vp-test-api-key-NEVER-LOG-THIS'
+
+/** The loopback runtime the fake registry builds its handles on (P2.1 takes a new port per launch). */
+const GO2RTC_PORT = 18555
+const GO2RTC_EPOCH = 3
 
 function leaf(fingerprint256: string, hostPort = '192.0.2.10:443'): LeafCertInfo {
   return {
@@ -140,10 +151,24 @@ function setup(options: SetupOptions = {}) {
     shutdown: vi.fn(() => Promise.resolve()),
   } satisfies ConnectionManager
 
+  /**
+   * The P2.2 stream registry. Its answer is a real `streamHandle`, so the schema check in `call`
+   * is a check of the handler and not of a hand-written object, and the fake is what the
+   * `ensureStream` tests make fail in each of the ways the registry can.
+   */
+  const registry = {
+    ensureStream: vi.fn((cameraId: string, quality: StreamQuality) =>
+      Promise.resolve(streamHandle({ cameraId, quality, port: GO2RTC_PORT, epoch: GO2RTC_EPOCH })),
+    ),
+    invalidate: vi.fn(),
+    shutdown: vi.fn(),
+  } satisfies StreamRegistry
+
   let ready = true
   const router = createIpcRouter({
     getServices: () => (ready ? services : null),
     getManager: () => (ready ? manager : null),
+    getRegistry: () => (ready ? registry : null),
     appVersion: () => '0.1.0',
     readLeaf,
   })
@@ -155,6 +180,7 @@ function setup(options: SetupOptions = {}) {
     pins,
     readLeaf,
     manager,
+    registry,
     get console() {
       return current.console
     },
@@ -265,6 +291,11 @@ describe('request validation (CLAUDE.md)', () => {
     { channel: IPC.disconnect.channel, payload: 'stop', why: 'an argument where there is none' },
     { channel: IPC.listCameras.channel, payload: null, why: 'an argument where there is none' },
     { channel: IPC.snapshot.channel, payload: { cameraId: '' }, why: 'no camera id' },
+    {
+      channel: IPC.ensureStream.channel,
+      payload: { cameraId: 'cam-1', quality: 'ultra' },
+      why: 'a quality that does not exist',
+    },
   ]
 
   for (const { channel, payload, why } of cases) {
@@ -309,6 +340,8 @@ function payloadFor(channel: string): unknown {
       return { endpoint: 'protect', fingerprint256: FP_A }
     case IPC.snapshot.channel:
       return { cameraId: 'cam-1', highQuality: false }
+    case IPC.ensureStream.channel:
+      return { cameraId: 'cam-1', quality: 'low' }
     default:
       return undefined
   }
@@ -653,6 +686,88 @@ describe('the connection channels', () => {
       kind: 'internal',
       message: 'something went wrong in main',
     })
+  })
+})
+
+describe('ensureStream (P2.2, QUAL-8)', () => {
+  it("answers with the registry's handle and nothing else", async () => {
+    const result = await h.call(IPC.ensureStream, { cameraId: 'cam-1', quality: 'medium' })
+    expect(h.registry.ensureStream).toHaveBeenCalledWith('cam-1', 'medium')
+    expect(result).toMatchObject({
+      ok: true,
+      value: {
+        cameraId: 'cam-1',
+        quality: 'medium',
+        name: 'cam-1_medium',
+        port: GO2RTC_PORT,
+        epoch: GO2RTC_EPOCH,
+        wsUrl: `ws://127.0.0.1:${String(GO2RTC_PORT)}/api/ws?src=cam-1_medium`,
+      },
+    })
+  })
+
+  it('carries no RTSPS URL and no credential, whatever the registry read (CON-2, NFR-9)', async () => {
+    const result = await h.call(IPC.ensureStream, { cameraId: 'cam-1', quality: 'high' })
+    const json = JSON.stringify(result)
+    expect(json).not.toContain('rtsp')
+    expect(json).not.toContain('Basic ')
+    expect(json).not.toContain(API_KEY)
+  })
+
+  // The registry's refusals already carry a contract kind, so the handler must pass them through
+  // rather than flatten them into `internal` — the UI branches on exactly these.
+  const refusals: { kind: StreamRegistryErrorKind; retryable: boolean; why: string }[] = [
+    { kind: 'not-found', retryable: true, why: 'the camera is not in the inventory' },
+    { kind: 'bad-request', retryable: false, why: 'the camera has no package channel (CAM-4)' },
+    { kind: 'gateway-down', retryable: true, why: 'go2rtc is not up' },
+    { kind: 'invalid-response', retryable: false, why: 'the POST answered without the quality' },
+    { kind: 'not-configured', retryable: false, why: 'no console address is set' },
+  ]
+
+  for (const { kind, retryable, why } of refusals) {
+    it(`reports ${kind} when ${why}`, async () => {
+      h.registry.ensureStream.mockRejectedValueOnce(
+        new StreamRegistryError(`refused: ${why}`, { kind, retryable }),
+      )
+      const result = await h.call(IPC.ensureStream, { cameraId: 'cam-1', quality: 'package' })
+      expect(failure(result)).toMatchObject({ kind, retryable, message: `refused: ${why}` })
+    })
+  }
+
+  it('reports a Protect failure with the kind the client decided on', async () => {
+    h.registry.ensureStream.mockRejectedValueOnce(
+      new ProtectApiError('The API key was refused by the console.', {
+        kind: 'auth',
+        endpoint: '192.0.2.10:443',
+      }),
+    )
+    const result = await h.call(IPC.ensureStream, { cameraId: 'cam-1', quality: 'low' })
+    expect(failure(result)).toMatchObject({ kind: 'auth', endpoint: '192.0.2.10:443' })
+  })
+
+  it('never throws out of the handler either (contract rule 2)', async () => {
+    h.registry.ensureStream.mockRejectedValueOnce(new Error('a bug in main'))
+    const result = await h.call(IPC.ensureStream, { cameraId: 'cam-1', quality: 'low' })
+    expect(failure(result)).toMatchObject({ kind: 'internal', message: 'a bug in main' })
+  })
+
+  it('answers not-ready while the services exist but the registry does not', async () => {
+    // The sidecar and the registry are built after `startServices()`, so this state is real: every
+    // other channel works and only this one has nothing to call yet.
+    const router = createIpcRouter({
+      getServices: () => h.services,
+      getManager: () => h.manager,
+      getRegistry: () => null,
+      appVersion: () => '0.1.0',
+    })
+    const result = await handlerFor(
+      router,
+      IPC.ensureStream.channel,
+    )({
+      cameraId: 'cam-1',
+      quality: 'low',
+    })
+    expect(failure(result)).toMatchObject({ kind: 'not-ready', retryable: true })
   })
 })
 

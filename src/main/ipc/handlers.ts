@@ -41,6 +41,7 @@ import type { Config } from '../config/schema'
 import { accessEndpoint, protectEndpoint, type ConsoleEndpoint } from '../console/endpoints'
 import type { ConnectionManager } from '../connection'
 import type { Secrets, SecretsStore } from '../secrets/secrets'
+import { StreamRegistryError, type StreamRegistry } from '../streams/registry'
 import {
   fetchLeafCert,
   fingerprintsMatch,
@@ -85,6 +86,13 @@ export interface IpcRouterDeps {
   /** `null` until `startServices()` has finished, or for ever if it failed (rule 2). */
   readonly getServices: () => IpcHandlerServices | null
   readonly getManager: () => ConnectionManager | null
+  /**
+   * The go2rtc stream registry (P2.2), in the same style as {@link IpcRouterDeps.getManager}:
+   * `null` until `src/main/index.ts` has built the sidecar manager and the registry, or for ever
+   * if `startServices()` failed. Only `ensureStream` reads it, so a missing registry answers
+   * `not-ready` on that one channel instead of making every other call unavailable.
+   */
+  readonly getRegistry: () => StreamRegistry | null
   /**
    * `app.getVersion()`, injected rather than imported: reading it from Electron here would make
    * this module — and so every handler test — need an Electron runtime.
@@ -382,6 +390,32 @@ export function createIpcRouter(deps: IpcRouterDeps): ReadonlyMap<string, IpcHan
   on(IPC.listCameras, async (_input, ready) => ipcOk(await ready.manager.cameras()))
 
   on(IPC.snapshot, async (input, ready) => ipcOk(await ready.manager.snapshot(input)))
+
+  on(IPC.ensureStream, async (input) => {
+    const registry = deps.getRegistry()
+    if (registry === null) {
+      // Rule 2 again, for the one dependency the other channels do not need: the sidecar and the
+      // registry are built after `startServices()`, so a call that arrives before that (or after a
+      // failed startup) says so rather than looking like a gateway that crashed.
+      return ipcFail('not-ready', NOT_READY, { retryable: true })
+    }
+    try {
+      // QUAL-8. The handle carries a stream name, a loopback port and an epoch — never the RTSPS
+      // URL the registry read to build it (CON-2, NFR-9, SPEC §6.1).
+      return ipcOk(await registry.ensureStream(input.cameraId, input.quality))
+    } catch (err) {
+      // The registry's own refusals already carry the contract's kind and its `retryable`: an
+      // unknown camera is `not-found`, a package channel on a camera without one is `bad-request`,
+      // and go2rtc not being up is `gateway-down`, retryable, because main keeps restarting it and
+      // announces the new runtime on `IPC_EVENTS.streamRuntime`. Everything else — a 401 from the
+      // console, a 429 on the GET, an unpinned certificate — is a Protect failure and goes through
+      // `toIpcError` below, which keeps the kind the client decided on.
+      if (err instanceof StreamRegistryError) {
+        return ipcFail(err.kind, err.message, { retryable: err.retryable })
+      }
+      throw err
+    }
+  })
 
   return router
 }

@@ -52,15 +52,15 @@ CON-1…5, CAM-1…3
 
 **Gate G1:** a fresh install connects, pins the cert and lists all cameras. Unplugging a camera shows it offline within 10 s. Unit tests pass for the clients (fixtures), config and migrations.
 
-**G1 status (2026-11-13): code complete, gate not yet claimed.** The two console-dependent checks need the UDM SE, which the build machine cannot reach, so they are the user's to run — the same split as G0's Windows H.265 check.
+**G1 outcome: PASSED on 2026-11-14.** The two console-dependent checks were run by the user against the UDM SE (the build machine cannot reach it, the same split as G0's Windows H.265 check); the unit half runs on every build.
 
 | G1 item | Result |
 |---|---|
 | Unit tests for the clients, config and migrations | **Pass.** The whole suite is green, including the P1.5 contract and handler tests |
-| A fresh install connects, pins the cert and lists all cameras | **Not yet run** — needs the console (steps below) |
-| Unplugging a camera shows it offline within 10 s | **Not yet run** — needs the console. The path is in place end to end: the devices feed updates `state`, main pushes `cameraState`, the store patches the row, and the placeholder comes from `state` alone, never from whether a snapshot loaded |
+| A fresh install connects, pins the cert and lists all cameras | **Pass**, verified on the console with a throwaway profile (steps below) |
+| Unplugging a camera shows it offline within 10 s | **Pass.** The path runs end to end: the devices feed updates `state`, main pushes `cameraState`, the store patches the row, and the placeholder comes from `state` alone, never from whether a snapshot loaded |
 
-**How to run the two console checks** (a fresh install means an empty `userData`, so use a throwaway profile rather than wiping the real one):
+**How the two console checks were run** (a fresh install means an empty `userData`, so a throwaway profile was used rather than wiping the real one):
 
 1. `npm run build`, then start the app with a clean profile: `npx electron . --user-data-dir=/tmp/vp-g1` (macOS/Linux) or `--user-data-dir=%TEMP%\vp-g1` (Windows).
 2. It opens on **Settings**, because there is no host yet (CON-1). Enter the console address and the Protect Integration API key, and save each.
@@ -69,7 +69,7 @@ CON-1…5, CAM-1…3
 5. Open **Cameras**. Every adopted camera should be listed with its name, model, state, an Audio badge where the mic is on, and a thumbnail.
 6. Unplug one camera (or disable its port) and watch its row: within 10 s the state should read offline and the thumbnail should be replaced by the placeholder. Plug it back in and the row should recover on its own, fetching a new thumbnail with no interaction.
 
-Anything that fails here is a P1 bug, not a Phase 2 task: the gate has to pass before Phase 2 starts.
+Anything that regresses here is a P1 bug, not a Phase 2 task.
 
 ---
 

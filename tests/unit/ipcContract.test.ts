@@ -11,7 +11,9 @@ import {
   ConsoleInputSchema,
   AcceptCertInputSchema,
   EndpointInputSchema,
+  EnsureStreamInputSchema,
   IPC,
+  IPC_ERROR_KINDS,
   IPC_CHANNELS,
   IPC_EVENT_CHANNELS,
   IPC_EVENTS,
@@ -24,6 +26,8 @@ import {
   SnapshotResultSchema,
   type AppState,
 } from '@shared/ipc'
+import { STREAM_QUALITIES } from '@shared/quality'
+import { streamHandle } from '@shared/streams'
 import { describe, expect, it } from 'vitest'
 import { z } from 'zod'
 import { SECRET_KEYS as MAIN_SECRET_KEYS } from '../../src/main/secrets/secrets'
@@ -201,6 +205,25 @@ describe('request schemas', () => {
     expect(EndpointInputSchema.safeParse({ endpoint: 'nvr' }).success).toBe(false)
   })
 
+  it('takes a camera and a stream quality for ensureStream (QUAL-8, CAM-4)', () => {
+    for (const quality of STREAM_QUALITIES) {
+      expect(EnsureStreamInputSchema.parse({ cameraId: 'cam-1', quality })).toEqual({
+        cameraId: 'cam-1',
+        quality,
+      })
+    }
+    // A `StreamQuality`, so a doorbell's package channel is addressable — but nothing else: an
+    // unvalidated quality would reach `<cameraId>_<quality>` and register a stream Protect has no
+    // alias for (ARCHITECTURE §2 rule 3).
+    for (const bad of [
+      { cameraId: '', quality: 'low' },
+      { cameraId: 'cam-1', quality: 'ultra' },
+      { cameraId: 'cam-1' },
+    ]) {
+      expect(EnsureStreamInputSchema.safeParse(bad).success, JSON.stringify(bad)).toBe(false)
+    }
+  })
+
   it('accepts undefined for the calls that take no payload', () => {
     for (const spec of [IPC.getState, IPC.testConnection, IPC.connect, IPC.listCameras]) {
       expect(spec.request.safeParse(undefined).success).toBe(true)
@@ -248,6 +271,52 @@ describe('event payloads', () => {
 
   it('parses the whole inventory, since GET /v1/cameras stays the authority (R11)', () => {
     expect(IPC_EVENTS.cameras.payload.parse([{ id: 'cam-1' }])).toHaveLength(1)
+  })
+
+  it('tells a new go2rtc port apart from no go2rtc at all (P2.1/P2.2, gate G2)', () => {
+    const payload = IPC_EVENTS.streamRuntime.payload
+    expect(payload.parse({ state: 'up', port: 45678, epoch: 2 })).toEqual({
+      state: 'up',
+      port: 45678,
+      epoch: 2,
+    })
+    expect(payload.parse({ state: 'down' })).toEqual({ state: 'down' })
+    // No nullable port: the renderer reads which case happened instead of inferring it.
+    expect(payload.safeParse({ state: 'up', port: null, epoch: 2 }).success).toBe(false)
+  })
+})
+
+describe('the stream contract (CON-2, NFR-9)', () => {
+  it('answers ensureStream with a loopback handle and nothing else', () => {
+    const handle = streamHandle({ cameraId: 'cam-1', quality: 'low', port: 45678, epoch: 1 })
+    expect(IPC.ensureStream.value.parse(handle)).toEqual(handle)
+    expect(handle.wsUrl.startsWith('ws://127.0.0.1:')).toBe(true)
+    // The same rule the `AppState` walker below enforces, for the one payload that is about
+    // streaming: an RTSPS URL or a go2rtc credential reaching the renderer is the CON-2 violation
+    // the whole main/renderer split exists to prevent.
+    const forbidden = /api[-_]?key|token|secret|password|credential|rtsps?|stream[-_]?url/i
+    for (const [key, value] of Object.entries(handle)) {
+      expect(forbidden.test(key), key).toBe(false)
+      expect(forbidden.test(String(value)), `${key}=${String(value)}`).toBe(false)
+    }
+  })
+
+  it('has no release call: the player’s closed socket is the release (ARCHITECTURE §2 rule 3)', () => {
+    // go2rtc opens the upstream RTSPS session only while a consumer is attached, so a release call
+    // would be a second lifecycle for the renderer to get wrong — and the app never DELETEs a
+    // Protect stream (QUAL-8: they may be shared with other integrations).
+    for (const name of Object.keys(IPC)) {
+      expect(/release|delete|destroy|stop.*stream/i.test(name), name).toBe(false)
+    }
+  })
+
+  it('has a kind for the gateway being down, distinct from a camera being offline', () => {
+    // Added in P2.2. A cell has to show "video unavailable, retrying" rather than CAM-3's offline
+    // camera or a Settings problem; `unavailable` means the *console* said no.
+    expect(IPC_ERROR_KINDS).toContain('gateway-down')
+    expect(
+      ipcFail('gateway-down', 'The video gateway is restarting.', { retryable: true }).ok,
+    ).toBe(false)
   })
 })
 

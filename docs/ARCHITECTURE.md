@@ -61,7 +61,7 @@
 5. **The cell logic is pure.** The rotation/motion scheduler is a pure reducer in `src/renderer/src/features/cells/cellScheduler.ts`, so it can be unit-tested.
 
 ## 3. Streaming details
-- Every player asks for its quality from `resolveQuality()` in `src/shared/quality.ts` (cell → view → settings; fill → view → settings). Nothing in the app hard-codes a quality. When the effective quality changes, or on entering fill mode, a second player attaches to the new stream, and the old one stays visible until the new one fires its first `playing` event.
+- Every player asks for its quality from `src/shared/quality.ts`, which has one function per chain: `resolveGridQuality()` (cell → view → settings) and `resolveFillQuality()` (view → settings). Two functions rather than one, because the chains differ in length and a single entry point would need a mode flag or a nullable cell argument — both silently mis-callable. Nothing in the app hard-codes a quality. When the effective quality changes, or on entering fill mode, a second player attaches to the new stream, and the old one stays visible until the new one fires its first `playing` event.
 - Many cells showing the same camera share one go2rtc upstream, so that costs nothing extra.
 - Multi-camera cells keep **only the visible camera's player attached**. Optional (Phase 4 tuning): pre-warm the next camera in a rotation 1–2 s before it switches, so it doesn't open on a black frame.
 - Protect RTSPS uses a self-signed cert. Main builds go2rtc sources with go2rtc's no-verify RTSPS scheme, **only for the pinned console host**. (Phase 0 confirms the exact scheme and URL rewriting, e.g. removing `?enableSrtp`.)

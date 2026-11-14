@@ -5,7 +5,7 @@
 // attach a player element, close a socket, drop an element). Nothing in this module touches the DOM,
 // the bridge or a timer, which is why all of it is tested — the project has no jsdom and no
 // testing-library (vitest.config.mts, CLAUDE.md), so a lifecycle rule that lived in a `useEffect`
-// would be a rule no test could reach, and this is a lifecycle with five ways to go wrong:
+// would be a rule no test could reach, and this is a lifecycle with six ways to go wrong:
 //
 //  1. **The seamless swap (QUAL-6, same mechanism as FILL-2).** There are two layers, `current` and
 //     `incoming`. `current` is what the viewer sees; `incoming` is attached, hidden and muted. The
@@ -28,9 +28,25 @@
 //  4. **Camera offline and gateway down are not errors (CAM-3, `gateway-down`).** They detach
 //     everything and show their own placeholder; nothing retries while they hold, because retrying
 //     a camera the console says is `DISCONNECTED` spends a rate-limit permit to be told so (SPEC R9).
-//  5. **An undecodable codec is terminal until something changes (R7).** Retrying cannot change a
-//     camera's encoder, so the machine stops asking and says so, instead of showing a black cell.
-//     A quality change or a go2rtc restart clears the verdict, because either can change the answer.
+//  5. **An undecodable codec is a verdict on one quality, not on the player (R7).** A codec is a
+//     property of one go2rtc stream (`<cameraId>_<quality>`), and Enhanced Encoding is per camera,
+//     so a `high` that will not decode says nothing about a `low` that does. Verdicts are kept per
+//     quality ({@link PlayerState.codecUnsupported}) and the next `ensureStream` goes to the
+//     {@link targetQuality}: the `quality` prop when it has no verdict, otherwise the quality that
+//     was last on screen (the stream the viewer was watching — so a dead `low` behind a refused
+//     `high` swap is reconnected, not frozen), otherwise nothing, and the cell says "Codec not
+//     supported". Retrying a refused quality cannot change a camera's encoder, so it is not retried
+//     until something can have changed the answer: a go2rtc restart clears every verdict, and a
+//     quality prop change clears the verdict **for the quality now asked for only** — toggling away
+//     and back is the viewer's one-attempt retry, and the other verdicts stay, because they are
+//     still true and are what keeps a fallback from looping back into the undecodable quality.
+//  6. **A layer gets a bounded window to paint (NFR-7, G2).** A go2rtc handshake `error` reply and a
+//     layer that has not painted within `playerTiming.FIRST_FRAME_TIMEOUT_MS` of visible time since
+//     attach are both a lost layer — the same path as a closed socket — because neither closes the socket, so without
+//     them a cell can sit on "Connecting…" forever. The viewer is told "Stream could not start"
+//     (never go2rtc's own text, which can name the source URL: CON-2, NFR-9) while it retries — but
+//     only for a layer that never played: a visible layer that errors after playing is an ordinary
+//     lost socket (rule 3), not a stream that could not start.
 import type { Camera, IpcError, IpcResult } from '@shared/ipc'
 import type { StreamQuality } from '@shared/quality'
 import { isHandleCurrent, type StreamHandle, type StreamRuntime } from '@shared/streams'
@@ -64,10 +80,10 @@ export function cameraAvailability(camera: Camera | undefined): CameraAvailabili
 
 /**
  * Why there is nothing on screen. Each case is its own short, honest sentence
- * ({@link placeholderText}) rather than one generic "unavailable": the four of them are four
- * different things for the person looking at the wall — their camera is off, our gateway is
- * restarting, their console refused us, or this camera's encoding cannot be played here — and only
- * one of them is anybody's fault (SPEC §5.3, CAM-3, R7).
+ * ({@link placeholderText}) rather than one generic "unavailable": they are different things for
+ * the person looking at the wall — their camera is off, our gateway is restarting, their console
+ * refused us, the gateway could not start the stream, or this camera's encoding cannot be played
+ * here (SPEC §5.3, CAM-3, R7).
  */
 export type PlayerPlaceholder =
   /** CAM-3: `state` is neither `CONNECTED` nor `CONNECTING`. Nothing to connect to. */
@@ -82,6 +98,12 @@ export type PlayerPlaceholder =
   | { readonly kind: 'codec-unsupported'; readonly mime: string }
   /** Anything else `ensureStream` answered. Carries main's own one-sentence message. */
   | { readonly kind: 'stream-error'; readonly error: IpcError }
+  /**
+   * A handle was attached but go2rtc refused the handshake, or no frame arrived within
+   * `FIRST_FRAME_TIMEOUT_MS` (rule 6). Deliberately carries **no text from go2rtc**: its error
+   * strings can contain the source URL, and the renderer must never show one (CON-2, NFR-9).
+   */
+  | { readonly kind: 'stream-failed' }
 
 /** One line for the cell. Short enough for a 3×3 cell, specific enough to act on. */
 export function placeholderText(placeholder: PlayerPlaceholder): string {
@@ -98,6 +120,8 @@ export function placeholderText(placeholder: PlayerPlaceholder): string {
       return 'Codec not supported'
     case 'stream-error':
       return placeholder.error.message
+    case 'stream-failed':
+      return 'Stream could not start'
   }
 }
 
@@ -145,12 +169,30 @@ export interface PlayerState {
   readonly placeholder: PlayerPlaceholder | null
   /** The last `ensureStream` failure, for the placeholder's message. */
   readonly lastError: IpcError | null
-  /** SPEC R7: the mime go2rtc offered that we cannot decode. Non-null stops all retrying. */
-  readonly codecUnsupported: string | null
+  /**
+   * SPEC R7, per quality: the mime go2rtc offered for that quality's stream that this build cannot
+   * decode. A quality with a verdict is never asked for again until the verdict is cleared (rule 5).
+   */
+  readonly codecUnsupported: CodecVerdicts
+  /**
+   * The quality of the last layer that painted a frame — "the stream the viewer was watching", which
+   * is where {@link targetQuality} falls back to when the prop's quality cannot be decoded. Survives
+   * that layer being dropped, so a fallback can still be reconnected after its frame was given up.
+   */
+  readonly lastLiveQuality: StreamQuality | null
+  /**
+   * The last layer failed to start (go2rtc `error` reply or no first frame in time, rule 6). Shown as
+   * `stream-failed` while nothing is on screen; cleared by a frame, a quality change, a new runtime,
+   * or an `ensureStream` failure (whose own message then says more).
+   */
+  readonly streamFailed: boolean
   readonly stopped: boolean
   /** Source of layer ids and request ids. One counter, so no id is ever reused for either. */
   readonly nextId: number
 }
+
+/** SPEC R7 verdicts, keyed by the quality whose stream offered the mime. */
+export type CodecVerdicts = Readonly<Partial<Record<StreamQuality, string>>>
 
 export type PlayerEvent =
   /** Mount, a prop change, or the camera's `state` changed (CAM-2/3). The only way props get in. */
@@ -169,6 +211,13 @@ export type PlayerEvent =
   | { readonly type: 'stalled'; readonly id: number }
   /** SPEC R7: `MediaSource.isTypeSupported` said no to the mime go2rtc answered with. */
   | { readonly type: 'codecUnsupported'; readonly id: number; readonly mime: string }
+  /**
+   * go2rtc answered the handshake with `{ type: 'error' }` (rule 6). No text: see `stream-failed`.
+   * Handled as a lost layer, because the socket stays open and nothing else would ever retry it.
+   */
+  | { readonly type: 'streamError'; readonly id: number }
+  /** No first frame within `FIRST_FRAME_TIMEOUT_MS` of visible time since attach (`paintWindowStep`). */
+  | { readonly type: 'firstFrameTimeout'; readonly id: number }
   /** Unmount. Everything closes; nothing is scheduled again. */
   | { readonly type: 'stop' }
 
@@ -219,7 +268,9 @@ export function initialPlayerState(input: {
     failures: 0,
     placeholder: { kind: 'connecting' },
     lastError: null,
-    codecUnsupported: null,
+    codecUnsupported: {},
+    lastLiveQuality: null,
+    streamFailed: false,
     stopped: false,
     nextId: 1,
   }
@@ -247,7 +298,11 @@ export function playerStep(state: PlayerState, event: PlayerEvent): PlayerStep {
       return onFirstFrame(state, event.id)
     case 'socketClosed':
     case 'stalled':
-      return onLayerLost(state, event.id)
+      return onLayerLost(state, event.id, false)
+    case 'streamError':
+      return onLayerLost(state, event.id, true)
+    case 'firstFrameTimeout':
+      return onFirstFrameTimeout(state, event.id)
     case 'codecUnsupported':
       return onCodecUnsupported(state, event.id, event.mime)
     case 'stop':
@@ -259,23 +314,41 @@ export function playerStep(state: PlayerState, event: PlayerEvent): PlayerStep {
 // The one question every path asks
 
 /**
+ * The quality the next `ensureStream` is for (rule 5), or `null` when nothing decodable is known.
+ *
+ *  - the `quality` prop, unless it has an R7 verdict;
+ *  - otherwise {@link PlayerState.lastLiveQuality} — the stream the viewer was watching — unless it
+ *    has a verdict too. This is what lets a refused `high` swap leave `low` on screen **and** keep it
+ *    recoverable: when that `low` later loses its socket, it is `low` that is asked for again;
+ *  - otherwise `null`: there is nothing to ask for, and the cell says "Codec not supported".
+ */
+export function targetQuality(state: PlayerState): StreamQuality | null {
+  if (state.codecUnsupported[state.quality] === undefined) return state.quality
+  const fallback = state.lastLiveQuality
+  if (fallback !== null && state.codecUnsupported[fallback] === undefined) return fallback
+  return null
+}
+
+/**
  * Should an `ensureStream` go out now?
  *
  * Every recovery path funnels through this predicate instead of deciding for itself, which is what
  * keeps "retry" from meaning six slightly different things. It is false while there is nothing to
- * play towards (stopped, camera not online, gateway down, codec undecodable — rules 4 and 5), false
- * while a call is already in flight or scheduled, and otherwise true exactly when what is attached
- * is not what the `quality` prop asks for: no layer at all, a `stale` one (rule 3), or one playing
- * the wrong quality (QUAL-6).
+ * play towards (stopped, camera not online, gateway down, no decodable {@link targetQuality} —
+ * rules 4 and 5), false while a call is already in flight or scheduled, and otherwise true exactly
+ * when what is attached is not the target: no layer at all, a `stale` one (rule 3), or one playing
+ * another quality (QUAL-6). Comparing with the *target* rather than the prop is what stops a
+ * recovered fallback from looping back into the quality that cannot be decoded.
  */
 export function needsEnsure(state: PlayerState): boolean {
   if (state.stopped || state.camera !== 'online') return false
   if (state.runtime?.state === 'down') return false
-  if (state.codecUnsupported !== null) return false
+  const target = targetQuality(state)
+  if (target === null) return false
   if (state.pending !== null) return false
-  if (state.incoming !== null) return state.incoming.handle.quality !== state.quality
+  if (state.incoming !== null) return state.incoming.handle.quality !== target
   if (state.current === null) return true
-  return state.current.stale || state.current.handle.quality !== state.quality
+  return state.current.stale || state.current.handle.quality !== target
 }
 
 // -------------------------------------------------------------------------------------------------
@@ -288,23 +361,44 @@ function onSync(
 ): PlayerStep {
   const qualityChanged = quality !== state.quality
   let next: PlayerState = { ...state, quality, camera }
-  // A new quality is a new question: a codec verdict and an error belong to the old one (R7).
-  if (qualityChanged) next = { ...next, codecUnsupported: null, lastError: null, failures: 0 }
+  if (qualityChanged) {
+    next = {
+      ...next,
+      // Rule 5: asking for a quality again is the viewer's retry of it, so its own verdict goes (a
+      // camera's Enhanced Encoding can have been switched off meanwhile, and nothing else would
+      // tell us). The others stay: they are still true, and dropping them would send a fallback
+      // straight back into a stream that cannot be decoded.
+      codecUnsupported: withoutVerdict(next.codecUnsupported, quality),
+      lastError: null,
+      streamFailed: false,
+      failures: 0,
+    }
+  }
 
   // CAM-3: the camera itself is the reason there is no video, so stop asking for it and show why.
   if (camera !== 'online') return teardown(next)
 
-  const commands: PlayerCommand[] = []
-  // A swap that is still connecting when the prop changes again (low → high → low) is abandoned
-  // here, not left to resolve into the wrong quality. `current` is untouched: it is still on screen.
-  if (qualityChanged && next.incoming !== null) {
-    commands.push({ type: 'detach', id: next.incoming.id })
-    next = { ...next, incoming: null }
+  let commands: PlayerCommand[] = []
+  if (qualityChanged) {
+    // A swap that is still connecting when the prop changes again (low → high → low) is abandoned
+    // here, not left to resolve into the wrong quality. `current` is untouched: it is on screen.
+    const target = targetQuality(next)
+    if (next.incoming !== null && next.incoming.handle.quality !== target) {
+      commands.push({ type: 'detach', id: next.incoming.id })
+      next = { ...next, incoming: null }
+    }
+    ;({ state: next, commands } = dropOffTargetEnsure(next, commands))
   }
   return maybeEnsure(next, commands)
 }
 
 function onRuntime(state: PlayerState, runtime: StreamRuntime): PlayerStep {
+  // A repeat of the runtime already held (main pushes one per renderer load) is not news: nothing it
+  // describes has changed, so it must not reset the backoff, drop the call that is out (that would
+  // send a duplicate `ensureStream` straight away) or clear an R7 verdict (that would re-try an
+  // undecodable swap on every push). Stored, and nothing else.
+  if (sameRuntime(state.runtime, runtime)) return settled({ ...state, runtime })
+
   const next: PlayerState = { ...state, runtime }
 
   // `down`: go2rtc crashed, is restarting, or was killed (gate G2). Every handle from the previous
@@ -315,12 +409,13 @@ function onRuntime(state: PlayerState, runtime: StreamRuntime): PlayerStep {
   const commands: PlayerCommand[] = []
   let recovered: PlayerState = {
     ...next,
-    // A new runtime can change every one of these answers: a restarted go2rtc may report a
-    // different codec for the same camera (SPEC R7 reads it from `/api/streams`), and the failures
-    // that led here were against a gateway that no longer exists.
+    // The failures that led here were against a gateway that may no longer exist.
     failures: 0,
     lastError: null,
-    codecUnsupported: null,
+    // A new runtime can change every R7 answer: a restarted go2rtc reconnects every producer, and a
+    // camera whose Enhanced Encoding was switched meanwhile now offers another codec.
+    codecUnsupported: {},
+    streamFailed: false,
   }
 
   // go2rtc takes a **new port on every restart**, so a handle from an older epoch is dead
@@ -359,8 +454,17 @@ function onEnsured(
     // Retried whatever the kind, including the ones main marks non-retryable (a bad API key, an
     // unpinned console): the user fixes those in Settings, and NFR-7/G2 ask for the wall to come
     // back **without a manual restart** when they do. The backoff is what makes that affordable —
-    // 10 cells settle to one call each per 15 s.
-    return maybeEnsure({ ...cleared, failures: state.failures + 1, lastError: result.error }, [])
+    // 10 cells settle to one call each per 15 s. This failure is now the most specific news, so it
+    // replaces a "Stream could not start" from an earlier attempt.
+    return maybeEnsure(
+      {
+        ...cleared,
+        failures: state.failures + 1,
+        lastError: result.error,
+        streamFailed: false,
+      },
+      [],
+    )
   }
 
   const handle = result.value
@@ -407,7 +511,11 @@ function onFirstFrame(state: PlayerState, id: number): PlayerStep {
         incoming: null,
         failures: 0,
         lastError: null,
-        codecUnsupported: null,
+        streamFailed: false,
+        // It decoded, so any verdict on its quality is wrong now (R7), and it is what the viewer is
+        // watching — the fallback if the prop's quality turns out to be undecodable.
+        codecUnsupported: withoutVerdict(state.codecUnsupported, state.incoming.handle.quality),
+        lastLiveQuality: state.incoming.handle.quality,
       },
       commands,
     )
@@ -419,21 +527,33 @@ function onFirstFrame(state: PlayerState, id: number): PlayerStep {
       ...state,
       current: { ...state.current, live: true, stale: false },
       failures: 0,
+      streamFailed: false,
     })
   }
   return settled(state)
 }
 
-/** A socket closed, or the picture froze (NFR-7, and the net under the P0.5 buffer-trim stall). */
-function onLayerLost(state: PlayerState, id: number): PlayerStep {
+/**
+ * A socket closed, the picture froze (NFR-7, and the net under the P0.5 buffer-trim stall), go2rtc
+ * refused the handshake or a layer never painted (rule 6). `failedToStart` is the last two: the
+ * recovery is the same, only what the viewer is told while nothing is on screen differs — and only
+ * for a layer that never went live. A go2rtc error on the `current` layer that has been playing is
+ * a stream that *did* start, so it is reported like any other lost socket (rule 3).
+ */
+function onLayerLost(state: PlayerState, id: number, failedToStart: boolean): PlayerStep {
   const commands: PlayerCommand[] = []
+  const report = (layer: PlayerLayer): PlayerState =>
+    failedToStart && !layer.live ? { ...state, streamFailed: true, lastError: null } : state
 
   if (state.incoming !== null && state.incoming.id === id) {
     // Nothing of it was ever seen, so there is nothing to keep: drop it and ask again. `current`, if
     // there is one, stays on screen throughout — a failed swap must not cost the viewer the stream
     // they were already watching (QUAL-6).
     commands.push({ type: 'detach', id })
-    return maybeEnsure({ ...state, incoming: null, failures: state.failures + 1 }, commands)
+    return maybeEnsure(
+      { ...report(state.incoming), incoming: null, failures: state.failures + 1 },
+      commands,
+    )
   }
 
   if (state.current !== null && state.current.id === id) {
@@ -442,7 +562,7 @@ function onLayerLost(state: PlayerState, id: number): PlayerStep {
     commands.push({ type: 'closeSocket', id })
     return maybeEnsure(
       {
-        ...state,
+        ...report(state.current),
         current: { ...state.current, stale: true },
         failures: state.failures + 1,
       },
@@ -455,27 +575,43 @@ function onLayerLost(state: PlayerState, id: number): PlayerStep {
 }
 
 /**
- * SPEC R7: go2rtc will send a mime this build cannot decode. Retrying cannot change a camera's
- * encoder, so this is terminal until the quality changes or go2rtc restarts (both clear it), and the
- * cell says "Codec not supported" instead of going black.
+ * Rule 6's paint window ran out. Only an unproven `incoming` can be overdue: `current` was promoted
+ * by a frame, and a stale `current` holding its last frame with its socket closed is waiting on
+ * purpose (rule 3) — it must never be "lost" a second time for it.
+ */
+function onFirstFrameTimeout(state: PlayerState, id: number): PlayerStep {
+  if (state.incoming?.id !== id || state.incoming.live) return settled(state)
+  return onLayerLost(state, id, true)
+}
+
+/**
+ * SPEC R7: go2rtc will send a mime this build cannot decode for this layer's quality. Retrying
+ * cannot change a camera's encoder, so that quality gets a verdict (rule 5) and the machine moves
+ * on to the {@link targetQuality}: back to the stream the viewer was watching if it can, otherwise
+ * "Codec not supported" instead of a black cell.
  */
 function onCodecUnsupported(state: PlayerState, id: number, mime: string): PlayerStep {
-  const commands: PlayerCommand[] = [{ type: 'cancelEnsure' }]
-  let next: PlayerState = { ...state, pending: null, codecUnsupported: mime }
+  const layer =
+    state.incoming?.id === id ? state.incoming : state.current?.id === id ? state.current : null
+  if (layer === null) return settled(state)
 
-  if (state.incoming !== null && state.incoming.id === id) {
-    commands.push({ type: 'detach', id })
-    next = { ...next, incoming: null }
+  let next: PlayerState = {
+    ...state,
+    codecUnsupported: { ...state.codecUnsupported, [layer.handle.quality]: mime },
+  }
+  let commands: PlayerCommand[] = [{ type: 'detach', id }]
+  if (layer === state.incoming) {
     // A swap to an undecodable stream keeps the stream that *is* playing: the viewer loses the
     // quality change, not the picture.
-    return settled(next, commands)
+    next = { ...next, incoming: null }
+  } else {
+    // Unlike a reconnect, no replacement of *this* quality is coming, so holding its still frame
+    // would be a lie.
+    next = { ...next, current: null }
   }
-  if (state.current !== null && state.current.id === id) {
-    // Unlike a reconnect, there is no replacement coming, so holding a still frame would be a lie.
-    commands.push({ type: 'detach', id })
-    return settled({ ...next, current: null }, commands)
-  }
-  return settled(state)
+  // A call already out for the quality just refused would only attach it again.
+  ;({ state: next, commands } = dropOffTargetEnsure(next, commands))
+  return maybeEnsure(next, commands)
 }
 
 function onStop(state: PlayerState): PlayerStep {
@@ -491,20 +627,19 @@ function maybeEnsure(before: PlayerState, input: PlayerCommand[]): PlayerStep {
   const { state, commands } = giveUpOnStaleFrame(before, input)
   if (!needsEnsure(state)) return settled(state, commands)
   const requestId = state.nextId
-  return settled(
-    { ...state, nextId: requestId + 1, pending: { requestId, quality: state.quality } },
-    [
-      ...commands,
-      {
-        type: 'ensure',
-        requestId,
-        cameraId: state.cameraId,
-        quality: state.quality,
-        // 0 on the first attempt, then backoff — the whole retry policy, in one number (NFR-7).
-        delayMs: reconnectDelayMs(state.failures),
-      },
-    ],
-  )
+  // Non-null: `needsEnsure` is false without a target.
+  const quality = targetQuality(state) ?? state.quality
+  return settled({ ...state, nextId: requestId + 1, pending: { requestId, quality } }, [
+    ...commands,
+    {
+      type: 'ensure',
+      requestId,
+      cameraId: state.cameraId,
+      quality,
+      // 0 on the first attempt, then backoff — the whole retry policy, in one number (NFR-7).
+      delayMs: reconnectDelayMs(state.failures),
+    },
+  ])
 }
 
 /**
@@ -537,6 +672,38 @@ function giveUpOnStaleFrame(
 }
 
 /**
+ * Drops an issued or scheduled `ensureStream` that is no longer for the {@link targetQuality} — a
+ * prop change, or a codec verdict on the quality it asked for — so the right call goes out now
+ * instead of after the wrong one has answered (and possibly after a 15 s backoff). The reply of a
+ * call already in flight is then ignored by its `requestId`.
+ */
+function dropOffTargetEnsure(
+  state: PlayerState,
+  commands: PlayerCommand[],
+): { state: PlayerState; commands: PlayerCommand[] } {
+  if (state.pending === null || state.pending.quality === targetQuality(state)) {
+    return { state, commands }
+  }
+  return { state: { ...state, pending: null }, commands: [...commands, { type: 'cancelEnsure' }] }
+}
+
+/** `verdicts` without the one for `quality` (rule 5). */
+function withoutVerdict(verdicts: CodecVerdicts, quality: StreamQuality): CodecVerdicts {
+  if (verdicts[quality] === undefined) return verdicts
+  // The omitted key is bound only so the rest can exist; the lint config has no `ignoreRestSiblings`.
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  const { [quality]: _omitted, ...rest } = verdicts
+  return rest
+}
+
+/** Same gateway: both down, or both up on the same port and epoch. `null` (not told yet) is new. */
+function sameRuntime(a: StreamRuntime | null, b: StreamRuntime): boolean {
+  if (a === null) return false
+  if (a.state === 'down' || b.state === 'down') return a.state === b.state
+  return a.port === b.port && a.epoch === b.epoch
+}
+
+/**
  * Closes everything and asks for nothing: camera offline (CAM-3), gateway down, or unmount. Keeps
  * `failures` at zero so whatever comes back starts with an immediate attempt rather than a 15 s wait.
  */
@@ -564,8 +731,10 @@ function placeholderOf(state: PlayerState): PlayerPlaceholder | null {
   if (state.camera === 'connecting') return { kind: 'camera-connecting' }
   if (state.runtime?.state === 'down') return { kind: 'gateway-down' }
   if (state.current !== null) return null
-  if (state.codecUnsupported !== null) {
-    return { kind: 'codec-unsupported', mime: state.codecUnsupported }
+  // R7: nothing decodable to ask for. Named after the quality that was asked for — a fallback that is
+  // still connecting is not this case, it is `connecting` (rule 5).
+  if (targetQuality(state) === null) {
+    return { kind: 'codec-unsupported', mime: state.codecUnsupported[state.quality] ?? '' }
   }
   if (state.lastError !== null) {
     // `gateway-down` is deliberately not a `stream-error`: the camera is fine, nothing in Settings
@@ -573,5 +742,6 @@ function placeholderOf(state: PlayerState): PlayerPlaceholder | null {
     if (state.lastError.kind === 'gateway-down') return { kind: 'gateway-down' }
     return { kind: 'stream-error', error: state.lastError }
   }
+  if (state.streamFailed) return { kind: 'stream-failed' }
   return { kind: 'connecting' }
 }

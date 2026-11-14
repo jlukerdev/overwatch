@@ -1,12 +1,15 @@
-// When the live player retries, and when it decides a stream has frozen (P2.3; NFR-7, gate G2).
+// When the live player retries, and when it decides a stream has frozen or failed to start (P2.3,
+// P2.4; NFR-7, gate G2).
 //
-// Pure on purpose, like `mseBuffer.ts` next to it: both answers are numbers that only ever reveal
+// Pure on purpose, like `mseBuffer.ts` next to it: these answers are numbers that only ever reveal
 // themselves minutes into a 30-minute run (G2), and the project has no jsdom, so a threshold that
 // lives inside a `setInterval` callback is a threshold no test can reach (CLAUDE.md,
 // vitest.config.mts).
 //
 // Note what is *not* here: nothing in this file knows about go2rtc, WebSockets or the IPC bridge.
-// The player machine asks these two questions and acts on the answers; that is the whole contract.
+// The player machine asks these three questions — when to retry, whether a playing stream has
+// frozen, whether a new one has taken too long to paint — and acts on the answers; that is the whole
+// contract.
 
 /** First delay after a failure. Short, because the common case is a go2rtc restart a cell can ride. */
 export const RECONNECT_BASE_MS = 500
@@ -105,4 +108,99 @@ export function stallStep(
   }
   if (sample.atMs - state.progressedAtMs >= graceMs) return { state: null, stalled: true }
   return { state, stalled: false }
+}
+
+/**
+ * How long an attached layer may go without painting its first frame before the player gives up on
+ * it and retries on the backoff (NFR-7, gate G2; `playerMachine` rule 6).
+ *
+ * Without this, a layer whose socket stays open but never delivers a decodable frame sits on
+ * "Connecting…" forever: the reconnect path needs a close, and the stall detector needs a first
+ * frame before it has anything to compare.
+ *
+ * **Why 10 s, from the evidence rather than P0.5's headline figure.** P0.5 measured the first frame
+ * 0.28–0.65 s after connect — but that was a *cold* go2rtc stream, where go2rtc opens the RTSPS
+ * session for this consumer and the camera's first packet is a keyframe. A consumer that joins a
+ * producer **already running** (another cell on the same `<cameraId>_<quality>`, or the other swap
+ * layer of this very cell during a reconnect) starts at the *next* keyframe, and Protect's longest
+ * GOP is ~5.0 s at `high` (SPEC §5.3; the same figure `mseBuffer.MSE_KEEP_SECONDS` is sized from).
+ * So the honest worst case for a healthy stream is one full GOP plus connect, handshake and the
+ * first MSE append: ~5–6 s. 10 s is about twice the longest GOP — comfortably past that, so a
+ * healthy layer is never killed on a busy wall (which would be a reconnect storm, and each retry
+ * would wait for a keyframe again) — while still well under the backoff's 15 s ceiling, so a layer
+ * that will never paint is retried on the same timescale as every other failure.
+ *
+ * It is sampled on the existing {@link STALL_POLL_MS} timer, so the effective window is 10–11 s
+ * **of visible time** — see {@link paintWindowStep} for why hidden time does not count. Re-measure
+ * in P2.5 against a real grid and adjust here if the GOP figures change.
+ */
+export const FIRST_FRAME_TIMEOUT_MS = 10_000
+
+/**
+ * The most one sample may add to a paint window. Two poll intervals: a normal sample adds about
+ * {@link STALL_POLL_MS}, so a longer gap means the timer itself was not running — a throttled
+ * background window, a machine waking from sleep — and that gap is not time the layer had to paint.
+ * Without the cap, the first sample after a long gap would kill every layer that was waiting.
+ */
+export const MAX_PAINT_SAMPLE_MS = 2 * STALL_POLL_MS
+
+/**
+ * How long one layer has had to paint its first frame, counting **visible time only**.
+ *
+ * The first frame is detected with `requestVideoFrameCallback` (MsePlayer.watchFirstFrame), which
+ * Chromium does not run while the window is hidden or minimised. Wall-clock time since attach would
+ * therefore kill every layer attached while hidden every {@link FIRST_FRAME_TIMEOUT_MS}, for as long
+ * as the window stays hidden — a reconnect storm behind a minimised window, each retry waiting for a
+ * keyframe again. So a window only advances between two samples that were both visible.
+ */
+export interface PaintWindow {
+  /** Visible milliseconds counted so far. */
+  readonly visibleMs: number
+  /** `performance.now()`-style timestamp of the previous sample (the attach, at first). */
+  readonly sampledAtMs: number
+  /** Whether the document was hidden at that sample. */
+  readonly hidden: boolean
+}
+
+/** A window opened at attach. `hidden` is `document.hidden` at that moment. */
+export function openPaintWindow(atMs: number, hidden: boolean): PaintWindow {
+  return { visibleMs: 0, sampledAtMs: atMs, hidden }
+}
+
+/** One sample of a layer's paint window. */
+export interface PaintSample {
+  readonly nowMs: number
+  /** `document.hidden` now. */
+  readonly hidden: boolean
+  /** Whether the layer has reported its first painted frame. */
+  readonly painted: boolean
+}
+
+/**
+ * Folds one sample into a layer's paint window and says whether it has used the window up.
+ *
+ * - A layer that has painted is never overdue — after its first frame, freezing is the stall
+ *   detector's question ({@link stallStep}), and a stale layer holding its last frame on purpose
+ *   has painted by definition.
+ * - The time since the previous sample counts only when that sample **and** this one were visible,
+ *   capped at {@link MAX_PAINT_SAMPLE_MS}; a hidden sample is never overdue (see {@link PaintWindow}).
+ * - Non-finite or backwards clocks add nothing: a bad clock must not tear down a stream.
+ */
+export function paintWindowStep(
+  paint: PaintWindow,
+  sample: PaintSample,
+  timeoutMs: number = FIRST_FRAME_TIMEOUT_MS,
+): { readonly state: PaintWindow; readonly overdue: boolean } {
+  if (sample.painted) return { state: paint, overdue: false }
+  if (!Number.isFinite(sample.nowMs) || !Number.isFinite(paint.sampledAtMs)) {
+    return { state: paint, overdue: false }
+  }
+  const elapsed = Math.max(0, sample.nowMs - paint.sampledAtMs)
+  const counted = paint.hidden || sample.hidden ? 0 : Math.min(elapsed, MAX_PAINT_SAMPLE_MS)
+  const state: PaintWindow = {
+    visibleMs: paint.visibleMs + counted,
+    sampledAtMs: sample.nowMs,
+    hidden: sample.hidden,
+  }
+  return { state, overdue: !sample.hidden && state.visibleMs >= timeoutMs }
 }

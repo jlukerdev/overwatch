@@ -115,3 +115,21 @@ export function isCodecPlayable(mime: string, isTypeSupported: (type: string) =>
   if (trimmed === '') return false
   return isTypeSupported(trimmed)
 }
+
+/**
+ * Whether go2rtc's handshake `{ type: 'error' }` reply means "the codecs you offered are not what
+ * this camera produces" (SPEC R7) rather than a transient failure to open the source.
+ *
+ * go2rtc answers the MSE handshake with a mime only when one of the codecs we offered matches the
+ * producer. An H.265 camera on a build whose `sourceopen` could only offer `avc1`/`mp4a` gets an
+ * error such as `mse: streams: codecs not matched: …` instead — and treated as a stream error, that
+ * cell would retry for ever. Matching the phrase is the one signal go2rtc gives; the check is a
+ * case-insensitive substring so the prefix and the codec list after it do not matter.
+ *
+ * **The text itself goes nowhere.** Only this boolean leaves: go2rtc's error strings can quote the
+ * source's RTSPS URL (CON-2, NFR-9), so the caller must not log, show or store `value`. A value that
+ * is not a string is never a match.
+ */
+export function isCodecMismatchError(value: unknown): boolean {
+  return typeof value === 'string' && value.toLowerCase().includes('codecs not matched')
+}

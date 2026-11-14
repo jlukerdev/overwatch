@@ -41,7 +41,14 @@ import {
   type PlayerPlaceholder,
   type PlayerState,
 } from './playerMachine'
-import { stallStep, STALL_POLL_MS, type StallState } from './playerTiming'
+import {
+  openPaintWindow,
+  paintWindowStep,
+  stallStep,
+  STALL_POLL_MS,
+  type PaintWindow,
+  type StallState,
+} from './playerTiming'
 import './player.css'
 
 export interface LivePlayerProps {
@@ -89,8 +96,9 @@ export function LivePlayer({ cameraId, quality, muted }: LivePlayerProps): JSX.E
     const offRuntime = window.viewProtect.onStreamRuntime((runtime) => {
       controller.dispatch({ type: 'runtime', runtime })
     })
-    // One timer for this player's layers. A frozen picture is the one failure a socket cannot
-    // report, because the socket stays open while nothing decodes (playerTiming.STALL_GRACE_MS).
+    // One timer for this player's layers, for the two failures a socket cannot report because it
+    // stays open while nothing decodes: a frozen picture (playerTiming.STALL_GRACE_MS) and a layer
+    // that never paints at all (playerTiming.FIRST_FRAME_TIMEOUT_MS).
     const stallTimer = setInterval(() => {
       controller.pollStalls()
     }, STALL_POLL_MS)
@@ -143,10 +151,19 @@ interface PlayerController {
   dispose: () => void
 }
 
-/** One attached layer: its element and its stall bookkeeping. */
+/**
+ * One attached layer: its element, its stall bookkeeping and its paint window.
+ *
+ * There is no "timeout already reported" flag: the machine answers the first `firstFrameTimeout`
+ * for an unproven `incoming` by detaching it, which removes it from `layers` inside that same
+ * dispatch, so it is never sampled again. Every other layer the machine keeps has painted (only a
+ * first frame promotes a layer to `current`), and a painted layer is never overdue.
+ */
 interface ControllerLayer {
   readonly element: MsePlayer
   stall: StallState | null
+  /** Visible time since attach, for `paintWindowStep` (hidden time does not count). */
+  paint: PaintWindow
 }
 
 /** Class that hides a layer that has not rendered its first frame yet. See player.css. */
@@ -240,8 +257,15 @@ function createPlayerController(input: {
       onCodecUnsupported: (mime) => {
         dispatch({ type: 'codecUnsupported', id, mime })
       },
+      onStreamError: () => {
+        dispatch({ type: 'streamError', id })
+      },
     })
-    layers.set(id, { element, stall: null })
+    layers.set(id, {
+      element,
+      stall: null,
+      paint: openPaintWindow(performance.now(), document.hidden),
+    })
     // In the DOM first: the element connects the moment `start` assigns `src`, and upstream's
     // `onconnect()` refuses while the element is disconnected.
     input.container.append(element)
@@ -279,12 +303,21 @@ function createPlayerController(input: {
     dispatch,
     pollStalls: () => {
       const atMs = performance.now()
+      const hidden = document.hidden
       for (const [id, layer] of layers) {
-        const step = stallStep(layer.stall, { ...layer.element.sample(), atMs })
+        const sample = layer.element.sample()
+        const step = stallStep(layer.stall, { ...sample, atMs })
         layer.stall = step.state
         // Forces a reattach rather than sitting on a frozen frame: the machine closes this layer's
         // socket, keeps its last frame on screen and asks for a fresh handle (NFR-7).
         if (step.stalled) dispatch({ type: 'stalled', id })
+        // A layer that has painted is never overdue, so a stale `current` holding its last frame
+        // with its socket closed is left alone here (and the machine ignores anything but an
+        // unproven `incoming` regardless). Only visible time counts: the first-frame callback does
+        // not run while the window is hidden (playerTiming.PaintWindow).
+        const paint = paintWindowStep(layer.paint, { nowMs: atMs, hidden, painted: sample.painted })
+        layer.paint = paint.state
+        if (paint.overdue) dispatch({ type: 'firstFrameTimeout', id })
       }
     },
     setMuted: (next: boolean) => {

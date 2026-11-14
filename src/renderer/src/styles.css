@@ -113,6 +113,11 @@ body,
   overflow: auto;
 }
 
+/* A screen that fills the body exactly instead of scrolling: the live grid (VIEW-5). */
+.app__body--fill {
+  overflow: hidden;
+}
+
 .app__title {
   margin: 0;
   font-size: 2rem;

@@ -13,31 +13,52 @@
 //
 // **What this element does not decide.** When to attach, when to reconnect, when a stream counts as
 // frozen and what the viewer is told are all `playerMachine.ts`'s business. This element reports
-// three things — first frame, socket closed, codec unsupported — and exposes a sample for the stall
-// detector. That split is what keeps the untestable half (no jsdom, no MSE in the test environment)
-// as small as it is.
+// four things — first frame, socket closed, codec unsupported, go2rtc refused the stream — and
+// exposes a sample for the stall detector and the first-frame timeout. That split is what keeps
+// the untestable half (no jsdom, no MSE in the test environment) as small as it is.
 //
 // **Isolation (SPEC §5.3).** The only stream input is `start(wsUrl)`, and `wsUrl` is
 // `StreamHandle.wsUrl` passed through verbatim: never built from a port and a name here, because
 // main's `onBeforeSendHeaders` filter injects go2rtc's `Authorization` only for the exact loopback
 // URL it built. This file contains no RTSPS URL, no credential and no way to name a stream.
-import { bufferTrim, catchUpRate, isCodecPlayable, MSE_KEEP_SECONDS, resyncTime } from './mseBuffer'
+import {
+  bufferTrim,
+  catchUpRate,
+  isCodecMismatchError,
+  isCodecPlayable,
+  MSE_KEEP_SECONDS,
+  resyncTime,
+} from './mseBuffer'
 import { VideoRTC } from './vendor/video-rtc.js'
 
-/** The three things the element tells the machine. Set once, right after the element is created. */
+/** The four things the element tells the machine. Set once, right after the element is created. */
 export interface MsePlayerHooks {
   /** A frame has been painted: the swap trigger (QUAL-6, FILL-2). */
   readonly onFirstFrame: () => void
   /** The WebSocket closed on its own (go2rtc gone, a decode error, the network). Never on teardown. */
   readonly onSocketClosed: () => void
-  /** SPEC R7: go2rtc offered a mime this build of Chromium cannot decode. */
+  /**
+   * SPEC R7: go2rtc offered a mime this build of Chromium cannot decode. `''` when there is no mime
+   * to name: this build had no codec to offer, or go2rtc refused the handshake because none of the
+   * offered codecs matches what the camera sends (`mseBuffer.isCodecMismatchError`).
+   */
   readonly onCodecUnsupported: (mime: string) => void
+  /**
+   * go2rtc answered the handshake with `{ type: 'error' }` (e.g. it could not open the source) for any
+   * reason other than a codec mismatch, which is `onCodecUnsupported`'s. The
+   * socket stays open, so without this the cell would wait forever. **No text is passed on:** go2rtc's
+   * error strings can contain the source's RTSPS URL, which the renderer must never show or store
+   * (CON-2, NFR-9). Reported at most once per element.
+   */
+  readonly onStreamError: () => void
 }
 
 /** What the stall detector needs from one element (see `playerTiming.stallStep`). */
 export interface MsePlayerSample {
   readonly currentTime: number
   readonly streaming: boolean
+  /** Whether the first frame has been reported (`playerTiming.paintWindowStep`). */
+  readonly painted: boolean
 }
 
 /** Custom element name. Namespaced `vp-` so it cannot collide with go2rtc's own `video-rtc`. */
@@ -54,6 +75,12 @@ export class MsePlayer extends VideoRTC {
   /** The `MediaSource` object URL, so teardown can revoke it even if `sourceopen` never fired. */
   private objectUrl: string | null = null
   private firstFrameReported = false
+  private streamErrorReported = false
+  /**
+   * Set by {@link stopStream} (and so by {@link teardown}): this element's stream is over, and only
+   * the machine may start another — on a new element. See {@link onconnect}.
+   */
+  private stopped = false
   private torn = false
 
   constructor() {
@@ -84,6 +111,8 @@ export class MsePlayer extends VideoRTC {
    * `onconnect()` refuses while the element is not connected.
    */
   start(wsUrl: string): void {
+    if (this.torn) return
+    this.stopped = false
     this.src = wsUrl
   }
 
@@ -100,6 +129,7 @@ export class MsePlayer extends VideoRTC {
    * themselves, never for a close we asked for.
    */
   stopStream(): void {
+    this.stopped = true
     this.wsState = WebSocket.CLOSED
     if (this.reconnectTID !== 0) {
       clearTimeout(this.reconnectTID)
@@ -145,8 +175,11 @@ export class MsePlayer extends VideoRTC {
   /** One sample for `playerTiming.stallStep`. "Streaming" means it ought to be advancing now. */
   sample(): MsePlayerSample {
     const video = this.video
-    if (video === null || this.torn) return { currentTime: 0, streaming: false }
+    if (video === null || this.torn) {
+      return { currentTime: 0, streaming: false, painted: this.firstFrameReported }
+    }
     return {
+      painted: this.firstFrameReported,
       currentTime: video.currentTime,
       // A frame has been seen, the socket is open and nothing paused the element: anything else is
       // idle, not stalled, and calling it stalled would make every cell reattach on mount.
@@ -165,6 +198,20 @@ export class MsePlayer extends VideoRTC {
     // prop right after attach (AUD-1 — the single-active-audio policy itself is Phase 5).
     video.muted = true
     this.watchFirstFrame(video)
+  }
+
+  /**
+   * Upstream calls this from `connectedCallback`, which runs again whenever the element is **moved**
+   * in the DOM — React reordering a keyed list of cells (`GridView`) does exactly that. Upstream's
+   * own guard only checks `ws`/`wsURL`, and after {@link stopStream} `ws` is null while `wsURL` is
+   * still set, so a stale layer holding its last frame would reopen its old socket behind the
+   * machine's back: the held frame blanks, and the new socket's close then arrives as a spurious
+   * `onSocketClosed`. A stopped or torn element therefore never connects again; the first
+   * {@link start} still does, because it clears `stopped` before assigning `src`.
+   */
+  override onconnect(): boolean {
+    if (this.stopped || this.torn) return false
+    return super.onconnect()
   }
 
   /**
@@ -227,6 +274,22 @@ export class MsePlayer extends VideoRTC {
     const handlers = this.onmessage
     if (handlers === null) return
     handlers.mse = (message: { type: string; value: string }): void => {
+      // Upstream dispatches every JSON message to every mode's handler (vendor/video-rtc.js
+      // `onopen`), so go2rtc's handshake refusal arrives here too — and upstream's own `mse` handler
+      // drops it, which is how a refused stream used to sit on "Connecting…" with its socket open.
+      if (message.type === 'error') {
+        // SPEC R7: go2rtc refuses the handshake, rather than answering with a mime, when none of the
+        // codecs offered at `sourceopen` matches the camera's (an H.265 camera on a build without
+        // HEVC). Retrying cannot change that, so it is a codec verdict, not a stream error. Only the
+        // boolean is taken from go2rtc's text; the text is not logged, shown or passed on, and the
+        // verdict carries the same fixed `''` as the empty-offer case above.
+        if (isCodecMismatchError(message.value)) {
+          if (!this.torn) this.hooks?.onCodecUnsupported('')
+          return
+        }
+        this.reportStreamError()
+        return
+      }
       if (message.type !== 'mse') return
       const mime = message.value
       this.mseCodecs = mime
@@ -323,6 +386,18 @@ export class MsePlayer extends VideoRTC {
       return
     }
     video.addEventListener('playing', report, { once: true })
+  }
+
+  /**
+   * Tells the machine once, and logs only *that* it happened: `message.value` is go2rtc's text, which
+   * can quote the source URL with its host (CON-2, NFR-9), so it is never logged, shown or passed on
+   * (the codec-mismatch check above reduces it to a boolean and nothing more).
+   */
+  private reportStreamError(): void {
+    if (this.torn || this.streamErrorReported) return
+    this.streamErrorReported = true
+    console.warn('[MsePlayer] go2rtc refused the stream; retrying (details withheld)')
+    this.hooks?.onStreamError()
   }
 
   private revokeObjectUrl(): void {

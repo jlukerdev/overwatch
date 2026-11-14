@@ -12,7 +12,9 @@
 //    no placeholder is ever shown over a layer that is on screen.
 //  - gate G2: a new go2rtc epoch re-asks and reattaches (the old port is dead), and a `down` runtime
 //    detaches everything and stops retrying until it is back.
-//  - every placeholder state and its trigger, including R7's codec-unsupported.
+//  - every placeholder state and its trigger, including R7's codec-unsupported and stream-failed.
+//  - R7 verdicts scoped to the quality that failed, with the fallback to the stream on screen.
+//  - a go2rtc handshake error and a layer that never paints both retry on the backoff.
 //  - the reconnect backoff on a closed socket and the stall detector forcing a reattach.
 //  - teardown: everything closes on unmount and a late reply changes nothing.
 //  - that the only stream information the component ever handles is a `StreamHandle`: the attach
@@ -32,6 +34,7 @@ import {
   visibleLayerId,
   type PlayerCommand,
   type PlayerEvent,
+  targetQuality,
   type PlayerState,
   type PlayerStep,
 } from '../../src/renderer/src/player/playerMachine'
@@ -444,6 +447,48 @@ describe('the go2rtc runtime (gate G2)', () => {
     expect(same.state.placeholder).toBeNull()
   })
 
+  it('a repeat of the runtime it holds keeps the backoff and the call that is out', () => {
+    const runtime = { state: 'up', port: PORT, epoch: 1 } as const
+    // Mounted, then told the runtime: the first push is news, so it is that push that asks.
+    const synced = next(start('low'), { type: 'sync', quality: 'low', camera: 'online' })
+    const mounted = next(synced, { type: 'runtime', runtime })
+    const refused = next(mounted, {
+      type: 'ensured',
+      requestId: oneEnsure(mounted).requestId,
+      result: failed('server', 'The console could not start that stream.'),
+    })
+    const scheduled = oneEnsure(refused)
+    expect(scheduled.delayMs).toBe(reconnectDelayMs(1))
+
+    const repeat = next(refused, { type: 'runtime', runtime })
+    // No duplicate `ensureStream`, no reset to an immediate retry, the message stays.
+    expect(types(repeat)).toEqual([])
+    expect(repeat.state.failures).toBe(1)
+    expect(repeat.state.pending?.requestId).toBe(scheduled.requestId)
+    expect(repeat.state.lastError).toEqual(refused.state.lastError)
+    expect(repeat.state.placeholder).toEqual(refused.state.placeholder)
+
+    // …and the reply to that call is still the one that counts.
+    const recovered = next(repeat, {
+      type: 'ensured',
+      requestId: scheduled.requestId,
+      result: { ok: true, value: handle({ quality: 'low' }) },
+    })
+    expect(only(recovered, 'attach')).toHaveLength(1)
+  })
+
+  it('a repeat of the runtime it holds keeps "Stream could not start"', () => {
+    const runtime = { state: 'up', port: PORT, epoch: 1 } as const
+    const synced = next(start('low'), { type: 'sync', quality: 'low', camera: 'online' })
+    const attaching = answer(next(synced, { type: 'runtime', runtime }))
+    const refused = next(attaching, { type: 'streamError', id: attachedId(attaching) })
+    const repeat = next(refused, { type: 'runtime', runtime })
+    expect(types(repeat)).toEqual([])
+    expect(repeat.state.streamFailed).toBe(true)
+    expect(repeat.state.failures).toBe(refused.state.failures)
+    expect(repeat.state.placeholder).toEqual({ kind: 'stream-failed' })
+  })
+
   it('refuses a handle from an epoch that has already been superseded', () => {
     const playing = live('low', 1, PORT)
     const restarted = next(playing, {
@@ -559,16 +604,17 @@ describe('the placeholder states', () => {
 
     // Nothing is coming, so holding a still frame would be a lie: the element goes.
     expect(detachedIds(refused)).toEqual([id])
-    expect(types(refused)).toContain('cancelEnsure')
+    expect(refused.state.pending).toBeNull()
     expect(only(refused, 'ensure')).toHaveLength(0)
     expect(refused.state.placeholder).toEqual({ kind: 'codec-unsupported', mime })
     // Retrying cannot change a camera's encoder…
     const nudged = next(refused, { type: 'sync', quality: 'high', camera: 'online' })
     expect(only(nudged, 'ensure')).toHaveLength(0)
-    // …but another quality might be H.264 (R1: Enhanced Encoding is per camera).
+    // …but another quality might be H.264 (R1: Enhanced Encoding is per camera). The verdict stays
+    // with the quality it is about.
     const other = next(nudged, { type: 'sync', quality: 'low', camera: 'online' })
     expect(oneEnsure(other).quality).toBe('low')
-    expect(other.state.codecUnsupported).toBeNull()
+    expect(other.state.codecUnsupported).toEqual({ high: mime })
   })
 
   it('keeps the playing stream when it is the swap that cannot be decoded (R7)', () => {
@@ -600,9 +646,370 @@ describe('the placeholder states', () => {
       placeholderText({ kind: 'gateway-down' }),
       placeholderText({ kind: 'codec-unsupported', mime: 'video/mp4' }),
       placeholderText({ kind: 'stream-error', error: error('auth', 'The key was refused.') }),
+      placeholderText({ kind: 'stream-failed' }),
     ]
     expect(new Set(texts).size).toBe(texts.length)
     for (const text of texts) expect(text.length).toBeGreaterThan(0)
+  })
+})
+
+const HEVC = 'video/mp4; codecs="hvc1.1.6.L153.B0, mp4a.40.2"'
+
+/** Answers the step's one ensure with a handle for the quality it asked for. */
+function answer(step: PlayerStep, input: { epoch?: number; port?: number } = {}): PlayerStep {
+  const ensure = oneEnsure(step)
+  return next(step, {
+    type: 'ensured',
+    requestId: ensure.requestId,
+    result: { ok: true, value: handle({ quality: ensure.quality, ...input }) },
+  })
+}
+
+/** `low` live, then the prop moves to `high` and the `high` layer reports R7 codec-unsupported. */
+function lowLiveHighRefused(): { step: PlayerStep; lowId: number } {
+  const playing = live('low')
+  const lowId = visibleLayerId(playing.state) ?? 0
+  const swapping = next(playing, { type: 'sync', quality: 'high', camera: 'online' })
+  const attaching = answer(swapping)
+  const highId = attachedId(attaching)
+  const refused = next(attaching, { type: 'codecUnsupported', id: highId, mime: HEVC })
+  expect(detachedIds(refused)).toEqual([highId])
+  return { step: refused, lowId }
+}
+
+describe('R7 verdicts are per quality (carried from P2.3)', () => {
+  it('reconnects the low stream on screen when it drops after a refused high swap', () => {
+    const { step: refused, lowId } = lowLiveHighRefused()
+    // The swap is lost, the picture is not, and nothing tries `high` again on its own.
+    expect(visibleLayerId(refused.state)).toBe(lowId)
+    expect(refused.state.placeholder).toBeNull()
+    expect(refused.state.codecUnsupported).toEqual({ high: HEVC })
+    expect(only(refused, 'ensure')).toHaveLength(0)
+    expect(targetQuality(refused.state)).toBe('low')
+    expect(needsEnsure(refused.state)).toBe(false)
+
+    // The defect: `low`'s socket closes later. It used to be frozen for good with no message.
+    const dropped = next(refused, { type: 'socketClosed', id: lowId })
+    expect(closedIds(dropped)).toEqual([lowId])
+    expect(visibleLayerId(dropped.state)).toBe(lowId)
+    expect(dropped.state.placeholder).toBeNull()
+    // The stream the viewer was watching is what is asked for — not the undecodable prop quality.
+    expect(oneEnsure(dropped).quality).toBe('low')
+
+    const attaching = answer(dropped)
+    const newLowId = attachedId(attaching)
+    const recovered = next(attaching, { type: 'firstFrame', id: newLowId })
+    expect(detachedIds(recovered)).toEqual([lowId])
+    expect(visibleLayerId(recovered.state)).toBe(newLowId)
+    expect(recovered.state.current?.handle.quality).toBe('low')
+    expect(recovered.state.placeholder).toBeNull()
+  })
+
+  it('does not loop back into the undecodable quality once the fallback is live again', () => {
+    const { step: refused, lowId } = lowLiveHighRefused()
+    let step = next(refused, { type: 'socketClosed', id: lowId })
+    step = answer(step)
+    step = next(step, { type: 'firstFrame', id: attachedId(step) })
+    // Live on `low` with the prop still `high`: nothing more to ask for, by every path.
+    expect(only(step, 'ensure')).toHaveLength(0)
+    expect(needsEnsure(step.state)).toBe(false)
+    expect(step.state.codecUnsupported).toEqual({ high: HEVC })
+    const resync = next(step, { type: 'sync', quality: 'high', camera: 'online' })
+    expect(types(resync)).toEqual([])
+  })
+
+  it('does not re-try the undecodable quality on a repeat of the runtime it already holds', () => {
+    // Told about the runtime first, so the verdict is recorded against a known gateway.
+    const playing = live('low')
+    const lowId = visibleLayerId(playing.state) ?? 0
+    const told = next(playing, { type: 'runtime', runtime: { state: 'up', port: PORT, epoch: 1 } })
+    expect(types(told)).toEqual([])
+    const attaching = answer(next(told, { type: 'sync', quality: 'high', camera: 'online' }))
+    const refused = next(attaching, {
+      type: 'codecUnsupported',
+      id: attachedId(attaching),
+      mime: HEVC,
+    })
+    // main pushes the runtime once per renderer load: a repeat is not news.
+    const repeat = next(refused, {
+      type: 'runtime',
+      runtime: { state: 'up', port: PORT, epoch: 1 },
+    })
+    expect(types(repeat)).toEqual([])
+    expect(repeat.state.codecUnsupported).toEqual({ high: HEVC })
+    expect(visibleLayerId(repeat.state)).toBe(lowId)
+  })
+
+  it('keeps recovering the fallback after its still frame has been given up', () => {
+    const { step: refused, lowId } = lowLiveHighRefused()
+    let step = next(refused, { type: 'socketClosed', id: lowId })
+    for (let failure = 1; failure < MAX_STALE_FRAME_FAILURES; failure += 1) {
+      expect(oneEnsure(step).quality).toBe('low')
+      step = next(step, {
+        type: 'ensured',
+        requestId: oneEnsure(step).requestId,
+        result: failed('gateway-down', 'The video service is not running.'),
+      })
+    }
+    // The frozen `low` is gone, but `low` is still what was last on screen, so it is still the
+    // target — and the cell says what is actually wrong, not "Codec not supported".
+    expect(visibleLayerId(step.state)).toBeNull()
+    expect(step.state.placeholder).toEqual({ kind: 'gateway-down' })
+    expect(oneEnsure(step).quality).toBe('low')
+    step = answer(step)
+    const id = attachedId(step)
+    // While the fallback connects the cell says so; the asked-for quality's verdict is not news.
+    expect(step.state.placeholder).toEqual({ kind: 'connecting' })
+    step = next(step, { type: 'firstFrame', id })
+    expect(visibleLayerId(step.state)).toBe(id)
+    expect(needsEnsure(step.state)).toBe(false)
+  })
+
+  it('says codec-unsupported for the asked quality when nothing decodable has been seen', () => {
+    const mounted = next(start('high'), { type: 'sync', quality: 'high', camera: 'online' })
+    const attaching = answer(mounted)
+    const refused = next(attaching, {
+      type: 'codecUnsupported',
+      id: attachedId(attaching),
+      mime: HEVC,
+    })
+    expect(targetQuality(refused.state)).toBeNull()
+    expect(needsEnsure(refused.state)).toBe(false)
+    expect(only(refused, 'ensure')).toHaveLength(0)
+    expect(refused.state.placeholder).toEqual({ kind: 'codec-unsupported', mime: HEVC })
+    // A late socket event from the dropped layer changes nothing either.
+    const late = next(refused, { type: 'socketClosed', id: attachedId(attaching) })
+    expect(types(late)).toEqual([])
+  })
+
+  it('also says codec-unsupported when the fallback itself turns out undecodable', () => {
+    const { step: refused, lowId } = lowLiveHighRefused()
+    // Enhanced Encoding switched on for this camera: now `low` will not decode either.
+    const lowRefused = next(refused, { type: 'codecUnsupported', id: lowId, mime: HEVC })
+    expect(detachedIds(lowRefused)).toEqual([lowId])
+    expect(lowRefused.state.codecUnsupported).toEqual({ high: HEVC, low: HEVC })
+    expect(only(lowRefused, 'ensure')).toHaveLength(0)
+    expect(lowRefused.state.placeholder).toEqual({ kind: 'codec-unsupported', mime: HEVC })
+  })
+
+  it('a quality prop change clears the verdict for the quality asked for only', () => {
+    const { step: refused } = lowLiveHighRefused()
+    // Another quality: `high` is still known to be undecodable and stays that way.
+    const medium = next(refused, { type: 'sync', quality: 'medium', camera: 'online' })
+    expect(oneEnsure(medium).quality).toBe('medium')
+    expect(medium.state.codecUnsupported).toEqual({ high: HEVC })
+    // Back to `high`: asking for it again is the viewer's one-attempt retry (rule 5).
+    const high = next(medium, { type: 'sync', quality: 'high', camera: 'online' })
+    expect(high.state.codecUnsupported).toEqual({})
+    // The `medium` call still out is for the wrong quality now, so it is dropped, not waited out.
+    expect(types(high)).toContain('cancelEnsure')
+    expect(oneEnsure(high).quality).toBe('high')
+    // Refused again: back to `low`, the layer still on screen, with no further asking.
+    const attaching = answer(high)
+    const again = next(attaching, {
+      type: 'codecUnsupported',
+      id: attachedId(attaching),
+      mime: HEVC,
+    })
+    expect(again.state.current?.handle.quality).toBe('low')
+    expect(again.state.placeholder).toBeNull()
+    expect(only(again, 'ensure')).toHaveLength(0)
+  })
+
+  it('a new go2rtc runtime clears every verdict and retries the asked quality', () => {
+    const { step: refused, lowId } = lowLiveHighRefused()
+    const restarted = next(refused, {
+      type: 'runtime',
+      runtime: { state: 'up', port: NEW_PORT, epoch: 2 },
+    })
+    expect(restarted.state.codecUnsupported).toEqual({})
+    // The `low` on screen is from the dead epoch: it holds its frame while `high` is tried again.
+    expect(closedIds(restarted)).toEqual([lowId])
+    expect(visibleLayerId(restarted.state)).toBe(lowId)
+    expect(oneEnsure(restarted).quality).toBe('high')
+  })
+
+  it('a verdict drops a call still out for the refused quality', () => {
+    // Live on `low`, retrying `high`. The state with a second `high` call out alongside the `high`
+    // incoming is built by hand (it needs an interleaving the shell makes rare), because the rule
+    // matters when it does happen: that call would only attach the refused quality again.
+    const { step: refused } = lowLiveHighRefused()
+    const retry = next(next(refused, { type: 'sync', quality: 'medium', camera: 'online' }), {
+      type: 'sync',
+      quality: 'high',
+      camera: 'online',
+    })
+    const attaching = answer(retry)
+    const highId = attachedId(attaching)
+    const withPending: PlayerState = {
+      ...attaching.state,
+      pending: { requestId: 9999, quality: 'high' },
+    }
+    const refusedAgain = playerStep(withPending, {
+      type: 'codecUnsupported',
+      id: highId,
+      mime: HEVC,
+    })
+    expect(types(refusedAgain)).toContain('cancelEnsure')
+    expect(refusedAgain.state.pending).toBeNull()
+    // `low` is live on screen and is the target: nothing more to ask for.
+    expect(only(refusedAgain, 'ensure')).toHaveLength(0)
+    // The reply of the dropped call is ignored.
+    const late = playerStep(refusedAgain.state, {
+      type: 'ensured',
+      requestId: 9999,
+      result: { ok: true, value: handle({ quality: 'high' }) },
+    })
+    expect(types(late)).toEqual([])
+  })
+
+  it('a quality change does not wait out a backoff scheduled for the old quality', () => {
+    const playing = live('low')
+    const id = visibleLayerId(playing.state) ?? 0
+    const dropped = next(playing, { type: 'socketClosed', id })
+    expect(oneEnsure(dropped).delayMs).toBe(reconnectDelayMs(1))
+    const changed = next(dropped, { type: 'sync', quality: 'high', camera: 'online' })
+    expect(types(changed)).toContain('cancelEnsure')
+    const ensure = oneEnsure(changed)
+    expect(ensure.quality).toBe('high')
+    expect(ensure.delayMs).toBe(0)
+  })
+})
+
+describe('a layer that never paints (carried from P2.3; NFR-7)', () => {
+  it("retries on the backoff when go2rtc refuses the handshake, and says so without go2rtc's text", () => {
+    const mounted = next(start('low'), { type: 'sync', quality: 'low', camera: 'online' })
+    const attaching = answer(mounted)
+    const id = attachedId(attaching)
+    const refused = next(attaching, { type: 'streamError', id })
+    expect(detachedIds(refused)).toEqual([id])
+    expect(refused.state.incoming).toBeNull()
+    expect(refused.state.placeholder).toEqual({ kind: 'stream-failed' })
+    expect(placeholderText({ kind: 'stream-failed' })).toBe('Stream could not start')
+    const ensure = oneEnsure(refused)
+    expect(ensure.quality).toBe('low')
+    expect(ensure.delayMs).toBe(reconnectDelayMs(1))
+
+    // The message holds while the retry connects, and goes with the first frame.
+    const retrying = answer(refused)
+    expect(retrying.state.placeholder).toEqual({ kind: 'stream-failed' })
+    const playing = next(retrying, { type: 'firstFrame', id: attachedId(retrying) })
+    expect(playing.state.placeholder).toBeNull()
+    expect(playing.state.streamFailed).toBe(false)
+    expect(playing.state.failures).toBe(0)
+  })
+
+  it('backs off across repeated refusals', () => {
+    let step = next(start('low'), { type: 'sync', quality: 'low', camera: 'online' })
+    const delays: number[] = []
+    for (let attempt = 1; attempt <= 5; attempt += 1) {
+      step = answer(step)
+      step = next(step, { type: 'streamError', id: attachedId(step) })
+      delays.push(oneEnsure(step).delayMs)
+    }
+    expect(delays).toEqual([1, 2, 3, 4, 5].map(reconnectDelayMs))
+  })
+
+  it('keeps the stream on screen when it is the swap that go2rtc refuses', () => {
+    const playing = live('low')
+    const oldId = visibleLayerId(playing.state) ?? 0
+    const swapping = next(playing, { type: 'sync', quality: 'high', camera: 'online' })
+    const attaching = answer(swapping)
+    const newId = attachedId(attaching)
+    const refused = next(attaching, { type: 'streamError', id: newId })
+    expect(detachedIds(refused)).toEqual([newId])
+    expect(visibleLayerId(refused.state)).toBe(oldId)
+    expect(refused.state.placeholder).toBeNull()
+    expect(oneEnsure(refused).quality).toBe('high')
+  })
+
+  it('treats an error on the visible layer as a lost socket that keeps its last frame', () => {
+    const playing = live('low')
+    const id = visibleLayerId(playing.state) ?? 0
+    const refused = next(playing, { type: 'streamError', id })
+    expect(closedIds(refused)).toEqual([id])
+    expect(detachedIds(refused)).toEqual([])
+    expect(refused.state.current?.stale).toBe(true)
+    expect(refused.state.placeholder).toBeNull()
+    expect(oneEnsure(refused).quality).toBe('low')
+    // It played, so it did not fail to *start*.
+    expect(refused.state.streamFailed).toBe(false)
+  })
+
+  it('never says "Stream could not start" about a stream that was playing', () => {
+    const playing = live('low')
+    let step = next(playing, { type: 'streamError', id: visibleLayerId(playing.state) ?? 0 })
+    // Replacements keep losing their sockets until the held frame is given up (rule 3).
+    while (step.state.current !== null) {
+      step = answer(step)
+      step = next(step, { type: 'socketClosed', id: attachedId(step) })
+    }
+    expect(step.state.failures).toBeGreaterThanOrEqual(MAX_STALE_FRAME_FAILURES)
+    expect(step.state.placeholder).toEqual({ kind: 'connecting' })
+  })
+
+  it('gives up on a layer that has not painted within the window and retries', () => {
+    const mounted = next(start('low'), { type: 'sync', quality: 'low', camera: 'online' })
+    const attaching = answer(mounted)
+    const id = attachedId(attaching)
+    expect(attaching.state.placeholder).toEqual({ kind: 'connecting' })
+    const overdue = next(attaching, { type: 'firstFrameTimeout', id })
+    expect(detachedIds(overdue)).toEqual([id])
+    expect(overdue.state.placeholder).toEqual({ kind: 'stream-failed' })
+    expect(oneEnsure(overdue).delayMs).toBe(reconnectDelayMs(1))
+  })
+
+  it('times out a swap without costing the stream on screen', () => {
+    const playing = live('low')
+    const oldId = visibleLayerId(playing.state) ?? 0
+    const swapping = next(playing, { type: 'sync', quality: 'high', camera: 'online' })
+    const attaching = answer(swapping)
+    const newId = attachedId(attaching)
+    const overdue = next(attaching, { type: 'firstFrameTimeout', id: newId })
+    expect(detachedIds(overdue)).toEqual([newId])
+    expect(closedIds(overdue)).toEqual([])
+    expect(visibleLayerId(overdue.state)).toBe(oldId)
+    expect(overdue.state.placeholder).toBeNull()
+    expect(oneEnsure(overdue).quality).toBe('high')
+  })
+
+  it('never times out the visible layer, live or stale and holding its last frame', () => {
+    const playing = live('low')
+    const id = visibleLayerId(playing.state) ?? 0
+    expect(types(next(playing, { type: 'firstFrameTimeout', id }))).toEqual([])
+    // Stale, with a replacement call out: rule 3 keeps it on purpose.
+    const dropped = next(playing, { type: 'socketClosed', id })
+    const timedOut = next(dropped, { type: 'firstFrameTimeout', id })
+    expect(types(timedOut)).toEqual([])
+    expect(timedOut.state.current?.stale).toBe(true)
+    expect(timedOut.state.failures).toBe(dropped.state.failures)
+    // An id nobody holds (already detached) is nothing.
+    expect(types(next(playing, { type: 'firstFrameTimeout', id: 999 }))).toEqual([])
+  })
+
+  it('lets a later ensureStream failure say more than "Stream could not start"', () => {
+    const mounted = next(start('low'), { type: 'sync', quality: 'low', camera: 'online' })
+    const attaching = answer(mounted)
+    const refused = next(attaching, { type: 'streamError', id: attachedId(attaching) })
+    const down = next(refused, {
+      type: 'ensured',
+      requestId: oneEnsure(refused).requestId,
+      result: failed('gateway-down', 'The video service is not running.'),
+    })
+    expect(down.state.placeholder).toEqual({ kind: 'gateway-down' })
+  })
+
+  it('clears "Stream could not start" on a quality change and on a new runtime', () => {
+    const mounted = next(start('low'), { type: 'sync', quality: 'low', camera: 'online' })
+    const attaching = answer(mounted)
+    const refused = next(attaching, { type: 'streamError', id: attachedId(attaching) })
+    const changed = next(refused, { type: 'sync', quality: 'medium', camera: 'online' })
+    expect(changed.state.placeholder).toEqual({ kind: 'connecting' })
+    const restarted = next(refused, {
+      type: 'runtime',
+      runtime: { state: 'up', port: NEW_PORT, epoch: 2 },
+    })
+    expect(restarted.state.placeholder).toEqual({ kind: 'connecting' })
   })
 })
 
@@ -637,6 +1044,9 @@ describe('teardown (gate G2: no growth over 30 minutes)', () => {
       { type: 'socketClosed', id },
       { type: 'stalled', id },
       { type: 'firstFrame', id },
+      { type: 'streamError', id },
+      { type: 'firstFrameTimeout', id },
+      { type: 'codecUnsupported', id, mime: 'video/mp4' },
     ]
     let step: PlayerStep = stopped
     for (const event of late) {

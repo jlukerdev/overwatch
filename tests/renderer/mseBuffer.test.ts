@@ -10,6 +10,7 @@ import { describe, expect, it } from 'vitest'
 import {
   bufferTrim,
   catchUpRate,
+  isCodecMismatchError,
   isCodecPlayable,
   MSE_KEEP_SECONDS,
   MSE_MAX_LAG_SECONDS,
@@ -111,5 +112,23 @@ describe('isCodecPlayable (SPEC R7)', () => {
   it('treats an empty handshake answer as unsupported', () => {
     expect(isCodecPlayable('', () => true)).toBe(false)
     expect(isCodecPlayable('   ', () => true)).toBe(false)
+  })
+})
+
+describe('isCodecMismatchError (SPEC R7)', () => {
+  it("recognises go2rtc's codec-mismatch refusal, whatever its prefix, case or codec list", () => {
+    expect(isCodecMismatchError('mse: streams: codecs not matched: video:H265 => avc1')).toBe(true)
+    expect(isCodecMismatchError('Codecs Not Matched')).toBe(true)
+  })
+
+  it('leaves every other refusal a stream error', () => {
+    expect(isCodecMismatchError('streams: dial tcp: i/o timeout')).toBe(false)
+    expect(isCodecMismatchError('')).toBe(false)
+  })
+
+  it('never matches a value that is not a string', () => {
+    expect(isCodecMismatchError(undefined)).toBe(false)
+    expect(isCodecMismatchError(null)).toBe(false)
+    expect(isCodecMismatchError({ message: 'codecs not matched' })).toBe(false)
   })
 })

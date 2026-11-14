@@ -2,15 +2,20 @@
 // between the screens. Routing is a piece of state rather than a router — the prototype has two
 // screens in Phase 1 and the Views come in Phase 3 (VIEW-1), so a URL would buy nothing.
 //
+// P2.4 adds a third, temporary screen: the live grid (`TempGridScreen`), which Phase 3 replaces
+// with real Views. It is never the default screen — the choice below is unchanged.
+//
 // The connection indicator lives in the header, outside the switch: CON-5 asks for it to be visible
 // at all times, not only on the Settings screen.
 import { useEffect, useState, type JSX } from 'react'
 import { CameraList } from './features/cameras/CameraList'
+import { TempGridScreen } from './features/grid/TempGridScreen'
 import { SettingsPage } from './features/settings/SettingsPage'
 import { ConnectionBadge } from './features/status/ConnectionBadge'
+import { navClass } from './navClass'
 import { useAppStore } from './state/appStore'
 
-type Screen = 'cameras' | 'settings'
+type Screen = 'cameras' | 'grid' | 'settings'
 
 export function App(): JSX.Element {
   const phase = useAppStore((s) => s.phase)
@@ -80,6 +85,16 @@ export function App(): JSX.Element {
           </button>
           <button
             type="button"
+            className={navClass(current === 'grid')}
+            aria-current={current === 'grid' ? 'page' : undefined}
+            onClick={() => {
+              setScreen('grid')
+            }}
+          >
+            Live
+          </button>
+          <button
+            type="button"
             className={navClass(current === 'settings')}
             aria-current={current === 'settings' ? 'page' : undefined}
             onClick={() => {
@@ -92,11 +107,21 @@ export function App(): JSX.Element {
         <ConnectionBadge />
         <span className="app__version">v{version}</span>
       </header>
-      <main className="app__body">
+      {/* The grid fills the body and must never scroll (VIEW-5); the other screens may. */}
+      <main className={current === 'grid' ? 'app__body app__body--fill' : 'app__body'}>
         {current === 'cameras' ? (
           <CameraList
             onOpenSettings={() => {
               setScreen('settings')
+            }}
+          />
+        ) : current === 'grid' ? (
+          <TempGridScreen
+            onOpenSettings={() => {
+              setScreen('settings')
+            }}
+            onOpenCameras={() => {
+              setScreen('cameras')
             }}
           />
         ) : (
@@ -105,8 +130,4 @@ export function App(): JSX.Element {
       </main>
     </div>
   )
-}
-
-function navClass(active: boolean): string {
-  return active ? 'app__navButton app__navButton--active' : 'app__navButton'
 }

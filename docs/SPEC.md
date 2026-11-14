@@ -262,6 +262,16 @@ go2rtc:   rtspx://<console-host>:7441/<alias>
 
 **Start-up failures (NFR-7).** A layer whose socket stays open but never plays is retried on the same backoff as a closed socket, in two cases: go2rtc answers the handshake with `{type: 'error'}` (other than the codec mismatch above), or no frame has painted within **10 s of visible time** after attach (`playerTiming.FIRST_FRAME_TIMEOUT_MS`). Time while the window is hidden or minimised does not count, because Chromium does not run the first-frame callback then; without that rule a hidden window would retry every waiting cell every 10 s. The 10 s is not P0.5's cold 0.28–0.65 s: a consumer joining a go2rtc producer that is already running (another cell, or the other swap layer, on the same stream) waits for the next keyframe, up to the ~5 s `high` GOP, so the window is about twice that. While nothing is on screen the cell says "Stream could not start" — only for a layer that never played; a playing stream that errors is handled as a lost socket that keeps its last frame. go2rtc's error text is never shown or logged, because it can contain the source RTSPS URL (CON-2, NFR-9).
 
+
+### 5.4 Perf mode (development only, P2.5)
+
+The perf harness (`npm run perf`, `scripts/perf/run.ts`, `src/main/perf/`) runs the built app in a measuring mode. Results and the method are in `docs/perf-results.md`.
+
+- **When:** only when `VP_PERF_QUALITY` (`low`/`medium`/`high`) is set **and** the app is unpackaged. A packaged build ignores every `VP_PERF_*` variable. The others are `VP_PERF_DURATION_S`, `VP_PERF_WARMUP_S`, `VP_PERF_INTERVAL_S`, `VP_PERF_OUT` (absolute output directory) and `VP_PERF_LABEL`; invalid values stop the app at launch.
+- **Auto-connects:** an explicit exception to CON-4's "nothing connects on launch". Starting the harness is the user's deliberate action, so main calls `connect()` itself, then opens the Live screen and picks the temp-grid preset by clicking its buttons.
+- **Grid quality:** the run's quality replaces `settings.streams.defaultGridQuality` in the settings the renderer is *shown* (IPC `AppState`), in memory only. The stored config is never changed and no save can persist the override.
+- **Ends by itself:** after the warm-up and the measured duration (or early on a closed window, a quit request, a crashed renderer or a signal) it writes its results, stops go2rtc and quits. Nothing it records or prints contains a URL, the console address, the go2rtc port, a credential or a camera name (CON-2, NFR-9).
+
 ---
 
 ## 6. Data model (persisted)

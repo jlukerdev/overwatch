@@ -773,6 +773,15 @@ describe('createGo2rtcManager — recovery (Gate G2, NFR-7)', () => {
     expect(h.clock.delays.at(-1)).toBe(RESTART_BACKOFF.initialMs)
   })
 
+  it('exposes the verified child pid only while go2rtc is up (P2.5 perf harness)', async () => {
+    const h = createHarness()
+    expect(h.manager.pid()).toBeNull()
+    await h.manager.start()
+    expect(h.manager.pid()).toBe(h.lastChild().pid)
+    await h.manager.stop()
+    expect(h.manager.pid()).toBeNull()
+  })
+
   it('does not restart after a deliberate stop', async () => {
     const h = createHarness()
     await h.manager.start()

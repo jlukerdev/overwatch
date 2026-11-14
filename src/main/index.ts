@@ -13,6 +13,8 @@ import { accessEndpoint, protectEndpoint } from './console/endpoints'
 import { createIpcRouter, registerIpcHandlers } from './ipc/handlers'
 import { isAppUrl } from './navigation'
 import { createRateLimiter, type RateLimiter } from './net/rateLimiter'
+import { startPerfRun } from './perf/perfMode'
+import { parsePerfEnv, withPerfGridQuality } from './perf/perfStats'
 import { createProtectClient, type ProtectClient } from './protect/client'
 import {
   createSecretsStore,
@@ -41,6 +43,17 @@ if (process.env.ELECTRON_RUN_AS_NODE !== undefined && process.env.ELECTRON_RUN_A
   )
   process.exit(1)
 }
+
+// P2.5 perf harness (`npm run perf`): on only with VP_PERF_QUALITY set in an unpackaged build. It
+// overrides the grid quality the renderer is shown (in memory, never saved) and drives the window
+// from `startPerfRun` below; see src/main/perf/.
+const perfEnv = parsePerfEnv(process.env, app.isPackaged)
+if (perfEnv.kind === 'invalid') {
+  console.error(`[perf] ${perfEnv.problem}`)
+  process.exit(2)
+}
+if (perfEnv.kind === 'ignored') console.warn(`[perf] ${perfEnv.reason}`)
+const perfConfig = perfEnv.kind === 'on' ? perfEnv.config : null
 
 let mainWindow: BrowserWindow | null = null
 
@@ -484,6 +497,28 @@ function createWindow(): void {
   })
 }
 
+/** P2.5: hands the perf run the window and the few services it drives (see src/main/perf/). */
+function startPerf(config: NonNullable<typeof perfConfig>): void {
+  const manager = connection
+  const win = mainWindow
+  if (manager === null || win === null) {
+    console.error('[perf] the app services did not start, so there is nothing to measure')
+    app.quit()
+    return
+  }
+  startPerfRun({
+    config,
+    window: win,
+    connect: () => manager.connect(),
+    cameraCount: () => manager.cachedCameras().length,
+    go2rtcPid: () => go2rtc?.pid() ?? null,
+    stopStreaming: async () => {
+      streams?.shutdown()
+      await go2rtc?.stop()
+    },
+  })
+}
+
 // SPEC §5.3: never answer an auth challenge — from go2rtc or from anything else — with a prompt or
 // with credentials. Without this, a request that reaches the loopback port *without* the injected
 // header (a stale filter, a restart in flight, a renderer-built URL) turns go2rtc's 401 into a
@@ -557,11 +592,15 @@ if (!app.requestSingleInstanceLock()) {
           getManager: () => connection,
           getRegistry: () => streams,
           appVersion: () => app.getVersion(),
+          ...(perfConfig === null
+            ? {}
+            : { settingsView: (s) => withPerfGridQuality(s, perfConfig.quality) }),
         }),
       )
       // A `second-instance` can arrive while the await above is pending and open the window first;
       // creating another one here would orphan it (only the last is tracked as mainWindow).
       if (BrowserWindow.getAllWindows().length === 0) createWindow()
+      if (perfConfig !== null) startPerf(perfConfig)
       app.on('activate', () => {
         if (BrowserWindow.getAllWindows().length === 0) createWindow()
       })
@@ -572,6 +611,8 @@ if (!app.requestSingleInstanceLock()) {
     })
 
   app.on('window-all-closed', () => {
+    // During a perf run the harness quits by itself once its results are written (perfMode.ts).
+    if (perfConfig !== null) return
     if (process.platform !== 'darwin') app.quit()
   })
 

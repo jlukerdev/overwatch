@@ -253,6 +253,11 @@ export interface Go2rtcManager {
    */
   authHeader(): string | null
   /**
+   * The OS process id of the verified go2rtc child, or null when go2rtc is not up. Read-only and
+   * not a secret; the P2.5 perf harness uses it to sample go2rtc's CPU and memory.
+   */
+  pid(): number | null
+  /**
    * Records `name` → `source` in the desired set and, when go2rtc is up, registers it live through
    * `PUT /api/streams`. Rejects an unsafe name or a source that is not on the pinned console host
    * (R4). While go2rtc is down it only records, and the next start writes it into the YAML; while a
@@ -938,6 +943,7 @@ export function createGo2rtcManager(options: Go2rtcManagerOptions): Go2rtcManage
     runtime: () => runtimeValue,
     state: readState,
     authHeader: () => (auth === null ? null : basicAuthHeader(auth)),
+    pid: () => (runtimeValue === null ? null : (verifiedChild?.pid ?? null)),
     addStream,
     removeStream,
     streams: () => Object.fromEntries(desired),

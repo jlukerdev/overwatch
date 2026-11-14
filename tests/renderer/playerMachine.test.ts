@@ -1,0 +1,717 @@
+// P2.3: the live player's whole lifecycle (QUAL-6, FILL-2, CAM-3, NFR-7, R7, gate G2).
+//
+// `LivePlayer.tsx` is a shell: it turns props and DOM events into the events below and carries out
+// the commands that come back. This project has no jsdom and no testing-library (vitest.config.mts),
+// and there is no `MediaSource`, no `WebSocket` and no go2rtc here — so the component itself cannot
+// be rendered in a test at all, which is the reason every rule about *when* to ask for a stream,
+// *when* to swap, *when* to retry and *what the viewer is told* lives in `playerMachine.ts`.
+//
+// What these tests protect:
+//  - `ensureStream` on mount and on every quality change, with the quality that was asked for.
+//  - QUAL-6/FILL-2: the old stream stays attached and visible until the new one's first frame, and
+//    no placeholder is ever shown over a layer that is on screen.
+//  - gate G2: a new go2rtc epoch re-asks and reattaches (the old port is dead), and a `down` runtime
+//    detaches everything and stops retrying until it is back.
+//  - every placeholder state and its trigger, including R7's codec-unsupported.
+//  - the reconnect backoff on a closed socket and the stall detector forcing a reattach.
+//  - teardown: everything closes on unmount and a late reply changes nothing.
+//  - that the only stream information the component ever handles is a `StreamHandle`: the attach
+//    command carries `handle.wsUrl` verbatim, never a URL built from parts.
+import type { IpcError, IpcResult } from '@shared/ipc'
+import type { Camera } from '@shared/models'
+import type { StreamQuality } from '@shared/quality'
+import { go2rtcWsUrl, streamHandle, streamName, type StreamHandle } from '@shared/streams'
+import { describe, expect, it } from 'vitest'
+import {
+  cameraAvailability,
+  initialPlayerState,
+  MAX_STALE_FRAME_FAILURES,
+  needsEnsure,
+  placeholderText,
+  playerStep,
+  visibleLayerId,
+  type PlayerCommand,
+  type PlayerEvent,
+  type PlayerState,
+  type PlayerStep,
+} from '../../src/renderer/src/player/playerMachine'
+import { reconnectDelayMs } from '../../src/renderer/src/player/playerTiming'
+
+const CAMERA_ID = 'abcdef0123456789abcdef01'
+const PORT = 51234
+const NEW_PORT = 51999
+
+function handle(input: {
+  quality: StreamQuality
+  port?: number
+  epoch?: number
+  cameraId?: string
+}): StreamHandle {
+  return streamHandle({
+    cameraId: input.cameraId ?? CAMERA_ID,
+    quality: input.quality,
+    port: input.port ?? PORT,
+    epoch: input.epoch ?? 1,
+  })
+}
+
+const error = (kind: IpcError['kind'], message: string): IpcError => ({
+  kind,
+  message,
+  endpoint: null,
+  retryable: true,
+})
+
+const failed = (kind: IpcError['kind'], message: string): IpcResult<StreamHandle> => ({
+  ok: false,
+  error: error(kind, message),
+})
+
+/** Steps the machine, keeping the step so a test can read both the state and the commands. */
+const next = (step: PlayerStep, event: PlayerEvent): PlayerStep => playerStep(step.state, event)
+
+const start = (quality: StreamQuality): PlayerStep => ({
+  state: initialPlayerState({ cameraId: CAMERA_ID, quality }),
+  commands: [],
+})
+
+const types = (step: PlayerStep): string[] => step.commands.map((command) => command.type)
+
+const only = <T extends PlayerCommand['type']>(
+  step: PlayerStep,
+  type: T,
+): Extract<PlayerCommand, { type: T }>[] =>
+  step.commands.filter(
+    (command): command is Extract<PlayerCommand, { type: T }> => command.type === type,
+  )
+
+const oneEnsure = (step: PlayerStep): Extract<PlayerCommand, { type: 'ensure' }> => {
+  const ensures = only(step, 'ensure')
+  expect(ensures).toHaveLength(1)
+  const ensure = ensures[0]
+  if (ensure === undefined) throw new Error('no ensure command')
+  return ensure
+}
+
+const attachedId = (step: PlayerStep): number => {
+  const attaches = only(step, 'attach')
+  expect(attaches).toHaveLength(1)
+  const attach = attaches[0]
+  if (attach === undefined) throw new Error('no attach command')
+  return attach.id
+}
+
+const detachedIds = (step: PlayerStep): number[] => only(step, 'detach').map((c) => c.id)
+const closedIds = (step: PlayerStep): number[] => only(step, 'closeSocket').map((c) => c.id)
+
+/** Mount → ensure → attach → first frame: a player live on `quality`, like every later test needs. */
+function live(quality: StreamQuality, epoch = 1, port = PORT): PlayerStep {
+  const mounted = next(start(quality), { type: 'sync', quality, camera: 'online' })
+  const ensure = oneEnsure(mounted)
+  const answered = next(mounted, {
+    type: 'ensured',
+    requestId: ensure.requestId,
+    result: { ok: true, value: handle({ quality, epoch, port }) },
+  })
+  const id = attachedId(answered)
+  const playing = next(answered, { type: 'firstFrame', id })
+  expect(visibleLayerId(playing.state)).toBe(id)
+  expect(playing.state.placeholder).toBeNull()
+  return playing
+}
+
+const camera = (state: string): Camera => ({
+  id: CAMERA_ID,
+  name: 'Carport',
+  model: 'G4 Instant',
+  state,
+  hasMic: true,
+  micEnabled: true,
+  hasSpeaker: false,
+  smartDetectTypes: [],
+  supportsFullHdSnapshot: false,
+  hasPackageCamera: false,
+})
+
+// -------------------------------------------------------------------------------------------------
+
+describe('ensureStream (QUAL-8)', () => {
+  it('asks for the camera and quality it was mounted with, immediately', () => {
+    const mounted = next(start('low'), { type: 'sync', quality: 'low', camera: 'online' })
+    const ensure = oneEnsure(mounted)
+    expect(ensure.cameraId).toBe(CAMERA_ID)
+    expect(ensure.quality).toBe('low')
+    // No wait for the first attempt: a wall of ten cells must not sleep before it starts.
+    expect(ensure.delayMs).toBe(0)
+  })
+
+  it('asks again, for the new quality, when the quality prop changes (QUAL-6)', () => {
+    const playing = live('low')
+    const swapping = next(playing, { type: 'sync', quality: 'high', camera: 'online' })
+    const ensure = oneEnsure(swapping)
+    expect(ensure.quality).toBe('high')
+    expect(ensure.delayMs).toBe(0)
+  })
+
+  it('does not ask twice while a call is in flight', () => {
+    const mounted = next(start('low'), { type: 'sync', quality: 'low', camera: 'online' })
+    const again = next(mounted, { type: 'sync', quality: 'low', camera: 'online' })
+    expect(types(again)).toEqual([])
+  })
+
+  it('does not ask again once the requested quality is live', () => {
+    const playing = live('medium')
+    const idle = next(playing, { type: 'sync', quality: 'medium', camera: 'online' })
+    expect(types(idle)).toEqual([])
+    expect(needsEnsure(idle.state)).toBe(false)
+  })
+
+  it('attaches to handle.wsUrl verbatim, never to a URL of its own making', () => {
+    const playing = live('high')
+    const attached = playing.state.current
+    expect(attached).not.toBeNull()
+    const expected = go2rtcWsUrl(PORT, streamName(CAMERA_ID, 'high'))
+    expect(attached?.handle.wsUrl).toBe(expected)
+  })
+
+  it('refuses a handle for another camera or another quality', () => {
+    const mounted = next(start('low'), { type: 'sync', quality: 'low', camera: 'online' })
+    const ensure = oneEnsure(mounted)
+    const wrong = next(mounted, {
+      type: 'ensured',
+      requestId: ensure.requestId,
+      result: { ok: true, value: handle({ quality: 'high' }) },
+    })
+    expect(types(wrong)).toEqual(['ensure'])
+    expect(wrong.state.incoming).toBeNull()
+  })
+
+  it('ignores a reply from a call it is no longer waiting for', () => {
+    const playing = live('low')
+    const swapping = next(playing, { type: 'sync', quality: 'high', camera: 'online' })
+    const ensure = oneEnsure(swapping)
+    const stale = next(swapping, {
+      type: 'ensured',
+      requestId: ensure.requestId - 1,
+      result: { ok: true, value: handle({ quality: 'low' }) },
+    })
+    expect(types(stale)).toEqual([])
+  })
+})
+
+describe('the seamless swap (QUAL-6, FILL-2)', () => {
+  it('keeps the old stream attached and visible until the new one renders a frame', () => {
+    const playing = live('low')
+    const oldId = visibleLayerId(playing.state)
+
+    const swapping = next(playing, { type: 'sync', quality: 'high', camera: 'online' })
+    // Nothing is torn down and nothing is hidden just because the prop changed.
+    expect(types(swapping)).toEqual(['ensure'])
+    expect(visibleLayerId(swapping.state)).toBe(oldId)
+    expect(swapping.state.placeholder).toBeNull()
+
+    const attaching = next(swapping, {
+      type: 'ensured',
+      requestId: oneEnsure(swapping).requestId,
+      result: { ok: true, value: handle({ quality: 'high' }) },
+    })
+    const newId = attachedId(attaching)
+    // Two layers now: the old one still on screen, the new one attached but not yet promoted.
+    expect(visibleLayerId(attaching.state)).toBe(oldId)
+    expect(attaching.state.incoming?.id).toBe(newId)
+    expect(attaching.state.placeholder).toBeNull()
+    expect(detachedIds(attaching)).toEqual([])
+
+    const swapped = next(attaching, { type: 'firstFrame', id: newId })
+    // The frame is the trigger: promote and retire in the same step, so there is no gap.
+    expect(visibleLayerId(swapped.state)).toBe(newId)
+    expect(detachedIds(swapped)).toEqual([oldId])
+    expect(swapped.state.incoming).toBeNull()
+    expect(swapped.state.current?.handle.quality).toBe('high')
+    expect(swapped.state.placeholder).toBeNull()
+  })
+
+  it('abandons a half-finished swap when the prop changes back', () => {
+    const playing = live('low')
+    const oldId = visibleLayerId(playing.state)
+    const swapping = next(playing, { type: 'sync', quality: 'high', camera: 'online' })
+    const attaching = next(swapping, {
+      type: 'ensured',
+      requestId: oneEnsure(swapping).requestId,
+      result: { ok: true, value: handle({ quality: 'high' }) },
+    })
+    const pendingId = attachedId(attaching)
+
+    const back = next(attaching, { type: 'sync', quality: 'low', camera: 'online' })
+    // The unproven layer goes; the one the viewer is watching does not.
+    expect(detachedIds(back)).toEqual([pendingId])
+    expect(visibleLayerId(back.state)).toBe(oldId)
+    expect(back.state.placeholder).toBeNull()
+    // `low` is already on screen, so there is nothing to ask for.
+    expect(only(back, 'ensure')).toHaveLength(0)
+  })
+
+  it('keeps the old stream when the swap fails', () => {
+    const playing = live('low')
+    const oldId = visibleLayerId(playing.state)
+    const swapping = next(playing, { type: 'sync', quality: 'high', camera: 'online' })
+    const refused = next(swapping, {
+      type: 'ensured',
+      requestId: oneEnsure(swapping).requestId,
+      result: failed('server', 'The console could not start that stream.'),
+    })
+    expect(visibleLayerId(refused.state)).toBe(oldId)
+    // No placeholder over live video, and it keeps trying for the quality that was asked for.
+    expect(refused.state.placeholder).toBeNull()
+    expect(oneEnsure(refused).quality).toBe('high')
+  })
+
+  it('shows Connecting… only while there is nothing on screen at all', () => {
+    const mounted = next(start('low'), { type: 'sync', quality: 'low', camera: 'online' })
+    expect(mounted.state.placeholder).toEqual({ kind: 'connecting' })
+    const attaching = next(mounted, {
+      type: 'ensured',
+      requestId: oneEnsure(mounted).requestId,
+      result: { ok: true, value: handle({ quality: 'low' }) },
+    })
+    expect(attaching.state.placeholder).toEqual({ kind: 'connecting' })
+    const playing = next(attaching, { type: 'firstFrame', id: attachedId(attaching) })
+    expect(playing.state.placeholder).toBeNull()
+  })
+})
+
+describe('reconnect (NFR-7)', () => {
+  it('re-asks for a handle when the socket closes, and keeps the last frame on screen', () => {
+    const playing = live('low')
+    const id = visibleLayerId(playing.state)
+    const dropped = next(playing, { type: 'socketClosed', id: id ?? 0 })
+
+    // The socket is closed, the element is not: a placeholder here would be a flash for the ~0.3 s
+    // a reconnect takes (P0.5 first-frame figures).
+    expect(closedIds(dropped)).toEqual([id])
+    expect(detachedIds(dropped)).toEqual([])
+    expect(visibleLayerId(dropped.state)).toBe(id)
+    expect(dropped.state.placeholder).toBeNull()
+    // A fresh `ensureStream`, not a re-open of the same URL: the port may already belong to someone
+    // else (src/shared/streams.ts on `epoch`).
+    expect(oneEnsure(dropped).quality).toBe('low')
+  })
+
+  it('backs off while the failures continue, and resets on a frame', () => {
+    let step = live('low')
+    const id = visibleLayerId(step.state) ?? 0
+    step = next(step, { type: 'socketClosed', id })
+    expect(oneEnsure(step).delayMs).toBe(reconnectDelayMs(1))
+
+    const delays: number[] = []
+    for (let attempt = 2; attempt <= 8; attempt += 1) {
+      const ensure = oneEnsure(step)
+      step = next(step, {
+        type: 'ensured',
+        requestId: ensure.requestId,
+        result: failed('gateway-down', 'The video service is not running.'),
+      })
+      delays.push(oneEnsure(step).delayMs)
+    }
+    expect(delays).toEqual([2, 3, 4, 5, 6, 7, 8].map(reconnectDelayMs))
+
+    // A handle at last, and a frame: the next failure starts from zero again.
+    const attaching = next(step, {
+      type: 'ensured',
+      requestId: oneEnsure(step).requestId,
+      result: { ok: true, value: handle({ quality: 'low' }) },
+    })
+    const newId = attachedId(attaching)
+    const recovered = next(attaching, { type: 'firstFrame', id: newId })
+    expect(recovered.state.failures).toBe(0)
+    const droppedAgain = next(recovered, { type: 'socketClosed', id: newId })
+    expect(oneEnsure(droppedAgain).delayMs).toBe(reconnectDelayMs(1))
+  })
+
+  it('stops holding a frozen frame once it has become a lie, and says why', () => {
+    let step = live('low')
+    const id = visibleLayerId(step.state) ?? 0
+    step = next(step, { type: 'socketClosed', id })
+
+    // The still frame is kept while a replacement is plausible…
+    for (let failure = 1; failure < MAX_STALE_FRAME_FAILURES; failure += 1) {
+      expect(visibleLayerId(step.state)).toBe(id)
+      expect(step.state.placeholder).toBeNull()
+      step = next(step, {
+        type: 'ensured',
+        requestId: oneEnsure(step).requestId,
+        result: failed('gateway-down', 'The video service is not running.'),
+      })
+    }
+    // …and dropped once it is not, so the cell shows the reason instead of a frozen picture.
+    expect(detachedIds(step)).toEqual([id])
+    expect(visibleLayerId(step.state)).toBeNull()
+    expect(step.state.placeholder).toEqual({ kind: 'gateway-down' })
+    expect(only(step, 'ensure')).toHaveLength(1)
+  })
+
+  it('drops a layer that never rendered, rather than keeping a blank element', () => {
+    const mounted = next(start('low'), { type: 'sync', quality: 'low', camera: 'online' })
+    const attaching = next(mounted, {
+      type: 'ensured',
+      requestId: oneEnsure(mounted).requestId,
+      result: { ok: true, value: handle({ quality: 'low' }) },
+    })
+    const id = attachedId(attaching)
+    const dropped = next(attaching, { type: 'socketClosed', id })
+    expect(detachedIds(dropped)).toEqual([id])
+    expect(dropped.state.incoming).toBeNull()
+    expect(oneEnsure(dropped).delayMs).toBe(reconnectDelayMs(1))
+  })
+
+  it('ignores a close from a layer that is already gone', () => {
+    const playing = live('low')
+    const unknown = next(playing, { type: 'socketClosed', id: 999 })
+    expect(types(unknown)).toEqual([])
+  })
+})
+
+describe('stall detection', () => {
+  it('forces a reattach instead of sitting on a frozen frame', () => {
+    const playing = live('high')
+    const id = visibleLayerId(playing.state) ?? 0
+    const frozen = next(playing, { type: 'stalled', id })
+
+    // The socket is still open when a stream freezes (the P0.5 `DEMUXER_UNDERFLOW`), so it has to be
+    // closed explicitly — and the element stays, holding its last frame, until the new one renders.
+    expect(closedIds(frozen)).toEqual([id])
+    expect(visibleLayerId(frozen.state)).toBe(id)
+    expect(frozen.state.current?.stale).toBe(true)
+    expect(frozen.state.placeholder).toBeNull()
+    const ensure = oneEnsure(frozen)
+    expect(ensure.quality).toBe('high')
+
+    const attaching = next(frozen, {
+      type: 'ensured',
+      requestId: ensure.requestId,
+      result: { ok: true, value: handle({ quality: 'high' }) },
+    })
+    const newId = attachedId(attaching)
+    const swapped = next(attaching, { type: 'firstFrame', id: newId })
+    expect(detachedIds(swapped)).toEqual([id])
+    expect(visibleLayerId(swapped.state)).toBe(newId)
+  })
+
+  it('treats a frame on the visible layer as proof it is alive again', () => {
+    const playing = live('low')
+    const id = visibleLayerId(playing.state) ?? 0
+    const frozen = next(playing, { type: 'stalled', id })
+    const moving = next(frozen, { type: 'firstFrame', id })
+    expect(moving.state.current?.stale).toBe(false)
+    expect(moving.state.failures).toBe(0)
+  })
+})
+
+describe('the go2rtc runtime (gate G2)', () => {
+  it('re-asks and reattaches when go2rtc comes back on a new port', () => {
+    const playing = live('low', 1, PORT)
+    const oldId = visibleLayerId(playing.state) ?? 0
+
+    const restarted = next(playing, {
+      type: 'runtime',
+      runtime: { state: 'up', port: NEW_PORT, epoch: 2 },
+    })
+    // The handle it holds is from epoch 1: its port is dead, so its socket is closed — but its last
+    // frame stays while the replacement connects.
+    expect(closedIds(restarted)).toEqual([oldId])
+    expect(detachedIds(restarted)).toEqual([])
+    expect(visibleLayerId(restarted.state)).toBe(oldId)
+    expect(restarted.state.placeholder).toBeNull()
+    const ensure = oneEnsure(restarted)
+    expect(ensure.delayMs).toBe(0)
+
+    const attaching = next(restarted, {
+      type: 'ensured',
+      requestId: ensure.requestId,
+      result: { ok: true, value: handle({ quality: 'low', port: NEW_PORT, epoch: 2 }) },
+    })
+    const newId = attachedId(attaching)
+    expect(attaching.state.incoming?.handle.port).toBe(NEW_PORT)
+    const swapped = next(attaching, { type: 'firstFrame', id: newId })
+    expect(detachedIds(swapped)).toEqual([oldId])
+    expect(visibleLayerId(swapped.state)).toBe(newId)
+  })
+
+  it('does nothing when told about the runtime it is already on', () => {
+    const playing = live('low', 1, PORT)
+    const same = next(playing, { type: 'runtime', runtime: { state: 'up', port: PORT, epoch: 1 } })
+    expect(types(same)).toEqual([])
+    expect(same.state.placeholder).toBeNull()
+  })
+
+  it('refuses a handle from an epoch that has already been superseded', () => {
+    const playing = live('low', 1, PORT)
+    const restarted = next(playing, {
+      type: 'runtime',
+      runtime: { state: 'up', port: NEW_PORT, epoch: 2 },
+    })
+    const stale = next(restarted, {
+      type: 'ensured',
+      requestId: oneEnsure(restarted).requestId,
+      // A reply that was already in flight when go2rtc restarted.
+      result: { ok: true, value: handle({ quality: 'low', port: PORT, epoch: 1 }) },
+    })
+    expect(only(stale, 'attach')).toHaveLength(0)
+    expect(oneEnsure(stale).delayMs).toBe(reconnectDelayMs(1))
+  })
+
+  it('detaches everything and stops asking while the gateway is down', () => {
+    const playing = live('low')
+    const oldId = visibleLayerId(playing.state) ?? 0
+    const down = next(playing, { type: 'runtime', runtime: { state: 'down' } })
+
+    expect(detachedIds(down)).toEqual([oldId])
+    expect(types(down)).toContain('cancelEnsure')
+    expect(only(down, 'ensure')).toHaveLength(0)
+    expect(visibleLayerId(down.state)).toBeNull()
+    expect(down.state.placeholder).toEqual({ kind: 'gateway-down' })
+
+    // Nothing attaches and nothing is asked for while it holds, however many props change.
+    const nudged = next(down, { type: 'sync', quality: 'high', camera: 'online' })
+    // Nothing to cancel and nothing to close either: the `down` event already did both.
+    expect(types(nudged)).toEqual([])
+    expect(nudged.state.placeholder).toEqual({ kind: 'gateway-down' })
+    expect(needsEnsure(nudged.state)).toBe(false)
+
+    // …and it recovers by itself when main says the gateway is back (G2).
+    const back = next(nudged, {
+      type: 'runtime',
+      runtime: { state: 'up', port: NEW_PORT, epoch: 3 },
+    })
+    const ensure = oneEnsure(back)
+    expect(ensure.quality).toBe('high')
+    expect(ensure.delayMs).toBe(0)
+  })
+
+  it('drops an unproven layer on a restart rather than keeping a blank one', () => {
+    const mounted = next(start('low'), { type: 'sync', quality: 'low', camera: 'online' })
+    const attaching = next(mounted, {
+      type: 'ensured',
+      requestId: oneEnsure(mounted).requestId,
+      result: { ok: true, value: handle({ quality: 'low' }) },
+    })
+    const id = attachedId(attaching)
+    const restarted = next(attaching, {
+      type: 'runtime',
+      runtime: { state: 'up', port: NEW_PORT, epoch: 2 },
+    })
+    expect(detachedIds(restarted)).toEqual([id])
+    expect(restarted.state.placeholder).toEqual({ kind: 'connecting' })
+  })
+})
+
+describe('the placeholder states', () => {
+  it('shows CAM-3 Offline and stops asking when the camera is not CONNECTED', () => {
+    const playing = live('low')
+    const id = visibleLayerId(playing.state) ?? 0
+    const offline = next(playing, { type: 'sync', quality: 'low', camera: 'offline' })
+    expect(detachedIds(offline)).toEqual([id])
+    expect(only(offline, 'ensure')).toHaveLength(0)
+    expect(offline.state.placeholder).toEqual({ kind: 'camera-offline' })
+    // CAM-3: it resumes on its own when the camera comes back.
+    const back = next(offline, { type: 'sync', quality: 'low', camera: 'online' })
+    expect(oneEnsure(back).delayMs).toBe(0)
+  })
+
+  it('tells Connecting… apart from Offline for a camera on its way back (CAM-3)', () => {
+    const connecting = next(start('low'), { type: 'sync', quality: 'low', camera: 'connecting' })
+    expect(connecting.state.placeholder).toEqual({ kind: 'camera-connecting' })
+    expect(only(connecting, 'ensure')).toHaveLength(0)
+  })
+
+  it('shows the gateway state, not a camera or Settings problem, for gateway-down', () => {
+    const mounted = next(start('low'), { type: 'sync', quality: 'low', camera: 'online' })
+    const down = next(mounted, {
+      type: 'ensured',
+      requestId: oneEnsure(mounted).requestId,
+      result: failed('gateway-down', 'The video service is not running.'),
+    })
+    expect(down.state.placeholder).toEqual({ kind: 'gateway-down' })
+    // Always retryable: main restarts go2rtc and announces the new runtime.
+    expect(oneEnsure(down).delayMs).toBe(reconnectDelayMs(1))
+  })
+
+  it("shows main's own sentence for any other ensureStream failure", () => {
+    const mounted = next(start('low'), { type: 'sync', quality: 'low', camera: 'online' })
+    const refused = next(mounted, {
+      type: 'ensured',
+      requestId: oneEnsure(mounted).requestId,
+      result: failed('auth', 'The Protect API key was refused.'),
+    })
+    expect(refused.state.placeholder).toEqual({
+      kind: 'stream-error',
+      error: error('auth', 'The Protect API key was refused.'),
+    })
+    // Still retried: the user fixes it in Settings and the wall comes back without a restart.
+    expect(only(refused, 'ensure')).toHaveLength(1)
+  })
+
+  it('shows codec-unsupported instead of a black cell, and stops retrying (R7)', () => {
+    const playing = live('high')
+    const id = visibleLayerId(playing.state) ?? 0
+    const mime = 'video/mp4; codecs="hvc1.1.6.L153.B0, mp4a.40.2"'
+    const refused = next(playing, { type: 'codecUnsupported', id, mime })
+
+    // Nothing is coming, so holding a still frame would be a lie: the element goes.
+    expect(detachedIds(refused)).toEqual([id])
+    expect(types(refused)).toContain('cancelEnsure')
+    expect(only(refused, 'ensure')).toHaveLength(0)
+    expect(refused.state.placeholder).toEqual({ kind: 'codec-unsupported', mime })
+    // Retrying cannot change a camera's encoder…
+    const nudged = next(refused, { type: 'sync', quality: 'high', camera: 'online' })
+    expect(only(nudged, 'ensure')).toHaveLength(0)
+    // …but another quality might be H.264 (R1: Enhanced Encoding is per camera).
+    const other = next(nudged, { type: 'sync', quality: 'low', camera: 'online' })
+    expect(oneEnsure(other).quality).toBe('low')
+    expect(other.state.codecUnsupported).toBeNull()
+  })
+
+  it('keeps the playing stream when it is the swap that cannot be decoded (R7)', () => {
+    const playing = live('low')
+    const oldId = visibleLayerId(playing.state) ?? 0
+    const swapping = next(playing, { type: 'sync', quality: 'high', camera: 'online' })
+    const attaching = next(swapping, {
+      type: 'ensured',
+      requestId: oneEnsure(swapping).requestId,
+      result: { ok: true, value: handle({ quality: 'high' }) },
+    })
+    const newId = attachedId(attaching)
+    const refused = next(attaching, {
+      type: 'codecUnsupported',
+      id: newId,
+      mime: 'video/mp4; codecs="hvc1.1.6.L153.B0"',
+    })
+    // The viewer loses the quality change, not the picture.
+    expect(detachedIds(refused)).toEqual([newId])
+    expect(visibleLayerId(refused.state)).toBe(oldId)
+    expect(refused.state.placeholder).toBeNull()
+  })
+
+  it('reads differently for every state, so no two say "unavailable"', () => {
+    const texts = [
+      placeholderText({ kind: 'camera-offline' }),
+      placeholderText({ kind: 'camera-connecting' }),
+      placeholderText({ kind: 'connecting' }),
+      placeholderText({ kind: 'gateway-down' }),
+      placeholderText({ kind: 'codec-unsupported', mime: 'video/mp4' }),
+      placeholderText({ kind: 'stream-error', error: error('auth', 'The key was refused.') }),
+    ]
+    expect(new Set(texts).size).toBe(texts.length)
+    for (const text of texts) expect(text.length).toBeGreaterThan(0)
+  })
+})
+
+describe('teardown (gate G2: no growth over 30 minutes)', () => {
+  it('closes both layers and cancels the scheduled call on unmount', () => {
+    const playing = live('low')
+    const oldId = visibleLayerId(playing.state) ?? 0
+    const swapping = next(playing, { type: 'sync', quality: 'high', camera: 'online' })
+    const attaching = next(swapping, {
+      type: 'ensured',
+      requestId: oneEnsure(swapping).requestId,
+      result: { ok: true, value: handle({ quality: 'high' }) },
+    })
+    const newId = attachedId(attaching)
+
+    const stopped = next(attaching, { type: 'stop' })
+    expect(detachedIds(stopped).sort((a, b) => a - b)).toEqual([oldId, newId].sort((a, b) => a - b))
+    expect(types(stopped)).toContain('cancelEnsure')
+    expect(stopped.state.placeholder).toBeNull()
+  })
+
+  it('does nothing at all after it has stopped', () => {
+    const playing = live('low')
+    const id = visibleLayerId(playing.state) ?? 0
+    const stopped = next(playing, { type: 'stop' })
+    // A reply from a call that was in flight at unmount is the event guaranteed to arrive late, and
+    // acting on it is how a remounting grid leaks a socket per remount.
+    const late: PlayerEvent[] = [
+      { type: 'ensured', requestId: 1, result: { ok: true, value: handle({ quality: 'low' }) } },
+      { type: 'runtime', runtime: { state: 'up', port: NEW_PORT, epoch: 2 } },
+      { type: 'sync', quality: 'high', camera: 'online' },
+      { type: 'socketClosed', id },
+      { type: 'stalled', id },
+      { type: 'firstFrame', id },
+    ]
+    let step: PlayerStep = stopped
+    for (const event of late) {
+      step = next(step, event)
+      expect(step.commands).toEqual([])
+    }
+    expect(step.state.current).toBeNull()
+    expect(step.state.incoming).toBeNull()
+  })
+})
+
+describe('cameraAvailability (CAM-3)', () => {
+  it('is online only for CONNECTED', () => {
+    expect(cameraAvailability(camera('CONNECTED'))).toBe('online')
+  })
+
+  it('is connecting for CONNECTING and for a camera the inventory has not pushed yet (CAM-2)', () => {
+    expect(cameraAvailability(camera('CONNECTING'))).toBe('connecting')
+    expect(cameraAvailability(undefined)).toBe('connecting')
+  })
+
+  it('is offline for DISCONNECTED and for a state Protect has not documented (R8/R11)', () => {
+    expect(cameraAvailability(camera('DISCONNECTED'))).toBe('offline')
+    expect(cameraAvailability(camera('REBOOTING'))).toBe('offline')
+    expect(cameraAvailability(camera(''))).toBe('offline')
+  })
+})
+
+describe('the state the component renders from', () => {
+  it('never has a placeholder while a layer is on screen', () => {
+    // The invariant behind "no flash of placeholder": every state reachable below is checked.
+    const sequences: PlayerEvent[][] = [
+      [
+        { type: 'sync', quality: 'low', camera: 'online' },
+        { type: 'sync', quality: 'high', camera: 'online' },
+        { type: 'sync', quality: 'low', camera: 'online' },
+      ],
+      [
+        { type: 'sync', quality: 'low', camera: 'online' },
+        { type: 'runtime', runtime: { state: 'up', port: PORT, epoch: 1 } },
+        { type: 'runtime', runtime: { state: 'up', port: NEW_PORT, epoch: 2 } },
+      ],
+    ]
+    for (const events of sequences) {
+      let step = start('low')
+      for (const event of events) {
+        step = next(step, event)
+        assertNoPlaceholderOverVideo(step.state)
+        // Answer every ensure with a handle and a frame, so the sequence runs with video on screen.
+        for (const command of step.commands) {
+          if (command.type !== 'ensure') continue
+          step = next(step, {
+            type: 'ensured',
+            requestId: command.requestId,
+            result: {
+              ok: true,
+              value: handle({
+                quality: command.quality,
+                port: step.state.runtime?.state === 'up' ? step.state.runtime.port : PORT,
+                epoch: step.state.runtime?.state === 'up' ? step.state.runtime.epoch : 1,
+              }),
+            },
+          })
+          assertNoPlaceholderOverVideo(step.state)
+          const attaches = only(step, 'attach')
+          const attach = attaches[0]
+          if (attach === undefined) continue
+          step = next(step, { type: 'firstFrame', id: attach.id })
+          assertNoPlaceholderOverVideo(step.state)
+        }
+      }
+    }
+  })
+})
+
+function assertNoPlaceholderOverVideo(state: PlayerState): void {
+  if (visibleLayerId(state) !== null) expect(state.placeholder).toBeNull()
+}

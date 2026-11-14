@@ -27,9 +27,23 @@ Recorded with the P2.5 perf harness (`npm run perf`, `scripts/perf/` + `src/main
 - **Reconnects:** the camera in cell 7 (index 6) changed its `<video>` 5 times in the `high` run and once in the `medium` run, and cell 8 changed twice at `high`. That is the player retrying (NFR-7). Each time it recovered within one or two samples: "Not playing" peaked at 1 cell, in 1–2 samples. Both cameras are on a weaker Wi-Fi link, so the drops are expected; what matters is that the player recovered each time without help.
 - **First frame (`FIRST_FRAME_TIMEOUT_MS` = 10 s, P2.3):** the harness does not time first frames. In these runs the user saw every cell's first frame within 10 s, so 10 s is not too tight. It is kept as is.
 
-### Windows — pending
+### Windows
 
-Not measured yet. The harness runs there (`npm run perf` is portable), but with two gaps: Electron's own processes fall back to `app.getAppMetrics()` CPU × core count and working-set memory, because there is no `ps`; go2rtc's CPU and memory and the GPU utilisation column are recorded as "–" (not measured). Windows sampling for those is future work.
+| Machine | Quality | Streams | CPU total % (mean / p95) | Renderer % | GPU proc % | go2rtc % | GPU util % (mean / p95) | RAM MB (mean / max) | RAM growth MB/h | Buffer lag s (mean / p95 / max) | Dropped % | Not playing (max cells / samples) | Decoder | Run |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| Windows 11 (10.0.26200, x64, i7-1185G7 / Iris Xe, 8 cores, 16 GB) | medium | 9 | 56.9 / 64.7 | 23.1 / 26.4 | 25.8 / 29.2 | – | – | 1095 / 1199 | 614.8 | 1.00 / 1.05 / 1.18 | 0.98 | 0 / 0 | D3D11VideoDecoder (platform; gpu enabled) | 2026-11-14, 30 min |
+
+The harness works on Windows with two gaps:
+
+- **CPU and memory are measured differently.** Electron's processes use `app.getAppMetrics()` CPU × core count and working-set memory, because Windows has no `ps`. So the RAM figures can't be compared directly with the macOS RSS figures.
+- **Two columns are not measured.** go2rtc's CPU and memory, and GPU utilisation, show "–". Sampling them on Windows is future work.
+
+**Reading the Windows `medium` run (2026-11-14):**
+
+- **CPU (NFR-4):** about 57 % of one core, which is about 7 % of this 8-core laptop. The renderer takes about 23 % and the GPU process about 26 %. That passes NFR-4 easily, on a machine much closer to "mid-range" than the M5 Pro.
+- **Decode (NFR-3):** `D3D11VideoDecoder` with the platform decoder on every player.
+- **Latency proxy (NFR-5):** 1.00 s mean and 1.05 s p95. Dropped frames were 0.98 %, and every cell played throughout.
+- **RAM (G2) is not settled here either.** The GPU process is the largest at 578 MB mean (640 MB max), and the renderer averages 253 MB (301 MB max). Both rise during the run, and the summary does not show whether they slow down the way macOS did. If it is needed, the curve is in `samples.jsonl` in that run's output folder on the laptop.
 
 ## Method
 

@@ -121,6 +121,8 @@ const impl: ViewProtectApi = {
   listCameras: (): Promise<IpcResult<Camera[]>> => call(IPC.listCameras, undefined),
   snapshot: (input): Promise<IpcResult<SnapshotResult>> => call(IPC.snapshot, input),
   ensureStream: (input): Promise<IpcResult<StreamHandle>> => call(IPC.ensureStream, input),
+  setViews: (input): Promise<IpcResult<AppState>> => call(IPC.setViews, input),
+  setLastView: (input): Promise<IpcResult<AppState>> => call(IPC.setLastView, input),
 
   onConnection: (listener: (status: ConnectionStatus) => void): Unsubscribe =>
     subscribe(IPC_EVENTS.connection, listener),

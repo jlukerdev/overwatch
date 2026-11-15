@@ -1,6 +1,6 @@
 # View Protect — Prototype Specification
 
-**Status:** Draft v0.3 (prototype). §5 corrected against the Phase 0 spikes (P0.3–P0.5) on 2026-11-13. The Protect interface is verified against the official v7.3.74 contract **and** against the console running 7.3.74; Access is still community-sourced and unverified (§5.2) · **Owner:** personal use only · **Built by:** coding agents (see `/CLAUDE.md`)
+**Status:** Draft v0.3 (prototype). §5 corrected against the Phase 0 spikes (P0.3–P0.5) on 2026-11-13. Views amended on 2026-11-14 (spanning cells, letterboxed grid, cell gap: VIEW-1/5/7, §6 `schemaVersion: 2`). The Protect interface is verified against the official v7.3.74 contract **and** against the console running 7.3.74; Access is still community-sourced and unverified (§5.2) · **Owner:** personal use only · **Built by:** coding agents (see `/CLAUDE.md`)
 
 View Protect is a desktop app for Windows and macOS that connects to a local UniFi Protect console through the official **Integration API**. It shows live camera feeds in named, user-defined grid **Views**. It also does light UniFi Access control: unlocking the door linked to a camera.
 
@@ -25,8 +25,8 @@ It is **not** an NVR client. There is no playback, timeline or export, because t
 ### 2.1 Prototype (this spec)
 Prove the hard parts end to end with functional UI, but no polish:
 1. Connect to Protect with an API key. List cameras.
-2. Create, edit, delete and switch between named grid Views.
-3. Live grid that always scales to the window.
+2. Create, edit, delete and switch between named grid Views, with cells that may span several grid slots.
+3. Live grid that scales to the largest size that fits the window, keeping the View's aspect ratio (letterboxed).
 4. Click a cell to make that camera fill the view. Escape or a click goes back to the grid.
 5. Digital zoom with a reset to 100%.
 6. Multi-camera cells: rotate on an interval, and/or auto-switch on motion.
@@ -37,7 +37,6 @@ Prove the hard parts end to end with functional UI, but no polish:
 - Auto-update, code signing and notarization
 - Two-way talk (talkback)
 - Multi-monitor views and kiosk/auto-start
-- Cells that span multiple grid slots (non-uniform layouts)
 - Exporting and importing views
 - Remote access through the Site Manager Cloud Connector, for control/status/unlock only (§5.1). Video still needs LAN or VPN
 - Importing Protect's own Live Views (`/v1/liveviews`) as View Protect Views
@@ -71,12 +70,13 @@ IDs are referenced in `DEV_PLAN.md` and in commit messages.
 - **CAM-4** For doorbells with `hasPackageCamera`, the package camera can be put in a cell as its own source (`<cameraId>:package`). **Unverified:** the development network has no doorbell, so nothing with `hasPackageCamera` was exercised (P0.3 §2).
 
 ### Views (VIEW)
-- **VIEW-1** A View has a name and a uniform grid layout, `cols × rows`. Presets are 1×1, 2×2, 3×2, 3×3, 4×3 and 4×4. Custom sizes go up to 4×4.
+- **VIEW-1** A View has a name, a `cols × rows` slot grid (each 1–4) and cells that each cover a rectangle of slots. Together the cells **tile the grid exactly**: no gaps and no overlaps; an empty slot is a cell with no cameras. Presets: 1×1, 2×2, 3×2, 3×3, 4×3 and 4×4 (all 1×1 cells), plus spanned presets such as **"1 + 5"** (3×3 with a 2×2 cell top-left) **"1 + 7"** (4×4 with a 3×3 cell top-left) and **"2 + 8"** (4×4 with two 2×2 cells across the top). Custom sizes go up to 4×4. The editor merges a selected rectangle of whole cells into one cell, or splits a spanned cell back into 1×1 cells (P3.3).
 - **VIEW-2** Each cell holds zero or more cameras (see CELL).
 - **VIEW-3** The user can create, rename, duplicate, delete and reorder Views. A view editor assigns cameras to cells with drag-and-drop or a picker.
 - **VIEW-4** The active View is chosen from a View switcher (sidebar or top bar). Keyboard: `1`–`9` select View N.
-- **VIEW-5** The grid always fills the window. Each cell keeps the camera's aspect ratio inside it (`contain` by default, `cover` as an option per View), and the layout reflows on resize with no scrollbars.
+- **VIEW-5** The grid is scaled to the largest size that fits the window and centred horizontally or vertically, so that a 1×1 cell has exactly the View's video aspect ratio, `aspect` (per View, default 16:9). The leftover band is background. `aspect` is a View setting rather than read from the cameras because the Integration API does not report a camera's resolution: the `camera` schema in the contract has no width or height. A camera whose own shape differs from `aspect` (e.g. a doorbell) is fitted inside its cell by the View's `fit` (`contain` by default, `cover` as an option). The layout reflows on resize with no scrollbars.
 - **VIEW-6** Views and settings are stored locally as versioned JSON and survive restarts. The app reopens the last active View.
+- **VIEW-7** Each View has a `gap` in px (0–64, default 0) between adjacent cells only, with none at the outer edge. With unit cell `w × h` and gap `g > 0`, a cell spanning `k` slots is `k·w + (k−1)·g` wide and `k·h + (k−1)·g` tall, so it cannot match `aspect` exactly while the 1×1 cells do. The app keeps the 1×1 cells exact; the spanned cell's few px of difference is taken up by `fit` (e.g. ≈3.5 px of height for a 2×2 cell with an 8 px gap at 16:9). Accepted by the user on 2026-11-14.
 
 ### Cells (CELL)
 - **CELL-1** A cell with one camera shows that camera live.
@@ -268,7 +268,7 @@ go2rtc:   rtspx://<console-host>:7441/<alias>
 The perf harness (`npm run perf`, `scripts/perf/run.ts`, `src/main/perf/`) runs the built app in a measuring mode. Results and the method are in `docs/perf-results.md`.
 
 - **When:** only when `VP_PERF_QUALITY` (`low`/`medium`/`high`) is set **and** the app is unpackaged. A packaged build ignores every `VP_PERF_*` variable. The others are `VP_PERF_DURATION_S`, `VP_PERF_WARMUP_S`, `VP_PERF_INTERVAL_S`, `VP_PERF_OUT` (absolute output directory) and `VP_PERF_LABEL`; invalid values stop the app at launch.
-- **Auto-connects:** an explicit exception to CON-4's "nothing connects on launch". Starting the harness is the user's deliberate action, so main calls `connect()` itself, then opens the Live screen and picks the temp-grid preset by clicking its buttons.
+- **Auto-connects:** an explicit exception to CON-4's "nothing connects on launch". Starting the harness is the user's deliberate action, so main calls `connect()` itself, then opens the Live screen and picks the temp-grid preset by clicking its buttons. From P3.2 the temp grid is gone and the harness picks a View instead.
 - **Grid quality:** the run's quality replaces `settings.streams.defaultGridQuality` in the settings the renderer is *shown* (IPC `AppState`), in memory only. The stored config is never changed and no save can persist the override.
 - **Ends by itself:** after the warm-up and the measured duration (or early on a closed window, a quit request, a crashed renderer or a signal) it writes its results, stops go2rtc and quits. Nothing it records or prints contains a URL, the console address, the go2rtc port, a credential or a camera name (CON-2, NFR-9).
 
@@ -279,7 +279,7 @@ The perf harness (`npm run perf`, `scripts/perf/run.ts`, `src/main/perf/`) runs 
 ```jsonc
 // <userData>/config.json  (secrets live separately in secrets.bin, encrypted)
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "console": { "host": "192.0.2.10", "certFingerprint": "7B:12:B7:0C:…:B8:5C:B6:6A", "accessEnabled": false,
                "accessBaseUrl": null, "accessCertFingerprint": null },   // DOOR-0: off by default; accessBaseUrl null = https://<host>:12445/api/v1/developer
   "doorLinks": { "<cameraId>": "<accessDoorId>" },
@@ -287,15 +287,20 @@ The perf harness (`npm run perf`, `scripts/perf/run.ts`, `src/main/perf/`) runs 
     {
       "id": "uuid",
       "name": "Perimeter",
-      "cols": 3, "rows": 3,
+      "cols": 3, "rows": 3,         // "1 + 5": one 2×2 cell and five 1×1 cells
+      "aspect": { "w": 16, "h": 9 },  // shape of a 1×1 cell (VIEW-5)
+      "gap": 0,                     // px between adjacent cells, 0–64 (VIEW-7)
       "fit": "contain",
       "gridQuality": null,          // null = use settings.defaultGridQuality (QUAL-2)
       "fillQuality": null,          // null = use settings.defaultFillQuality
-      "cells": [
-        { "cameraIds": ["camA"], "quality": "medium" },   // per-cell override (QUAL-3)
-        { "cameraIds": ["camB", "camC", "camD"], "rotateIntervalSec": 10, "motionSwitch": true,
+      "cells": [                    // col/row = top-left slot, 0-based; colSpan/rowSpan default 1
+        { "col": 0, "row": 0, "colSpan": 2, "rowSpan": 2, "cameraIds": ["camA"], "quality": "medium" },   // per-cell override (QUAL-3)
+        { "col": 2, "row": 0, "colSpan": 1, "rowSpan": 1, "cameraIds": ["camB", "camC", "camD"], "rotateIntervalSec": 10, "motionSwitch": true,
           "motionTriggers": ["motion", "smartDetect", "ring"], "smartDetectTypes": ["person"], "motionHoldSec": 15 },
-        { "cameraIds": [] }
+        { "col": 2, "row": 1, "colSpan": 1, "rowSpan": 1, "cameraIds": ["camE"] },
+        { "col": 0, "row": 2, "colSpan": 1, "rowSpan": 1, "cameraIds": ["camF"] },
+        { "col": 1, "row": 2, "colSpan": 1, "rowSpan": 1, "cameraIds": [] },
+        { "col": 2, "row": 2, "colSpan": 1, "rowSpan": 1, "cameraIds": ["camG"] }
       ]
     }
   ],
@@ -305,13 +310,15 @@ The perf harness (`npm run perf`, `scripts/perf/run.ts`, `src/main/perf/`) runs 
 }
 ```
 
-`cells.length === cols * rows`, in row-major order.
+**Tiling rule (VIEW-1):** every cell lies inside the grid (`col + colSpan ≤ cols`, `row + rowSpan ≤ rows`, spans ≥ 1) and every slot is covered by exactly one cell. Cells are stored sorted by `(row, col)`. `aspect.w` and `aspect.h` are positive; `gap` is 0–64.
+
+**Migration 1 → 2** (`src/main/config/migrations.ts`): v1 stored exactly `cols * rows` cells in row-major order. Cell `i` becomes a 1×1 cell at `col = i % cols`, `row = ⌊i / cols⌋`; `aspect` and `gap` take their defaults (16:9, 0).
 
 **`console.host` and `console.accessBaseUrl`** (the rules `src/main/console/endpoints.ts` encodes, added in P1.3/P1.4). `host` is an IP or host name and may carry a non-default port (`udm.local:8443`); a scheme other than `https://` is refused rather than upgraded, since the API key may only travel over TLS (CON-2, R5), and an IPv6 literal needs brackets to tell the address from a port. `accessBaseUrl` is the **API root** — origin *and* path, the same value the P0.4 spike takes as `VP_ACCESS_BASE_URL` — so the §5.2 alternative behind the console proxy and the local mock are both just a different value here. `null` derives `https://<console.host>:12445/api/v1/developer`, **ignoring any port in `host`**, because the developer API has its own.
 
 **Two certificate fingerprints, not one:** pinning is per host:port (§5.2, P0.4 §4), and the Access developer API answers on 12445 while Protect is behind 443, so `certFingerprint` pins the console and `accessCertFingerprint` pins the Access endpoint; both are `null` until the user accepts them (CON-3). The schema is validated with zod on load. Unknown or older `schemaVersion` values go through migrations in `src/main/config/migrations.ts`.
 
-### 6.1 What crosses IPC (P1.5, streams added in P2.2)
+### 6.1 What crosses IPC (P1.5, streams added in P2.2, Views in P3.1)
 
 The contract is `src/shared/ipc.ts`: one zod schema per request and per reply, validated in the preload *and* again in main. Three rules decide what may be in it.
 
@@ -320,6 +327,8 @@ The contract is `src/shared/ipc.ts`: one zod schema per request and per reply, v
 **Failure is a value, not a throw.** Every call answers `{ ok: true, value }` or `{ ok: false, error }`, where the error is a `kind` the UI can branch on plus one sentence written for a person — no stack, no cause chain, no URL and no query string. One `kind` is about the local gateway rather than the console: `gateway-down` means go2rtc is not up (crashed, restarting, or never started), is always retryable, and is deliberately distinct from CAM-3's camera-offline placeholder and from a Settings problem, because the camera is fine and nothing in Settings fixes it. An exception thrown out of a handler would otherwise reach the renderer as main's stack glued to a string, which is both useless to the UI and the easiest way to leak a path.
 
 **Every mutation answers with the whole app state.** Saving a host, storing a key or accepting a certificate changes several things at once (the pin, what is resolvable, whether Access is on), so main returns the new truth rather than having the renderer patch its own copy and drift.
+
+**Views (P3.1).** `vp:views/set` takes the whole View list plus `lastViewId`; main validates it with the View schema, tiling rule (§6) included, and unique View ids, and answers with `AppState` like every mutation. `vp:views/active` takes only `lastViewId`, so switching Views (VIEW-4) does not resend every View.
 
 Main pushes four things, and only these: the connection status (CON-5), the whole camera inventory after each connect, reconnect or add/remove (CAM-2 — `GET /v1/cameras` stays the authority, because the devices feed's shapes are unverified, R11), single camera `state` changes, which is the path gate G1 times at ten seconds, and — from Phase 2 — the go2rtc runtime: up on a port with an epoch, or down. go2rtc takes a new free port every launch, so a handle from an earlier epoch is dead; the push is what lets a player re-ask for its stream instead of inferring a restart from a closed socket (gate G2).
 

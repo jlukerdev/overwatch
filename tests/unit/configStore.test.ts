@@ -38,9 +38,15 @@ function configWithView(lastViewId = 'v1'): Config {
         cols: 2,
         rows: 2,
         fit: 'contain',
+        aspect: { w: 16, h: 9 },
+        gap: 0,
         gridQuality: null,
         fillQuality: 'high',
-        cells: Array.from({ length: 4 }, () => ({
+        cells: Array.from({ length: 4 }, (_, i) => ({
+          col: i % 2,
+          row: Math.floor(i / 2),
+          colSpan: 1,
+          rowSpan: 1,
           cameraIds: ['camA'],
           quality: null,
           motionSwitch: false,
@@ -76,9 +82,26 @@ describe('load', () => {
   })
 
   it('fills in defaults for a partial file written by hand', async () => {
-    await writeFile(join(dir, CONFIG_FILE_NAME), '{ "schemaVersion": 1 }')
+    await writeFile(join(dir, CONFIG_FILE_NAME), '{ "schemaVersion": 2 }')
     const result = await store().load()
     expect(result).toEqual({ source: 'file', config: defaultConfig(), migratedFrom: null })
+  })
+  it('migrates a v1 file on load (P3.1: cells gain their placement)', async () => {
+    await writeFile(
+      join(dir, CONFIG_FILE_NAME),
+      JSON.stringify({
+        schemaVersion: 1,
+        views: [{ id: 'v1', name: 'n', cols: 2, rows: 1, cells: [{ cameraIds: ['camA'] }, {}] }],
+      }),
+    )
+    const result = await store().load()
+    expect(result).toMatchObject({ source: 'file', migratedFrom: 1 })
+    if (result.source !== 'file') return
+    expect(result.config.schemaVersion).toBe(2)
+    expect(result.config.views[0]?.cells).toMatchObject([
+      { col: 0, row: 0, colSpan: 1, rowSpan: 1, cameraIds: ['camA'] },
+      { col: 1, row: 0, colSpan: 1, rowSpan: 1, cameraIds: [] },
+    ])
   })
 })
 
@@ -87,7 +110,7 @@ describe('save', () => {
     await store().save(configWithView())
     const text = await readFile(join(dir, CONFIG_FILE_NAME), 'utf8')
     expect(text.endsWith('\n')).toBe(true)
-    expect(text).toContain('\n  "schemaVersion": 1,')
+    expect(text).toContain('\n  "schemaVersion": 2,')
     expect(text).toContain('\n      "cells": [')
   })
 
@@ -108,7 +131,7 @@ describe('save', () => {
     await store().save(good)
     const view = good.views.at(0)
     if (!view) throw new Error('expected a view')
-    // cells.length no longer matches cols * rows (SPEC §6).
+    // The cells no longer tile the grid (SPEC §6).
     const broken: Config = { ...good, views: [{ ...view, cells: [] }] }
     await expect(store().save(broken)).rejects.toThrow()
     expect((await store().load()).config).toEqual(good)
@@ -153,6 +176,58 @@ describe('save', () => {
   })
 })
 
+describe('update (the read-modify-write every writer in main uses, VIEW-6)', () => {
+  it('refuses to run before load(), since there is nothing to modify yet', async () => {
+    await expect(store().update((latest) => latest)).rejects.toThrow(/before load/)
+    expect(await entries()).toEqual([])
+  })
+
+  it('starts from what load() returned and writes the result', async () => {
+    await store().save(configWithView('v1'))
+    const s = store()
+    await s.load()
+    const written = await s.update((latest) => ({ ...latest, lastViewId: null }))
+    expect(written.views.map((v) => v.id)).toEqual(['v1'])
+    expect((await store().load()).config).toEqual(written)
+  })
+
+  it('gives each overlapping update the result of the one queued before it', async () => {
+    const s = store()
+    await s.load()
+    // Neither call carries the other's field: each changes only its own, so both must survive.
+    await Promise.all([
+      s.update((latest) => ({ ...latest, console: { ...latest.console, host: 'udm.local' } })),
+      s.update((latest) => ({ ...latest, views: configWithView().views })),
+    ])
+    const { config } = await store().load()
+    expect(config.console.host).toBe('udm.local')
+    expect(config.views.map((v) => v.id)).toEqual(['v1'])
+  })
+
+  it('starts from the last save too, not only the last update', async () => {
+    const s = store()
+    await s.load()
+    await s.save(configWithView('v1'))
+    const written = await s.update((latest) => latest)
+    expect(written.views.map((v) => v.id)).toEqual(['v1'])
+  })
+
+  it('rejects an invalid result without writing it, and the next update starts from the file', async () => {
+    const s = store()
+    await s.load()
+    await s.update((latest) => ({ ...latest, lastViewId: 'kept' }))
+    // Edits its argument in place before failing validation: the copy keeps that from leaking.
+    await expect(
+      s.update((latest) => {
+        latest.lastViewId = 'leaked'
+        return { ...latest, schemaVersion: 99 } as unknown as Config
+      }),
+    ).rejects.toThrow()
+    expect((await store().load()).config.lastViewId).toBe('kept')
+    expect((await s.update((latest) => latest)).lastViewId).toBe('kept')
+  })
+})
+
 describe('recovery', () => {
   async function loadBad(contents: string): Promise<{
     problem: string
@@ -184,12 +259,12 @@ describe('recovery', () => {
   it('recovers a file that parses but does not match the schema', async () => {
     const { problem } = await loadBad(
       JSON.stringify({
-        schemaVersion: 1,
+        schemaVersion: 2,
         views: [{ id: 'v1', name: 'n', cols: 2, rows: 2, cells: [] }],
       }),
     )
     expect(problem).toContain('does not match the schema')
-    expect(problem).toContain('cells.length must be cols * rows')
+    expect(problem).toContain('is not covered by any cell')
   })
 
   it('refuses a config from a newer build instead of stripping its fields', async () => {

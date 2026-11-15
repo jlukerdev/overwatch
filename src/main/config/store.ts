@@ -52,6 +52,19 @@ export interface ConfigStore {
    * in). Throws only on a programmer error (invalid config) or a real I/O failure.
    */
   save(config: Config): Promise<Config>
+  /**
+   * The read-modify-write every writer in main uses (VIEW-6, CON-3). `mutate` is called **inside**
+   * the write queue with a copy of the latest config this store holds — what `load()` returned, or
+   * what the last successful `save`/`update` wrote — so it sees every write queued before it, and
+   * should change only the fields its caller owns. The result is validated, written atomically and
+   * returned (defaults filled in).
+   *
+   * This is what keeps two concurrent writers from losing each other's change: a whole config
+   * built from a snapshot taken *before* an await would carry the other writer's stale fields back
+   * onto the disk. A mutator that throws rejects this update only; the queue carries on. Throws if
+   * called before `load()`, which is a programmer error (there is nothing to modify yet).
+   */
+  update(mutate: (latest: Config) => Config): Promise<Config>
 }
 
 export function createConfigStore(options: ConfigStoreOptions): ConfigStore {
@@ -59,13 +72,29 @@ export function createConfigStore(options: ConfigStoreOptions): ConfigStore {
   const dir = options.dir
   const path = join(dir, fileName)
 
-  // Saves run one at a time: two overlapping saves must not interleave their mkdir, temp file and
-  // rename, and the last caller to enqueue must be what ends up on disk.
+  // Writes (`save` and `update`) run one at a time: two overlapping writes must not interleave
+  // their mkdir, temp file and rename, the last caller to enqueue must be what ends up on disk, and
+  // an `update`'s mutator must see every write queued before it.
   let queue: Promise<unknown> = Promise.resolve()
   const serialize = <T>(task: () => Promise<T>): Promise<T> => {
     const run = queue.then(task, task)
     queue = run.catch(() => undefined)
     return run
+  }
+
+  // The config the next `update` starts from: set by `load()` and by every successful write, so it
+  // is always what is on disk (or the defaults that will be, on a first run). `null` until loaded.
+  let latest: Config | null = null
+
+  /** Validates and writes. Only ever called from inside `serialize`. */
+  async function write(config: Config): Promise<Config> {
+    // Validate before writing, so a bug in a caller cannot leave an unloadable file on disk.
+    const parsed = ConfigSchema.parse(config)
+    await mkdir(dir, { recursive: true })
+    // 2-space indent and a trailing newline: this file is meant to stay readable.
+    await writeFileAtomic(path, `${JSON.stringify(parsed, null, 2)}\n`)
+    latest = parsed
+    return parsed
   }
 
   /**
@@ -129,58 +158,72 @@ export function createConfigStore(options: ConfigStoreOptions): ConfigStore {
     path,
 
     async load(): Promise<ConfigLoadResult> {
-      let text: string
-      try {
-        text = await readFile(path, 'utf8')
-      } catch (err) {
-        if (errorCode(err) === 'ENOENT') return { source: 'defaults', config: defaultConfig() }
-        // Unreadable for another reason (permissions, a directory in its place). Moving it aside
-        // will probably fail too, which `recovery.backupPath: null` reports.
-        return await recover(`config.json could not be read: ${message(err)}`)
-      }
-
-      let raw: unknown
-      try {
-        raw = JSON.parse(text)
-      } catch (err) {
-        // Safe to quote the parser: config.json holds no secrets (CON-2).
-        return await recover(`config.json is not valid JSON: ${message(err)}`)
-      }
-
-      const migrated = migrateConfig(raw)
-      if (!migrated.ok) {
-        // A file from a *newer* build is not damaged, it is just from the future: this build cannot
-        // read it, but the user's Views are all in it. Keep the distinction in the backup name so
-        // they can put it back after upgrading again (a real downgrade path is MVP work).
-        return await recover(
-          migrated.message,
-          migrated.reason === 'newer-version' ? 'newer-schema' : 'corrupt',
-        )
-      }
-
-      const parsed = ConfigSchema.safeParse(migrated.config)
-      if (!parsed.success) {
-        const detail = z.prettifyError(parsed.error)
-        return await recover(`config.json does not match the schema:\n${detail}`)
-      }
-
-      return {
-        source: 'file',
-        config: parsed.data,
-        migratedFrom: migrated.applied.length > 0 ? migrated.fromVersion : null,
-      }
+      const result = await read()
+      latest = result.config
+      return result
     },
 
     async save(config: Config): Promise<Config> {
-      // Validate before writing, so a bug in a caller cannot leave an unloadable file on disk.
+      // Validated up front as well as in `write`, so an invalid config throws at the call rather
+      // than after every queued write ahead of it.
       const parsed = ConfigSchema.parse(config)
+      return await serialize(() => write(parsed))
+    },
+
+    async update(mutate: (latest: Config) => Config): Promise<Config> {
       return await serialize(async () => {
-        await mkdir(dir, { recursive: true })
-        // 2-space indent and a trailing newline: this file is meant to stay readable.
-        await writeFileAtomic(path, `${JSON.stringify(parsed, null, 2)}\n`)
-        return parsed
+        if (latest === null) {
+          throw new Error('ConfigStore.update() was called before load(): there is no config yet.')
+        }
+        // A copy, so a mutator that edits in place and then fails validation cannot leave `latest`
+        // describing a config that was never written.
+        return await write(mutate(structuredClone(latest)))
       })
     },
+  }
+
+  /** `load()` without the bookkeeping: reads, migrates and validates, never throwing for a bad file. */
+  async function read(): Promise<ConfigLoadResult> {
+    let text: string
+    try {
+      text = await readFile(path, 'utf8')
+    } catch (err) {
+      if (errorCode(err) === 'ENOENT') return { source: 'defaults', config: defaultConfig() }
+      // Unreadable for another reason (permissions, a directory in its place). Moving it aside
+      // will probably fail too, which `recovery.backupPath: null` reports.
+      return await recover(`config.json could not be read: ${message(err)}`)
+    }
+
+    let raw: unknown
+    try {
+      raw = JSON.parse(text)
+    } catch (err) {
+      // Safe to quote the parser: config.json holds no secrets (CON-2).
+      return await recover(`config.json is not valid JSON: ${message(err)}`)
+    }
+
+    const migrated = migrateConfig(raw)
+    if (!migrated.ok) {
+      // A file from a *newer* build is not damaged, it is just from the future: this build cannot
+      // read it, but the user's Views are all in it. Keep the distinction in the backup name so
+      // they can put it back after upgrading again (a real downgrade path is MVP work).
+      return await recover(
+        migrated.message,
+        migrated.reason === 'newer-version' ? 'newer-schema' : 'corrupt',
+      )
+    }
+
+    const parsed = ConfigSchema.safeParse(migrated.config)
+    if (!parsed.success) {
+      const detail = z.prettifyError(parsed.error)
+      return await recover(`config.json does not match the schema:\n${detail}`)
+    }
+
+    return {
+      source: 'file',
+      config: parsed.data,
+      migratedFrom: migrated.applied.length > 0 ? migrated.fromVersion : null,
+    }
   }
 }
 

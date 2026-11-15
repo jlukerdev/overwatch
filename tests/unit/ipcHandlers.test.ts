@@ -21,7 +21,7 @@ import { CameraSchema, ConsoleConfigSchema, type Settings } from '@shared/models
 import type { StreamQuality } from '@shared/quality'
 import { streamHandle } from '@shared/streams'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { ConfigSchema, type Config } from '../../src/main/config/schema'
+import { ConfigSchema, CONFIG_SCHEMA_VERSION, type Config } from '../../src/main/config/schema'
 import type { ConnectionManager } from '../../src/main/connection'
 import {
   createIpcRouter,
@@ -94,7 +94,7 @@ interface SetupOptions {
 
 function setup(options: SetupOptions = {}) {
   let current: Config = ConfigSchema.parse({
-    schemaVersion: 1,
+    schemaVersion: CONFIG_SCHEMA_VERSION,
     console: ConsoleConfigSchema.parse({ host: '192.0.2.10', certFingerprint: FP_A }),
   })
   const secrets = {
@@ -124,12 +124,27 @@ function setup(options: SetupOptions = {}) {
   const readLeaf = vi.fn((host: string, port: number) =>
     Promise.resolve(leaf(options.presented ?? FP_A, `${host}:${String(port)}`)),
   )
+  /**
+   * The config store over an in-memory "disk": `update` applies the mutator to what was last written
+   * and validates like the real one (it throws on an invalid config).
+   */
+  let stored: Config = current
+  const config = {
+    update: vi.fn((mutate: (latest: Config) => Config) => {
+      stored = ConfigSchema.parse(mutate(structuredClone(stored)))
+      return Promise.resolve(stored)
+    }),
+  }
   const services: IpcHandlerServices = {
     secrets,
     credentials: { protectApiKey: API_KEY },
     get current() {
       return current
     },
+    set current(next: Config) {
+      current = next
+    },
+    config,
     pins,
   }
   const manager = {
@@ -187,6 +202,7 @@ function setup(options: SetupOptions = {}) {
   return {
     router,
     services,
+    config,
     secrets,
     pins,
     readLeaf,
@@ -194,6 +210,10 @@ function setup(options: SetupOptions = {}) {
     registry,
     get console() {
       return current.console
+    },
+    /** What the fake config store last wrote. */
+    get disk() {
+      return stored
     },
     setReady(next: boolean) {
       ready = next
@@ -307,6 +327,16 @@ describe('request validation (CLAUDE.md)', () => {
       payload: { cameraId: 'cam-1', quality: 'ultra' },
       why: 'a quality that does not exist',
     },
+    {
+      channel: IPC.setViews.channel,
+      payload: { views: [testView('v1', { cells: [] })], lastViewId: null },
+      why: 'a View whose cells do not tile its grid',
+    },
+    {
+      channel: IPC.setLastView.channel,
+      payload: { viewId: '' },
+      why: 'an empty View id',
+    },
   ]
 
   for (const { channel, payload, why } of cases) {
@@ -353,6 +383,10 @@ function payloadFor(channel: string): unknown {
       return { cameraId: 'cam-1', highQuality: false }
     case IPC.ensureStream.channel:
       return { cameraId: 'cam-1', quality: 'low' }
+    case IPC.setViews.channel:
+      return { views: [], lastViewId: null }
+    case IPC.setLastView.channel:
+      return { viewId: null }
     default:
       return undefined
   }
@@ -715,6 +749,122 @@ describe('the connection channels', () => {
       kind: 'internal',
       message: 'something went wrong in main',
     })
+  })
+})
+
+/** A 2×2 View with one camera top-left, as the renderer would send it (raw, pre-parse). */
+function testView(id: string, overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    id,
+    name: `View ${id}`,
+    cols: 2,
+    rows: 2,
+    cells: [
+      { col: 0, row: 0, cameraIds: ['cam-1'] },
+      { col: 1, row: 0 },
+      { col: 0, row: 1 },
+      { col: 1, row: 1 },
+    ],
+    ...overrides,
+  }
+}
+
+describe('setViews / setLastView (P3.1, VIEW-3/4/6)', () => {
+  it('saves the Views through the config store and answers with the new state', async () => {
+    const result = await h.call<AppState>(IPC.setViews, {
+      views: [testView('v1'), testView('v2', { gap: 4 })],
+      lastViewId: 'v2',
+    })
+    expect(h.config.update).toHaveBeenCalledTimes(1)
+    expect(h.disk).toMatchObject({
+      schemaVersion: CONFIG_SCHEMA_VERSION,
+      views: [{ id: 'v1' }, { id: 'v2', gap: 4 }],
+      lastViewId: 'v2',
+      // The rest of the config goes along untouched.
+      console: { host: '192.0.2.10', certFingerprint: FP_A },
+    })
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    expect(result.value.settings.views.map((v) => v.id)).toEqual(['v1', 'v2'])
+    expect(result.value.settings.views[1]?.aspect).toEqual({ w: 16, h: 9 })
+    expect(result.value.settings.lastViewId).toBe('v2')
+    // And it is the live config from now on.
+    expect(h.services.current.views).toHaveLength(2)
+  })
+
+  it('refuses duplicate View ids, naming the second one, and saves nothing', async () => {
+    const result = await h.call(IPC.setViews, {
+      views: [testView('v1'), testView('v1')],
+      lastViewId: 'v1',
+    })
+    expect(failure(result).kind).toBe('invalid-request')
+    expect(failure(result).message).toContain('views.1.id')
+    expect(failure(result).message).toContain('duplicate View id')
+    expect(h.config.update).not.toHaveBeenCalled()
+  })
+
+  it('refuses a View whose cells overlap, naming the cell (SPEC §6)', async () => {
+    const overlapping = testView('v1', {
+      cells: [
+        { col: 0, row: 0, colSpan: 2 },
+        { col: 1, row: 0 },
+        { col: 0, row: 1 },
+        { col: 1, row: 1 },
+      ],
+    })
+    const result = await h.call(IPC.setViews, { views: [overlapping], lastViewId: null })
+    expect(failure(result).kind).toBe('invalid-request')
+    expect(failure(result).message).toContain('views.0.cells.1')
+    expect(h.config.update).not.toHaveBeenCalled()
+  })
+
+  it('refuses a lastViewId that names none of the Views sent', async () => {
+    const result = await h.call(IPC.setViews, { views: [testView('v1')], lastViewId: 'gone' })
+    expect(failure(result).message).toContain('lastViewId')
+    expect(h.config.update).not.toHaveBeenCalled()
+  })
+
+  it('does not undo a console change that lands while the save is in flight', async () => {
+    let release = (): void => undefined
+    h.config.update.mockImplementationOnce(
+      (mutate: (latest: Config) => Config) =>
+        new Promise<Config>((resolve) => {
+          release = () => {
+            resolve(ConfigSchema.parse(mutate(h.disk)))
+          }
+        }),
+    )
+    const pending = h.call<AppState>(IPC.setViews, { views: [testView('v1')], lastViewId: 'v1' })
+    await Promise.resolve()
+    // A certificate accepted (or a host saved) meanwhile replaces `current`.
+    h.services.current = { ...h.services.current, console: { ...h.console, host: 'udm.local' } }
+    release()
+    const result = await pending
+    expect(result.ok).toBe(true)
+    expect(h.services.current.console.host).toBe('udm.local')
+    expect(h.services.current.views.map((v) => v.id)).toEqual(['v1'])
+  })
+
+  it('switches the active View with setLastView, keeping the Views as stored', async () => {
+    await h.call(IPC.setViews, { views: [testView('v1'), testView('v2')], lastViewId: 'v1' })
+    h.config.update.mockClear()
+    const result = await h.call<AppState>(IPC.setLastView, { viewId: 'v2' })
+    expect(result.ok && result.value.settings.lastViewId).toBe('v2')
+    expect(h.config.update).toHaveBeenCalledTimes(1)
+    expect(h.disk.views.map((v) => v.id)).toEqual(['v1', 'v2'])
+    expect(h.disk.lastViewId).toBe('v2')
+  })
+
+  it('refuses to switch to a View that is not stored', async () => {
+    const result = await h.call(IPC.setLastView, { viewId: 'nope' })
+    expect(failure(result).kind).toBe('not-found')
+    expect(h.config.update).not.toHaveBeenCalled()
+  })
+
+  it('reports a failed save as a failure, not a throw', async () => {
+    h.config.update.mockRejectedValueOnce(new Error('disk full'))
+    const result = await h.call(IPC.setLastView, { viewId: null })
+    expect(result.ok).toBe(false)
   })
 })
 

@@ -22,6 +22,8 @@ import {
   ipcResultSchema,
   SECRET_KEYS,
   SecretInputSchema,
+  SetLastViewInputSchema,
+  SetViewsInputSchema,
   SnapshotInputSchema,
   SnapshotResultSchema,
   type AppState,
@@ -222,6 +224,56 @@ describe('request schemas', () => {
     ]) {
       expect(EnsureStreamInputSchema.safeParse(bad).success, JSON.stringify(bad)).toBe(false)
     }
+  })
+
+  it('validates every View in setViews, tiling included (P3.1, SPEC §6)', () => {
+    const view = (id: string, cells: unknown[]) => ({ id, name: id, cols: 2, rows: 1, cells })
+    const good = view('v1', [
+      { col: 0, row: 0 },
+      { col: 1, row: 0 },
+    ])
+    const parsed = SetViewsInputSchema.parse({ views: [good], lastViewId: 'v1' })
+    // Defaults are filled in here, so main stores exactly what the contract produced.
+    expect(parsed.views[0]).toMatchObject({ aspect: { w: 16, h: 9 }, gap: 0, fit: 'contain' })
+    expect(SetViewsInputSchema.parse({ views: [], lastViewId: null }).views).toEqual([])
+
+    const holey = SetViewsInputSchema.safeParse({
+      views: [view('v1', [{ col: 0, row: 0 }])],
+      lastViewId: null,
+    })
+    expect(holey.success).toBe(false)
+    const spanned = SetViewsInputSchema.safeParse({
+      views: [view('v1', [{ col: 0, row: 0, colSpan: 2 }])],
+      lastViewId: null,
+    })
+    expect(spanned.success).toBe(true)
+  })
+
+  it('refuses duplicate View ids, and a lastViewId that names none of them', () => {
+    const view = (id: string) => ({ id, name: id, cols: 1, rows: 1, cells: [{ col: 0, row: 0 }] })
+    const dup = SetViewsInputSchema.safeParse({
+      views: [view('a'), view('b'), view('a')],
+      lastViewId: 'a',
+    })
+    expect(dup.success).toBe(false)
+    if (!dup.success) {
+      expect(dup.error.issues).toHaveLength(1)
+      expect(dup.error.issues[0]?.path).toEqual(['views', 2, 'id'])
+      expect(dup.error.issues[0]?.message).toContain('views[0]')
+    }
+    const dangling = SetViewsInputSchema.safeParse({ views: [view('a')], lastViewId: 'b' })
+    expect(dangling.success).toBe(false)
+    if (!dangling.success) expect(dangling.error.issues[0]?.path).toEqual(['lastViewId'])
+    expect(SetViewsInputSchema.safeParse({ views: [view('a')], lastViewId: '' }).success).toBe(
+      false,
+    )
+  })
+
+  it('takes a View id or null for setLastView', () => {
+    expect(SetLastViewInputSchema.parse({ viewId: 'v1' })).toEqual({ viewId: 'v1' })
+    expect(SetLastViewInputSchema.parse({ viewId: null })).toEqual({ viewId: null })
+    expect(SetLastViewInputSchema.safeParse({ viewId: '' }).success).toBe(false)
+    expect(SetLastViewInputSchema.safeParse({}).success).toBe(false)
   })
 
   it('accepts undefined for the calls that take no payload', () => {

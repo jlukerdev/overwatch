@@ -29,7 +29,7 @@ import {
   type Go2rtcRuntime,
 } from './streams/go2rtcManager'
 import { createStreamRegistry, type StreamRegistry } from './streams/registry'
-import { createConfigPinStore } from './tls/configPinStore'
+import { createConfigPinStore, createPinPersistence } from './tls/configPinStore'
 import { createPinRegistry, type PinRegistry } from './tls/pinning'
 
 // With ELECTRON_RUN_AS_NODE set, the Electron binary runs as a plain Node interpreter: `app` and
@@ -227,19 +227,28 @@ async function startServices(): Promise<void> {
   // anything being rebuilt by hand.
   let current = loaded.config
   const credentials: Secrets = {}
+  // `current` as a property, for the helpers that replace it (the pin store's writer).
+  const live = {
+    get current() {
+      return current
+    },
+    set current(next: Config) {
+      current = next
+    },
+  }
 
   const pins = createPinRegistry(
     createConfigPinStore({
       getConsole: () => current.console,
-      setConsole: (next) => {
-        current = { ...current, console: next }
-        // CON-3: a pin the user accepted has to survive a restart, so it is written at once. A
-        // failed write is reported rather than thrown — the pin is already in memory, so the
-        // session works; it is the next launch that would ask again.
-        void config.save(current).catch((err: unknown) => {
+      // CON-3: the pin goes into `current` at once and is written through `config.update`, which
+      // touches only the pin fields (see createPinPersistence).
+      setConsole: createPinPersistence({
+        live,
+        store: config,
+        onError: (err) => {
           console.error('[config] Could not save the accepted certificate pin:', err)
-        })
-      },
+        },
+      }),
     }),
   )
 
@@ -307,9 +316,10 @@ async function startServices(): Promise<void> {
   }
 
   if (loaded.source === 'file' && loaded.migratedFrom !== null) {
-    // Write the upgraded file back once, so every later launch loads it directly.
+    // Write the upgraded file back once, so every later launch loads it directly. Through `update`
+    // like every other write, so it cannot race one that is already queued (VIEW-6).
     console.warn(`[config] migrated from schemaVersion ${String(loaded.migratedFrom)}`)
-    await config.save(loaded.config)
+    await config.update((latest) => latest)
   }
 
   if (!secrets.isEncryptionAvailable()) {

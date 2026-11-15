@@ -63,7 +63,7 @@ The harness works on Windows with two gaps:
 This was a `low` run (`--label recovery`). The user killed go2rtc with `pkill -x go2rtc` about 17 s into the measuring, and later dropped the network for about 30 s.
 
 - **go2rtc killed:** all 9 cells lost their `<video>` at t = 20 s. The sidecar restarted and the players came back with no one touching the app: 9 of 9 playing again by the t = 45 s sample, and they kept playing until the run ended. Outage: about 25–30 s, set by the restart and the player's reconnect backoff.
-- **Network drop:** the user saw the grid recover by itself. The harness did not record it, because the run ended at 70 s measured with "quit: the app was asked to quit before the end". So this item rests on the user watching it, not on samples.
+- **Network drop:** the user saw the grid recover by itself. The harness did not record it, because the user quit the app at 70 s measured, which ends a run as "quit". The drop came after that. So this item rests on the user watching it, not on samples.
 
 Recovery is the only thing this run measured. Its CPU, RAM and dropped-frame numbers include the outage and are not part of the results above.
 

@@ -29,10 +29,15 @@
 //    `missing` slot too, for the same reason: main refuses a package stream for that camera
 //    (streams/registry.ts), so a player would only ever show an error. It keeps its camera key, so
 //    it becomes a player again if the flag comes back.
+//  - **Every camera slot carries its fill quality too** (P3.5; FILL-2, QUAL-5), so the grid can
+//    flip a filled cell's `quality` prop without resolving anything itself: `resolveFillQuality`
+//    (View, then settings — fill has no per-cell level) for a camera, and the package channel again
+//    for a package ref, because that is a different source rather than a quality to upgrade.
 import type { Camera } from '@shared/ipc'
 import type { Fit, View } from '@shared/models'
 import {
   PACKAGE_CHANNEL,
+  resolveFillQuality,
   resolveGridQuality,
   type QualityDefaults,
   type StreamQuality,
@@ -83,6 +88,11 @@ export type GridSlot =
       readonly name: string
       /** The **effective** stream: QUAL-3's chain, or the package channel (CAM-4). Never a literal. */
       readonly quality: StreamQuality
+      /**
+       * The stream when this cell is filled (FILL-2): QUAL-5's chain, or the package channel again
+       * for a package ref. Never a literal.
+       */
+      readonly fillQuality: StreamQuality
       /** VIEW-5: how the camera sits in its cell when its shape is not the View's `aspect`. */
       readonly fit: Fit
     }
@@ -124,7 +134,8 @@ function slotName(camera: Camera, ref: CameraRef): string {
  *
  * Quality is `resolveGridQuality({ cell, view, streams })` for a camera, and the package channel
  * for a `<cameraId>:package` ref — the package camera is a separate source, not a quality setting,
- * so the quality chain does not apply to it (src/shared/quality.ts).
+ * so the quality chain does not apply to it (src/shared/quality.ts). `fillQuality` is the same with
+ * `resolveFillQuality({ view, streams })` (FILL-2, QUAL-5).
  */
 export function buildViewSlots(input: {
   readonly view: View
@@ -166,6 +177,7 @@ export function buildViewSlots(input: {
       cameraId: ref.cameraId,
       name: slotName(camera, ref),
       quality: ref.packageChannel ? PACKAGE_CHANNEL : resolveGridQuality({ cell, view, streams }),
+      fillQuality: ref.packageChannel ? PACKAGE_CHANNEL : resolveFillQuality({ view, streams }),
       fit: view.fit,
     }
   })

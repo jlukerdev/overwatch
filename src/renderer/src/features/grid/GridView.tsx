@@ -16,7 +16,18 @@
 // active View, and the slots are keyed by camera (`buildViewSlots`), so a camera that is in both the
 // old and the new View keeps its player and its stream; only the box around it moves. The player is
 // built for that: a moved `<vp-mse-player>` keeps playing (MsePlayer.ts, `onconnect`).
-import { useEffect, useMemo, useRef, useState, type JSX } from 'react'
+//
+// **Fill lives here too** (P3.5; FILL-1/2/3, QUAL-5/6). Clicking a camera cell fills the grid area with
+// it, and that is this component re-placing one slot, not another component appearing: the filled
+// slot keeps its key, its `<Cell>` and its `<LivePlayer>`, gets `gridView__slot--filled` (the whole
+// grid area; the header and the View switcher stay usable beside it, grid.css) instead of its rectangle, and is
+// handed the slot's `fillQuality` and `FILL_FIT`. The player's own quality swap does the rest
+// seamlessly (FILL-2). Every other slot stays mounted and laid out underneath — covered, not hidden —
+// so its stream keeps running and leaving fill is instant; while covered it is `inert` and
+// `aria-hidden`, so Tab and assistive tech cannot reach controls nobody can see. Which slot is
+// filled, and which clicks and keys enter and leave, are the pure rules in features/fill/fillMode.ts;
+// this file keeps the state, listens for `Esc` while filled, and draws the answer.
+import { useCallback, useEffect, useMemo, useRef, useState, type JSX } from 'react'
 import type { Camera } from '@shared/ipc'
 import type { View } from '@shared/models'
 import type { QualityDefaults } from '@shared/quality'
@@ -24,6 +35,15 @@ import { cellRect, layoutGrid, type Rect } from '@shared/viewLayout'
 import { useAppStore } from '../../state/appStore'
 import { Cell } from '../cells/Cell'
 import { overlayAutoHideMs } from '../cells/overlayVisibility'
+import {
+  FILL_FIT,
+  fillClickStep,
+  filledSlotKey,
+  isFillExitKey,
+  type FillClickEvent,
+  type FillState,
+} from '../fill/fillMode'
+import { keyEventTarget } from '../viewSwitcher/viewShortcut'
 import { buildViewSlots, type GridSlot } from './gridLayout'
 import './grid.css'
 
@@ -72,6 +92,54 @@ export function GridView({ view, cameras, streams }: GridViewProps): JSX.Element
 
   const slots = useMemo(() => buildViewSlots({ view, cameras, streams }), [view, cameras, streams])
 
+  // FILL-1. The state names a slot of a View; `filledSlotKey` decides whether it is still filled
+  // (another View on screen, the camera gone, the cell edited away: no). A state that no longer
+  // fills anything is dropped right away, in render (React's "adjust state when props change"), so
+  // coming back to that View later does not re-fill a cell out of nowhere.
+  const [fill, setFill] = useState<FillState>(null)
+  const filledKey = filledSlotKey(fill, view.id, slots)
+  if (fill !== null && filledKey === null) setFill(null)
+  const isFilled = filledKey !== null
+
+  // `fillClickStep`'s "armed" flag (fillMode.ts, "does not bounce"). Only event handlers touch it.
+  const armedRef = useRef(false)
+  // Disarmed on every way out of fill — Esc, the back control, a View switch, the slot going away —
+  // not only by grid clicks, so a later way *into* fill that skips a grid click (a shortcut, Phase 4)
+  // can never start armed and leave on its first double-click.
+  useEffect(() => {
+    if (!isFilled) armedRef.current = false
+  }, [isFilled])
+
+  // Stable across everything but a View switch, so memoised `<Cell>`s keep their memo. `filled` is
+  // what that cell showed when the event arrived, which is what the user was looking at.
+  const onCellClick = useCallback(
+    (slotKey: string, filled: boolean, event: FillClickEvent): void => {
+      const result = fillClickStep(armedRef.current, filled, event)
+      armedRef.current = result.armed
+      if (result.action === 'fill') setFill({ viewId: view.id, slotKey })
+      else if (result.action === 'unfill') setFill(null)
+    },
+    [view.id],
+  )
+
+  const onBack = useCallback((): void => {
+    setFill(null)
+  }, [])
+
+  // FILL-1's `Esc`: listening only while something is filled, so the key is free otherwise.
+  useEffect(() => {
+    if (!isFilled) return undefined
+    const onKeyDown = (event: KeyboardEvent): void => {
+      if (!isFillExitKey(event, keyEventTarget(event.target))) return
+      event.preventDefault()
+      setFill(null)
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => {
+      window.removeEventListener('keydown', onKeyDown)
+    }
+  }, [isFilled])
+
   const layout = layoutGrid({
     width: box?.width ?? 0,
     height: box?.height ?? 0,
@@ -91,15 +159,35 @@ export function GridView({ view, cameras, streams }: GridViewProps): JSX.Element
   return (
     <div className="gridView" ref={rootRef}>
       {measured
-        ? slots.map((slot) => (
-            <div
-              key={slot.key}
-              className="gridView__slot"
-              style={drawable ? slotStyle(cellRect(layout, slot.placement)) : HIDDEN_SLOT}
-            >
-              <SlotContent slot={slot} autoHideMs={autoHideMs} />
-            </div>
-          ))
+        ? slots.map((slot) => {
+            const filled = slot.key === filledKey
+            // Under the filled cell: still playing, not reachable (header).
+            const covered = isFilled && !filled
+            return (
+              <div
+                key={slot.key}
+                className={filled ? 'gridView__slot gridView__slot--filled' : 'gridView__slot'}
+                // Filled: the class places it, whatever the layout says (even a zero one).
+                style={
+                  filled
+                    ? undefined
+                    : drawable
+                      ? slotStyle(cellRect(layout, slot.placement))
+                      : HIDDEN_SLOT
+                }
+                inert={covered}
+                aria-hidden={covered ? true : undefined}
+              >
+                <SlotContent
+                  slot={slot}
+                  autoHideMs={autoHideMs}
+                  filled={filled}
+                  onCellClick={onCellClick}
+                  onBack={onBack}
+                />
+              </div>
+            )
+          })
         : null}
     </div>
   )
@@ -127,24 +215,36 @@ function slotStyle(rect: Rect): {
 function SlotContent({
   slot,
   autoHideMs,
+  filled,
+  onCellClick,
+  onBack,
 }: {
   readonly slot: GridSlot
   readonly autoHideMs: number
+  readonly filled: boolean
+  readonly onCellClick: (slotKey: string, filled: boolean, event: FillClickEvent) => void
+  readonly onBack: () => void
 }): JSX.Element {
   switch (slot.kind) {
     case 'camera':
+      // Filled: the fill stream and fit. A change of `quality` is the player's seamless swap (FILL-2).
       return (
         <Cell
+          slotKey={slot.key}
           cameraId={slot.cameraId}
           name={slot.name}
-          quality={slot.quality}
-          fit={slot.fit}
+          quality={filled ? slot.fillQuality : slot.quality}
+          fit={filled ? FILL_FIT : slot.fit}
           overlayAutoHideMs={autoHideMs}
+          filled={filled}
+          onClickEvent={onCellClick}
+          onBack={onBack}
         />
       )
     case 'missing':
       // No player: the camera is gone from the console, or has no package camera to play
-      // (gridLayout.ts header). Still `gridCell--empty`, because nothing streams here.
+      // (gridLayout.ts header). Still `gridCell--empty`, because nothing streams here. Not fillable:
+      // there is nothing to enlarge.
       return (
         <div className="gridCell gridCell--empty gridCell--missing">
           <span className="gridCell__missing" title={slot.ref}>

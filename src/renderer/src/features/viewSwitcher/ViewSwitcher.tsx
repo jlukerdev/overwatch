@@ -19,7 +19,7 @@ import { useCallback, useEffect, useRef, useState, type JSX } from 'react'
 import type { View } from '@shared/models'
 import { selectionNeedsStore, useLastViewId, viewsActions } from '../../state/viewsStore'
 import { nextViewName } from '../viewEditor/viewEditorHelpers'
-import { viewShortcutIndex, type ViewShortcutTarget } from './viewShortcut'
+import { keyEventTarget, viewShortcutIndex } from './viewShortcut'
 
 /** Views 1–9 have a key; a tenth and later are reachable by click only. */
 const SHORTCUT_COUNT = 9
@@ -134,7 +134,7 @@ function useViewShortcuts(views: readonly View[], select: (id: string) => void):
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent): void => {
-      const index = viewShortcutIndex(event, shortcutTarget(event.target))
+      const index = viewShortcutIndex(event, keyEventTarget(event.target))
       if (index === null) return
       const view = latest.current.views[index]
       if (view === undefined) return
@@ -146,11 +146,4 @@ function useViewShortcuts(views: readonly View[], select: (id: string) => void):
       window.removeEventListener('keydown', onKeyDown)
     }
   }, [])
-}
-
-/** The event target as the shortcut rule sees it; anything that is not an element is `null`. */
-function shortcutTarget(target: EventTarget | null): ViewShortcutTarget | null {
-  return target instanceof HTMLElement
-    ? { tagName: target.tagName, isContentEditable: target.isContentEditable }
-    : null
 }

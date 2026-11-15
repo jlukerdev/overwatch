@@ -8,9 +8,18 @@
  * the player under it, and the cell around it, still get the pointer.
  */
 
-/* CELL-4's spirit: an idle cursor over a wall of cameras gets out of the picture. Set on the cell. */
-.gridCell--cursorHidden,
-.gridCell--cursorHidden * {
+/* FILL-1 (P3.5): a camera cell in the grid is clicked to fill the window. Not once it is filled. */
+.gridCell--fillable {
+  cursor: pointer;
+}
+
+/*
+ * CELL-4's spirit: an idle cursor over a wall of cameras gets out of the picture. Set on the cell.
+ * Qualified with `.gridCell` so it outranks `.gridCell--fillable` and the controls' own cursors
+ * whatever order the stylesheets load in.
+ */
+.gridCell.gridCell--cursorHidden,
+.gridCell.gridCell--cursorHidden * {
   cursor: none;
 }
 
@@ -96,6 +105,28 @@
   font-variant-numeric: tabular-nums;
   font-weight: 600;
   letter-spacing: 0.04em;
+}
+
+/* FILL-1's back control (P3.5), shown only while filled. The badge's chip, as a button. */
+.cellOverlay__back {
+  padding: 0.1rem 0.45rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: rgb(0 0 0 / 55%);
+  color: var(--fg);
+  font: inherit;
+  font-size: 0.75rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.cellOverlay__back:hover {
+  border-color: var(--accent);
+}
+
+.cellOverlay__back:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
 }
 
 @media (prefers-reduced-motion: reduce) {

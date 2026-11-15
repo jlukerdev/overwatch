@@ -6,6 +6,8 @@
 //  - a cell shows its first camera (multi-camera rotation is Phase 4).
 //  - quality comes from QUAL-3's chain (cell → View → settings), never a literal; a
 //    `<cameraId>:package` ref plays the package channel instead (CAM-4).
+//  - fill quality (P3.5) comes from QUAL-5's chain (View → settings), and a package ref stays on the
+//    package channel in fill too.
 //  - keys follow the camera across Views and stay distinct for duplicates in one View, so a View
 //    switch keeps shared players mounted and React never sees two siblings with one key.
 //  - a camera the inventory no longer has gets a `missing` slot, not a player; so does a package
@@ -171,6 +173,38 @@ describe('buildViewSlots: quality (QUAL-3, CAM-4)', () => {
       quality: PACKAGE_CHANNEL,
       name: 'Doorbell (package)',
     })
+  })
+})
+
+describe('buildViewSlots: fill quality (FILL-2, QUAL-5)', () => {
+  it('falls back to the settings fill default with no overrides', () => {
+    expect(cameraSlot(slots(view(1, 1, ['a']))[0]).fillQuality).toBe('high')
+  })
+
+  it('takes the View’s fill override over the settings default', () => {
+    const v = view(1, 1, ['a'], { fillQuality: 'medium' })
+    expect(cameraSlot(slots(v)[0]).fillQuality).toBe('medium')
+  })
+
+  it('ignores the grid chain: neither a cell nor a View grid override changes it', () => {
+    const v = view(2, 1, ['a', 'b'], { gridQuality: 'medium' })
+    const cells = v.cells.map((cell, i) => (i === 0 ? { ...cell, quality: 'low' as const } : cell))
+    const result = slots({ ...v, cells })
+    expect(result.map((s) => cameraSlot(s).fillQuality)).toEqual(['high', 'high'])
+  })
+
+  it('follows the settings default when it is not `high`', () => {
+    const result = buildViewSlots({
+      view: view(1, 1, ['a']),
+      cameras: INVENTORY,
+      streams: { defaultGridQuality: 'low', defaultFillQuality: 'medium' },
+    })
+    expect(cameraSlot(result[0]).fillQuality).toBe('medium')
+  })
+
+  it('keeps the package channel in fill for a package ref', () => {
+    const v = view(1, 1, [`d:${PACKAGE_CHANNEL}`], { fillQuality: 'high' })
+    expect(cameraSlot(slots(v)[0]).fillQuality).toBe(PACKAGE_CHANNEL)
   })
 })
 

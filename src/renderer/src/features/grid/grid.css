@@ -120,6 +120,18 @@
   position: absolute;
 }
 
+/*
+ * FILL-1 (P3.5): the filled cell is its own grid slot, re-placed over the whole grid area rather than
+ * a second player (GridView.tsx, features/fill/fillMode.ts). The grid area, not the window: the app
+ * header (connection badge, errors) and the View switcher stay visible and usable while a camera is
+ * filled, so nothing on screen is hidden yet still reachable by Tab. It only has to stack above its
+ * sibling slots, which set no `z-index`.
+ */
+.gridView__slot--filled {
+  z-index: 1;
+  inset: 0;
+}
+
 .gridCell {
   position: relative;
   overflow: hidden;

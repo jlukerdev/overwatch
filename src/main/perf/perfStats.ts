@@ -1,18 +1,20 @@
-// P2.5 perf harness: the pure half. Env parsing, the sample shapes, parsers for `ps` and `ioreg`,
-// per-role CPU/RAM, the run summary (mean / p95 / max, memory-growth slope, dropped frames, cells
-// not playing, decoders) and its markdown. No Electron import, so all of it is unit-tested in plain
+// P2.5 perf harness: the pure half. Env parsing, the in-memory settings override and the View it
+// shows (since P3.2 an in-memory View of the sizes the P2.4 temp grid offered), the sample shapes,
+// parsers for `ps` and `ioreg`, per-role CPU/RAM, the run summary (mean / p95 / max, memory-growth
+// slope, dropped frames, cells not playing, decoders) and its markdown. No Electron import, so all of it is unit-tested in plain
 // Node (tests/unit/perfStats.test.ts); `perfMode.ts` is the Electron glue around it.
 //
 // Units: CPU is percent of **one core** (100 = one core, as in docs/spikes/P0.5-video.md), memory
 // is MB (1 MB = 1024 × 1024 bytes), time is seconds since the end of the warm-up.
 //
 // Secrets (CON-2, NFR-9): nothing in here takes or produces a URL, host, port, key or camera name.
-// Cells are identified by their grid position only.
+// Cells are identified by their grid position only. `buildPerfView` takes camera ids — the renderer
+// already has them — and they go only into the View the renderer is shown, never into a result.
 import { isAbsolute } from 'node:path'
 import { z } from 'zod'
-import type { Settings } from '@shared/models'
+import { ViewSchema, type Settings, type View } from '@shared/models'
 import { QualitySchema, type Quality } from '@shared/quality'
-import { TEMP_GRID_PRESETS } from '@shared/tempGrid'
+import { assignCameras, uniformCells } from '@shared/viewLayout'
 import { cpuPercent } from './measure'
 import {
   PERF_DEFAULTS,
@@ -118,30 +120,85 @@ export function withPerfGridQuality(settings: Settings, quality: Quality): Setti
 }
 
 // ---------------------------------------------------------------------------------------------
-// Grid preset
+// The perf View
 
 /** NFR-2's grid stream count. */
 export const PERF_TARGET_STREAMS = 10
 
+/** The perf View's id. Never stored: it exists only in the settings the renderer is shown. */
+export const PERF_VIEW_ID = 'perf'
+
+/**
+ * The grid sizes the harness chooses from, smallest first. They are the two sizes the P2.4 temp
+ * grid offered, kept here as the harness's own constant rather than taken from the layout presets:
+ * 3×3 is nine streams and 4×3 twelve, which brackets NFR-2's ten, and keeping exactly these sizes
+ * is what keeps new runs comparable with the ones already in docs/perf-results.md.
+ */
+export const PERF_GRID_SIZES: readonly { readonly cols: number; readonly rows: number }[] = [
+  { cols: 3, rows: 3 },
+  { cols: 4, rows: 3 },
+]
+
 export interface PerfPreset {
+  /** The grid size, e.g. `3×3`: the summary's and the results table's "preset". */
   readonly label: string
   readonly slots: number
-  /** How many streams the temp grid will show: the first N cameras (`assignTempGridSlots`). */
+  /** How many streams the View shows: one per camera, up to `slots`. */
   readonly streams: number
 }
 
+export interface PerfView extends PerfPreset {
+  readonly view: View
+}
+
 /**
- * The smallest temp-grid preset with room for `min(cameras, 10)` streams, else the largest. The
- * grid itself takes the first `slots` cameras in list order, so with nine cameras this is 3×3 and
- * nine streams, with ten or eleven 4×3 and that many, and with twelve or more 4×3 and twelve.
+ * The View a perf run shows. Its size is the smallest of {@link PERF_GRID_SIZES} with room for
+ * `min(cameras, 10)` streams, else the largest — so nine cameras give 3×3 and nine streams, ten or
+ * eleven give 4×3 and that many, twelve or more give 4×3 and twelve. Every cell is 1×1 and the
+ * first N cameras of `cameraIds` fill them in canonical (row, then column) order, one camera per
+ * cell, the rest left empty; pass the ids in list order (`sortCameras`), which is the order the
+ * temp grid used, so the same cameras are measured as before.
+ *
+ * Parsed through `ViewSchema`, so every default (aspect, gap, fit, inherited quality) is the one a
+ * new View gets and the tiling check runs: a broken perf View fails here, not as a blank grid.
  */
-export function choosePerfPreset(cameraCount: number): PerfPreset {
-  const want = Math.min(Math.max(0, cameraCount), PERF_TARGET_STREAMS)
-  const sized = TEMP_GRID_PRESETS.map((p) => ({ label: p.label, slots: p.cols * p.rows })).sort(
-    (x, y) => x.slots - y.slots,
-  )
-  const p = sized.find((x) => x.slots >= want) ?? sized.at(-1) ?? { label: 'none', slots: 0 }
-  return { label: p.label, slots: p.slots, streams: Math.min(Math.max(0, cameraCount), p.slots) }
+export function buildPerfView(cameraIds: readonly string[]): PerfView {
+  const want = Math.min(cameraIds.length, PERF_TARGET_STREAMS)
+  // PERF_GRID_SIZES is declared smallest first (a test holds it to that), so no sort here.
+  const size = PERF_GRID_SIZES.find((s) => s.cols * s.rows >= want) ??
+    PERF_GRID_SIZES.at(-1) ?? { cols: 1, rows: 1 }
+  const slots = size.cols * size.rows
+  const cells = assignCameras(uniformCells(size.cols, size.rows), cameraIds)
+  const view = ViewSchema.parse({
+    id: PERF_VIEW_ID,
+    name: 'Perf',
+    cols: size.cols,
+    rows: size.rows,
+    cells,
+  })
+  return {
+    view,
+    label: `${String(size.cols)}×${String(size.rows)}`,
+    slots,
+    streams: Math.min(cameraIds.length, slots),
+  }
+}
+
+/**
+ * The settings the renderer is shown with the perf View in place: `views` is **only** that View and
+ * `lastViewId` points at it, so the Live screen opens on it with nothing to click. The user's own
+ * Views are hidden for the run rather than kept beside it, so the active View is unambiguous: with
+ * them in the list, the switcher's fallback rules or a stray keyboard shortcut (1–9) could leave
+ * another View active, and the run would measure a grid nobody chose. A copy, like
+ * {@link withPerfGridQuality}: the stored config is not touched here. That alone would not keep the
+ * perf View out of the file — a `setViews` from the renderer would store the list it was shown,
+ * `[perf]`, over the user's Views — so main also refuses every View write while a perf View is set
+ * (`viewWritesBlocked` in src/main/ipc/handlers.ts, wired in index.ts). `null` (no View built yet)
+ * returns `settings` unchanged.
+ */
+export function withPerfView(settings: Settings, view: View | null): Settings {
+  if (view === null) return settings
+  return { ...settings, views: [view], lastViewId: view.id }
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -677,7 +734,7 @@ export function renderSummaryMarkdown(s: PerfSummary): string {
     '',
     `Started ${r.startedAt}; warm-up ${String(r.warmupS)} s, measured ${String(Math.round(s.measuredS))} s of ${String(r.durationS)} s, a sample every ${String(r.intervalS)} s (${String(s.samples)} samples). Ended: ${r.endReason}${r.endNote === null ? '' : ` (${r.endNote})`}.`,
     '',
-    `Electron ${r.electron}, Chromium ${r.chrome}. ${String(r.cameras)} camera(s) on the console; temp grid ${r.preset} in a ${r.windowSize} window, ${String(r.expectedStreams)} stream(s) expected, at most ${String(s.maxVideos)} <video> element(s) seen in camera cells.`,
+    `Electron ${r.electron}, Chromium ${r.chrome}. ${String(r.cameras)} camera(s) on the console; View ${r.preset} in a ${r.windowSize} window, ${String(r.expectedStreams)} stream(s) expected, at most ${String(s.maxVideos)} <video> element(s) seen in camera cells.`,
     '',
     '## Row for docs/perf-results.md',
     '',

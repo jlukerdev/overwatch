@@ -112,10 +112,16 @@ export interface IpcRouterDeps {
   /**
    * Rewrites the settings the renderer is *shown*, in memory only. The P2.5 perf harness uses it to
    * run the grid at the quality under test (`withPerfGridQuality`) without writing anything: the
-   * stored config, `services.current`, is never touched, so no save can persist the override.
-   * Absent in normal runs.
+   * stored config, `services.current`, is never touched by this hook. Absent in normal runs.
    */
   readonly settingsView?: (settings: Settings) => Settings
+  /**
+   * A reason View writes (`setViews`, `setLastView`) are refused right now, or `null` to allow
+   * them. The perf harness sets it while its in-memory perf View is shown: the renderer then sees
+   * only `[perf]`, so any View mutation it sends would persist that list over the user's Views.
+   * Refused before anything is written. Absent in normal runs.
+   */
+  readonly viewWritesBlocked?: () => string | null
 }
 
 /** Everything a handler body may assume exists, having passed rule 2. */
@@ -409,7 +415,17 @@ export function createIpcRouter(deps: IpcRouterDeps): ReadonlyMap<string, IpcHan
 
   on(IPC.snapshot, async (input, ready) => ipcOk(await ready.manager.snapshot(input)))
 
+  /** The `viewWritesBlocked` refusal, or `null` when View writes may go ahead. */
+  const viewWriteRefusal = (): IpcResult<never> | null => {
+    const reason = deps.viewWritesBlocked?.() ?? null
+    // 'bad-request': the request is well formed but not one main will act on in this state, and
+    // retrying it unchanged will not help while the block lasts.
+    return reason === null ? null : ipcFail('bad-request', reason)
+  }
+
   on(IPC.setViews, async (input, ready) => {
+    const refused = viewWriteRefusal()
+    if (refused) return refused
     // `input` has already passed `ViewSchema` for every View (tiling included), unique ids and a
     // `lastViewId` that names one of them (SetViewsInputSchema).
     await saveViews(ready, { views: input.views, lastViewId: input.lastViewId })
@@ -417,6 +433,8 @@ export function createIpcRouter(deps: IpcRouterDeps): ReadonlyMap<string, IpcHan
   })
 
   on(IPC.setLastView, async (input, ready) => {
+    const refused = viewWriteRefusal()
+    if (refused) return refused
     const { viewId } = input
     if (viewId !== null && !ready.services.current.views.some((view) => view.id === viewId)) {
       // A switch to a View that is not stored is a stale id on the renderer's side (the View was

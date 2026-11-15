@@ -1,130 +1,167 @@
-// The grid's decisions (P2.4; VIEW-1, VIEW-5, CELL-1, QUAL-3), as pure functions over plain data,
-// so they can be tested without a DOM (this project has no jsdom; CLAUDE.md).
+// What a View puts on screen (P3.2; VIEW-1/2/5/7, CELL-1, CAM-4, QUAL-3): one positioned slot per
+// cell, with the camera, the effective quality, the name and the fit already decided. Pure, so it is
+// tested in the node environment (this project has no jsdom; CLAUDE.md) and `<GridView>` only has
+// to measure its box and place what comes back.
 //
-// Two halves, deliberately separate:
+// The geometry itself — the letterboxed grid and each cell's rectangle — is `layoutGrid` /
+// `cellRect` in @shared/viewLayout. This module decides *what* goes in each rectangle; the component
+// decides *where*, from the placement carried on each slot.
 //
-//  - **Reusable** — a `cols × rows` size, the CSS template that makes it fill its box (VIEW-5), and
-//    the slot list a `<GridView>` renders. Phase 3's Views feed these from `View.layout` and
-//    `View.cells`; nothing in them knows about presets.
-//  - **TEMPORARY (P2.4 only)** — the two hard-coded presets and the "first N cameras in list order"
-//    assignment. They exist so Phase 2 can run many `<LivePlayer>`s at once for the P2.5 perf
-//    harness and gate G2. Phase 3 (P3.x, VIEW-1/2) replaces them with real, persisted Views; delete
-//    this half then rather than growing it.
+// Decisions made here, each for a reason:
+//
+//  - **One camera per cell, for now.** A cell shows `cameraIds[0]`. Multi-camera cells (rotation and
+//    motion switching, CELL-2) are Phase 4's `cellScheduler`; until then the other cameras in a cell
+//    are kept in the View and simply not shown.
+//  - **Keys follow the camera, not the cell.** A camera slot is keyed by its ref plus how many times
+//    that ref has already appeared in the View (`<ref>#<n>`), so switching to another View that also
+//    shows the camera keeps its `<LivePlayer>` mounted — React moves it to its new rectangle instead
+//    of closing one stream and opening another — and the same camera twice in one View still gets
+//    two distinct keys. Empty slots have no identity of their own and are keyed by position.
+//  - **A camera that is no longer on the console** (removed or unadopted since the View was built,
+//    CAM-2) gets a `missing` slot: drawn as an empty cell with a label naming the id, and **no
+//    player**. A player would ask main for a stream that cannot exist and retry it forever, and its
+//    placeholder would say "Connecting…" about a camera that is never coming back. The Live screen
+//    only draws a View once the inventory has loaded (`cameraListBody`), so "not in the inventory"
+//    really does mean gone, not "not fetched yet". If the camera comes back, the slot becomes a
+//    camera slot again on the next inventory push.
+//  - **A package ref to a camera without a package camera** (`<id>:package` where the camera's
+//    `hasPackageCamera` is false — the doorbell was replaced, or the View was hand-edited) is a
+//    `missing` slot too, for the same reason: main refuses a package stream for that camera
+//    (streams/registry.ts), so a player would only ever show an error. It keeps its camera key, so
+//    it becomes a player again if the flag comes back.
 import type { Camera } from '@shared/ipc'
-import { MAX_GRID_DIMENSION } from '@shared/models'
-import { resolveGridQuality, type QualityDefaults, type StreamQuality } from '@shared/quality'
-import { cameraDisplayName, sortCameras } from '../../state/camerasStore'
+import type { Fit, View } from '@shared/models'
+import {
+  PACKAGE_CHANNEL,
+  resolveGridQuality,
+  type QualityDefaults,
+  type StreamQuality,
+} from '@shared/quality'
+import type { CellPlacement } from '@shared/viewLayout'
+import { cameraDisplayName } from '../../state/camerasStore'
 
 // -------------------------------------------------------------------------------------------------
-// Reusable: size, template, slots
+// Camera refs (CAM-4)
 
-/** A uniform grid, `cols × rows` (VIEW-1). */
-export interface GridSize {
-  readonly cols: number
-  readonly rows: number
+/** What a `cameraIds` entry points at: a camera, or a doorbell's package channel. */
+export interface CameraRef {
+  /** The Protect camera id — the one the inventory and `ensureStream` know. */
+  readonly cameraId: string
+  /** `true` for `<cameraId>:package` (CAM-4): play the camera's {@link PACKAGE_CHANNEL} stream. */
+  readonly packageChannel: boolean
 }
 
-// VIEW-1: custom sizes go up to 4×4. One definition, the persisted model's, re-exported here for
-// the temp grid's callers.
-export { MAX_GRID_DIMENSION }
-
-/** Whether a size is one VIEW-1 allows: whole numbers from 1 to {@link MAX_GRID_DIMENSION}. */
-export function isValidGridSize(size: GridSize): boolean {
-  const ok = (n: number): boolean => Number.isInteger(n) && n >= 1 && n <= MAX_GRID_DIMENSION
-  return ok(size.cols) && ok(size.rows)
-}
-
-/** How many cells a size has. */
-export function slotCount(size: GridSize): number {
-  return size.cols * size.rows
-}
+const PACKAGE_SUFFIX = `:${PACKAGE_CHANNEL}`
 
 /**
- * The CSS-grid template for a size (VIEW-5). `minmax(0, 1fr)` and not plain `1fr`: a `1fr` track
- * has an automatic minimum of its content's min-content size, so a `<video>` with a large intrinsic
- * size would push its track wider than its share and the grid would overflow the window. With a
- * zero minimum every track is exactly its share of the box, whatever is inside it.
+ * Splits a cell's camera ref. Only the exact suffix `:package` with a non-empty id before it is the
+ * package channel; anything else is a plain camera id, passed through as is (Protect ids are hex and
+ * never contain a colon, so nothing real is misread).
  */
-export function gridTemplate(size: GridSize): {
-  readonly gridTemplateColumns: string
-  readonly gridTemplateRows: string
-} {
-  return {
-    gridTemplateColumns: `repeat(${String(size.cols)}, minmax(0, 1fr))`,
-    gridTemplateRows: `repeat(${String(size.rows)}, minmax(0, 1fr))`,
+export function parseCameraRef(ref: string): CameraRef {
+  if (ref.length > PACKAGE_SUFFIX.length && ref.endsWith(PACKAGE_SUFFIX)) {
+    return { cameraId: ref.slice(0, -PACKAGE_SUFFIX.length), packageChannel: true }
   }
+  return { cameraId: ref, packageChannel: false }
 }
 
-/** One cell of a grid: a camera to show live (CELL-1), or nothing. */
+// -------------------------------------------------------------------------------------------------
+// Slots
+
+/** One cell of the active View, ready to draw. `placement` is what `cellRect` positions. */
 export type GridSlot =
   | {
       readonly kind: 'camera'
-      /** React key. The camera id, so a player survives a reflow or a size change (see below). */
       readonly key: string
+      readonly placement: CellPlacement
       readonly cameraId: string
       readonly name: string
-      /** The **effective** quality, already resolved (QUAL-3). Never a literal. */
+      /** The **effective** stream: QUAL-3's chain, or the package channel (CAM-4). Never a literal. */
       readonly quality: StreamQuality
+      /** VIEW-5: how the camera sits in its cell when its shape is not the View's `aspect`. */
+      readonly fit: Fit
     }
-  | { readonly kind: 'empty'; readonly key: string }
+  | {
+      /**
+       * Nothing to play: the cell names a camera the inventory no longer has, or the package
+       * channel of a camera without one (see the header).
+       */
+      readonly kind: 'missing'
+      readonly key: string
+      readonly placement: CellPlacement
+      readonly ref: string
+      /** What the cell says instead of a picture, e.g. `Camera not found (<ref>)`. */
+      readonly label: string
+    }
+  | { readonly kind: 'empty'; readonly key: string; readonly placement: CellPlacement }
 
 /**
- * The key of an empty slot. Positional, because an empty slot has no identity of its own; it can
- * never collide with a camera key since camera keys are bare ids and this one is prefixed.
+ * The key of a camera (or missing-camera) slot: the ref and its occurrence index in the View. The
+ * prefix keeps it apart from {@link emptySlotKey}, whatever a ref contains.
  */
-export function emptySlotKey(index: number): string {
-  return `empty:${String(index)}`
+export function cameraSlotKey(ref: string, occurrence: number): string {
+  return `cam:${ref}#${String(occurrence)}`
 }
 
-// -------------------------------------------------------------------------------------------------
-// TEMPORARY (P2.4): hard-coded presets and assignment. Replaced by real Views in Phase 3.
+/** The key of an empty slot: its top-left slot, which is unique within a tiled View. */
+export function emptySlotKey(placement: Pick<CellPlacement, 'col' | 'row'>): string {
+  return `empty:${String(placement.col)},${String(placement.row)}`
+}
 
-// The presets themselves live in `@shared/tempGrid` (also TEMPORARY), because the P2.5 perf
-// harness in main picks one by its button label.
-export { TEMP_GRID_PRESETS, type TempGridPreset } from '@shared/tempGrid'
-
-/**
- * The effective grid quality while there are no Views: QUAL-3's chain with no cell and no View
- * override, i.e. `settings.streams.defaultGridQuality`. Goes through `resolveGridQuality` rather
- * than reading the setting directly, so the QUAL preamble's "no quality is hard-coded" holds and
- * Phase 3 only has to swap the `null`s for the real `Cell` and `View`.
- */
-export function tempGridQuality(streams: QualityDefaults): StreamQuality {
-  return resolveGridQuality({
-    cell: { quality: null },
-    view: { gridQuality: null, fillQuality: null },
-    streams,
-  })
+/** A package-channel cell is labelled as such, so it cannot be mistaken for the main camera. */
+function slotName(camera: Camera, ref: CameraRef): string {
+  const name = cameraDisplayName(camera)
+  return ref.packageChannel ? `${name} (package)` : name
 }
 
 /**
- * Fills a `cols × rows` grid with the first `cols × rows` cameras in the camera list's order
- * (`sortCameras`), left to right, top to bottom. Slots beyond the camera count are empty; cameras
- * beyond the slot count are not shown.
+ * The View's cells as slots, in the View's own cell order (canonical: row, then column).
  *
- * Offline cameras are not skipped: a cell for a camera that is down shows the player's offline
- * placeholder (CAM-3), and skipping it would shift every later camera to a new cell each time one
- * drops off — the same reason the camera list does not reorder on state.
- *
- * Keys are camera ids, so going from 3×3 to 4×3 keeps the first nine players mounted (React moves
- * them to their new grid positions) instead of reconnecting nine streams.
+ * Quality is `resolveGridQuality({ cell, view, streams })` for a camera, and the package channel
+ * for a `<cameraId>:package` ref — the package camera is a separate source, not a quality setting,
+ * so the quality chain does not apply to it (src/shared/quality.ts).
  */
-export function assignTempGridSlots(
-  cameras: readonly Camera[],
-  size: GridSize,
-  quality: StreamQuality,
-): GridSlot[] {
-  const count = isValidGridSize(size) ? slotCount(size) : 0
-  const shown = sortCameras(cameras).slice(0, count)
-  return Array.from({ length: count }, (_, index): GridSlot => {
-    const camera = shown[index]
-    if (camera === undefined) return { kind: 'empty', key: emptySlotKey(index) }
+export function buildViewSlots(input: {
+  readonly view: View
+  readonly cameras: readonly Camera[]
+  readonly streams: QualityDefaults
+}): GridSlot[] {
+  const { view, cameras, streams } = input
+  const byId = new Map(cameras.map((camera) => [camera.id, camera]))
+  const seen = new Map<string, number>()
+  return view.cells.map((cell): GridSlot => {
+    const placement: CellPlacement = {
+      col: cell.col,
+      row: cell.row,
+      colSpan: cell.colSpan,
+      rowSpan: cell.rowSpan,
+    }
+    // Phase 4 (CELL-2) rotates through the rest; until then a cell shows its first camera.
+    const first = cell.cameraIds[0]
+    if (first === undefined) return { kind: 'empty', key: emptySlotKey(placement), placement }
+
+    const occurrence = seen.get(first) ?? 0
+    seen.set(first, occurrence + 1)
+    const key = cameraSlotKey(first, occurrence)
+
+    const ref = parseCameraRef(first)
+    const camera = byId.get(ref.cameraId)
+    if (camera === undefined) {
+      return { kind: 'missing', key, placement, ref: first, label: `Camera not found (${first})` }
+    }
+    if (ref.packageChannel && !camera.hasPackageCamera) {
+      const label = `No package camera (${cameraDisplayName(camera)})`
+      return { kind: 'missing', key, placement, ref: first, label }
+    }
+
     return {
       kind: 'camera',
-      key: camera.id,
-      cameraId: camera.id,
-      name: cameraDisplayName(camera),
-      quality,
+      key,
+      placement,
+      cameraId: ref.cameraId,
+      name: slotName(camera, ref),
+      quality: ref.packageChannel ? PACKAGE_CHANNEL : resolveGridQuality({ cell, view, streams }),
+      fit: view.fit,
     }
   })
 }

@@ -4,17 +4,25 @@
 // `perfStats.ts`; this file only drives the window and reads the OS.
 //
 // What a run does:
-//  1. Waits for the renderer, attaches the in-process CDP debugger (no remote port) and enables
-//     the Media domain, which reports each player's decoder (NFR-3).
-//  2. Connects to the console — `npm run perf` is the deliberate user action CON-4 asks for — and
-//     waits for the camera list.
-//  3. Opens the Live screen and picks the temp-grid preset by clicking the existing buttons by
-//     their visible text, so no renderer code exists for the harness. The grid quality comes from
-//     the in-memory settings override (`withPerfGridQuality`, wired in index.ts).
-//  4. Waits out the warm-up, then samples every interval: CPU and RSS per process role (`ps`
+//  1. Waits for the renderer, then connects to the console — `npm run perf` is the deliberate user
+//     action CON-4 asks for — and waits for the camera list.
+//  2. Builds the perf View (`buildPerfView`: 3×3 or 4×3, the first N cameras in list order) and
+//     hands it to the in-memory settings override (`withPerfView` with `withPerfGridQuality`, wired
+//     in index.ts). Nothing is written to config. The renderer reads settings only when it loads
+//     (and from the answer to its own changes — there is no settings push), so the page is then
+//     reloaded to pick the View up.
+//  3. After the reload, attaches the in-process CDP debugger (no remote port) and enables the Media
+//     domain, which reports each player's decoder (NFR-3). After, not before: a reload would reset
+//     the domain, and the players worth reporting are the ones created from here on.
+//  4. Opens the Live screen by clicking its nav button, and waits until the switcher shows the perf
+//     View as active. It is already active (`lastViewId` points at it, and it is the only View), so
+//     nothing is clicked in the switcher: main refuses every View write while the perf View is set
+//     (`viewWritesBlocked`), so the run can never touch the stored Views. All of it is driven through the existing DOM by selector or visible
+//     text, so the renderer has no harness code.
+//  5. Waits out the warm-up, then samples every interval: CPU and RSS per process role (`ps`
 //     CPU-time deltas, 100 = one core), go2rtc by pid, macOS GPU utilisation (`ioreg`), and every
 //     `<video>`'s playback counters (`PAGE_STATS_SCRIPT`).
-//  5. Writes `samples.jsonl`, `summary.json` and `summary.md` to the output dir, stops go2rtc and
+//  6. Writes `samples.jsonl`, `summary.json` and `summary.md` to the output dir, stops go2rtc and
 //     quits. A closed window or a signal ends the run early with what it has.
 //
 // Secrets (CON-2, NFR-9): nothing recorded or logged here contains a URL, host, port, key or
@@ -26,10 +34,12 @@ import os from 'node:os'
 import { join } from 'node:path'
 import { promisify } from 'node:util'
 import { app, powerSaveBlocker, type BrowserWindow, type WebContents } from 'electron'
+import { sortCameras } from '@shared/cameraOrder'
+import type { Camera, View } from '@shared/models'
 import { asBool } from './measure'
 import {
   CellStatsSchema,
-  choosePerfPreset,
+  buildPerfView,
   KEPT_MEDIA_PROPERTIES,
   metricTypeRole,
   notPlayingCells,
@@ -46,6 +56,7 @@ import {
   type PerfEndReason,
   type PerfPreset,
   type PerfSample,
+  type PerfView,
   type ProcReading,
   type PsResourceRow,
 } from './perfStats'
@@ -57,7 +68,13 @@ export interface PerfRunDeps {
   readonly window: BrowserWindow
   /** `ConnectionManager.connect()`: loads the inventory and opens the devices feed. */
   readonly connect: () => Promise<void>
-  readonly cameraCount: () => number
+  /** The cached inventory (`ConnectionManager.cachedCameras()`), in any order. */
+  readonly cameras: () => readonly Camera[]
+  /**
+   * Puts the perf View into the settings the renderer is shown (`withPerfView` in index.ts's
+   * `settingsView`), in memory only.
+   */
+  readonly setPerfView: (view: View) => void
   /** go2rtc's pid while it is up (`Go2rtcManager.pid()`). */
   readonly go2rtcPid: () => number | null
   /** Stops go2rtc and waits for it, so a finished run leaves no process behind. */
@@ -182,9 +199,11 @@ async function readCells(
 /** Chromium net error for a load that was aborted (superseded by another navigation). */
 const ERR_ABORTED = -3
 
-/** Resolves once the page has loaded; rejects on a failed load or after {@link STEP_TIMEOUT_MS}. */
-function pageLoaded(wc: WebContents): Promise<void> {
-  if (!wc.isLoading()) return Promise.resolve()
+/**
+ * Resolves on the next finished load; rejects on a failed one or after {@link STEP_TIMEOUT_MS}.
+ * Listens from the moment it is called, so call it **before** starting a navigation.
+ */
+function nextLoad(wc: WebContents): Promise<void> {
   return new Promise<void>((resolve, reject) => {
     const done = (err: Error | null): void => {
       clearTimeout(timer)
@@ -208,6 +227,18 @@ function pageLoaded(wc: WebContents): Promise<void> {
   })
 }
 
+/** Resolves once the page has loaded (at once if it already has). */
+function pageLoaded(wc: WebContents): Promise<void> {
+  return wc.isLoading() ? nextLoad(wc) : Promise.resolve()
+}
+
+/** Reloads the page and resolves once the reload has finished loading. */
+function reloadPage(wc: WebContents): Promise<void> {
+  const loaded = nextLoad(wc)
+  wc.reload()
+  return loaded
+}
+
 /** Runs `script` in the page until it returns true, or gives up after {@link STEP_TIMEOUT_MS}. */
 async function untilPage(wc: WebContents, script: string): Promise<boolean> {
   const deadline = Date.now() + STEP_TIMEOUT_MS
@@ -224,13 +255,28 @@ async function untilPage(wc: WebContents, script: string): Promise<boolean> {
 }
 
 /** Clicks the button with this exact text inside `scope` (a CSS selector). True once clicked. */
-function clickButtonScript(scope: string, text: string, pressedAttr: string | null): string {
+function clickButtonScript(scope: string, text: string): string {
   return `(() => {
   const root = document.querySelector(${JSON.stringify(scope)});
   if (root === null) return false;
   const b = Array.from(root.querySelectorAll('button')).find((x) => (x.textContent || '').trim() === ${JSON.stringify(text)});
   if (b === undefined) return false;
-  ${pressedAttr === null ? 'b.click(); return true;' : `if (b.getAttribute(${JSON.stringify(pressedAttr)}) === 'true') return true; b.click(); return false;`}
+  b.click();
+  return true;
+})()`
+}
+
+/**
+ * True once the switcher (`nav[aria-label="Views"]`) shows the View with this id as active
+ * (`aria-pressed="true"`). A check only, never a click: the perf View is already active (it is the
+ * only View and `lastViewId` names it), and clicking would send `setLastView`, which main refuses
+ * for the whole perf run (`viewWritesBlocked`), so a click could never make it active anyway.
+ */
+function activeViewScript(viewId: string): string {
+  const selector = `nav[aria-label="Views"] button[data-view-id=${JSON.stringify(viewId)}]`
+  return `(() => {
+  const b = document.querySelector(${JSON.stringify(selector)});
+  return b !== null && b.getAttribute('aria-pressed') === 'true';
 })()`
 }
 
@@ -253,7 +299,7 @@ export function startPerfRun(deps: PerfRunDeps): void {
   const cores = os.availableParallelism()
   const [width, height] = win.getContentSize()
   let cameras = 0
-  let preset: PerfPreset = choosePerfPreset(0)
+  let preset: PerfPreset = buildPerfView([])
   let finished = false
   /** A function, so TypeScript does not narrow `finished` across the awaits in `run`. */
   const isFinished = (): boolean => finished
@@ -357,6 +403,32 @@ export function startPerfRun(deps: PerfRunDeps): void {
     wc.setBackgroundThrottling(false)
 
     try {
+      await deps.connect()
+    } catch (err) {
+      fail(`connecting to the console failed (${errorKind(err)}); check Settings in a normal run`)
+      return
+    }
+    if (!(await untilTrue(() => deps.cameras().length > 0))) {
+      fail('the console reported no cameras')
+      return
+    }
+    // List order, as the camera list shows them — the order the temp grid filled its slots in.
+    const inventory = sortCameras(deps.cameras())
+    cameras = inventory.length
+    const perf: PerfView = buildPerfView(inventory.map((c) => c.id))
+    preset = perf
+    log(`${String(cameras)} camera(s); View ${perf.label}, ${String(perf.streams)} stream(s)`)
+
+    deps.setPerfView(perf.view)
+    try {
+      await reloadPage(wc)
+    } catch (err) {
+      fail(err instanceof Error ? err.message : 'the renderer did not reload')
+      return
+    }
+    if (isFinished()) return
+
+    try {
       wc.debugger.attach('1.3')
       wc.debugger.on('message', (_event, method, params: unknown) => {
         if (method !== 'Media.playerPropertiesChanged') return
@@ -376,33 +448,14 @@ export function startPerfRun(deps: PerfRunDeps): void {
       log(`CDP Media domain unavailable (${errorKind(err)}); decoders will be unknown`)
     }
 
-    try {
-      await deps.connect()
-    } catch (err) {
-      fail(`connecting to the console failed (${errorKind(err)}); check Settings in a normal run`)
-      return
-    }
-    if (!(await untilTrue(() => deps.cameraCount() > 0))) {
-      fail('the console reported no cameras')
-      return
-    }
-    cameras = deps.cameraCount()
-    preset = choosePerfPreset(cameras)
-    log(
-      `${String(cameras)} camera(s); temp grid ${preset.label}, ${String(preset.streams)} stream(s)`,
-    )
-
-    if (!(await untilPage(wc, clickButtonScript('nav.app__nav', 'Live', null)))) {
+    if (!(await untilPage(wc, clickButtonScript('nav.app__nav', 'Live')))) {
       fail('could not open the Live screen')
       return
     }
-    const presetScript = clickButtonScript(
-      '[role="toolbar"][aria-label="Grid size"]',
-      preset.label,
-      'aria-pressed',
-    )
-    if (!(await untilPage(wc, presetScript))) {
-      fail(`could not select the ${preset.label} preset`)
+    if (!(await untilPage(wc, activeViewScript(perf.view.id)))) {
+      fail(
+        `the perf View is not the active View in the switcher within ${String(STEP_TIMEOUT_MS / 1000)} s`,
+      )
       return
     }
     log(`grid open; warming up for ${String(config.warmupS)} s`)

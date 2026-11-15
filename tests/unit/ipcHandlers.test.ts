@@ -90,6 +90,8 @@ interface SetupOptions {
   readonly presented?: string
   /** The P2.5 perf harness's in-memory settings override. */
   readonly settingsView?: (settings: Settings) => Settings
+  /** The perf harness's View-write block. */
+  readonly viewWritesBlocked?: () => string | null
 }
 
 function setup(options: SetupOptions = {}) {
@@ -197,6 +199,9 @@ function setup(options: SetupOptions = {}) {
     appVersion: () => '0.1.0',
     readLeaf,
     ...(options.settingsView === undefined ? {} : { settingsView: options.settingsView }),
+    ...(options.viewWritesBlocked === undefined
+      ? {}
+      : { viewWritesBlocked: options.viewWritesBlocked }),
   })
 
   return {
@@ -865,6 +870,33 @@ describe('setViews / setLastView (P3.1, VIEW-3/4/6)', () => {
     h.config.update.mockRejectedValueOnce(new Error('disk full'))
     const result = await h.call(IPC.setLastView, { viewId: null })
     expect(result.ok).toBe(false)
+  })
+})
+
+describe('viewWritesBlocked (P3.2 perf harness)', () => {
+  // While the perf View is shown the renderer only sees `[perf]`; a write would store it over the
+  // user's Views, so both View channels are refused and nothing reaches the config store.
+  it('refuses setViews and setLastView with the reason, writing nothing', async () => {
+    const p = setup({ viewWritesBlocked: () => 'Views cannot be changed during a perf run.' })
+    const views = await p.call(IPC.setViews, { views: [testView('perf')], lastViewId: 'perf' })
+    expect(failure(views)).toMatchObject({
+      kind: 'bad-request',
+      message: 'Views cannot be changed during a perf run.',
+    })
+    const last = await p.call(IPC.setLastView, { viewId: null })
+    expect(failure(last).kind).toBe('bad-request')
+    expect(p.config.update).not.toHaveBeenCalled()
+    expect(p.services.current.views).toEqual([])
+  })
+
+  it('lets View writes through while it answers null', async () => {
+    let blocked: string | null = 'blocked'
+    const p = setup({ viewWritesBlocked: () => blocked })
+    expect((await p.call(IPC.setLastView, { viewId: null })).ok).toBe(false)
+    blocked = null
+    const result = await p.call(IPC.setViews, { views: [testView('v1')], lastViewId: 'v1' })
+    expect(result.ok).toBe(true)
+    expect(p.config.update).toHaveBeenCalledTimes(1)
   })
 })
 

@@ -4,6 +4,7 @@
 import { basename, join } from 'node:path'
 import { app, BrowserWindow, ipcMain, safeStorage, session } from 'electron'
 import { IPC_EVENTS } from '@shared/ipc'
+import type { View } from '@shared/models'
 import { STREAM_RUNTIME_DOWN, type StreamRuntime } from '@shared/streams'
 import { createAccessClient, type AccessClient } from './access/client'
 import { createConfigStore, type ConfigStore } from './config/store'
@@ -14,7 +15,7 @@ import { createIpcRouter, registerIpcHandlers } from './ipc/handlers'
 import { isAppUrl } from './navigation'
 import { createRateLimiter, type RateLimiter } from './net/rateLimiter'
 import { startPerfRun } from './perf/perfMode'
-import { parsePerfEnv, withPerfGridQuality } from './perf/perfStats'
+import { parsePerfEnv, withPerfGridQuality, withPerfView } from './perf/perfStats'
 import { createProtectClient, type ProtectClient } from './protect/client'
 import {
   createSecretsStore,
@@ -45,8 +46,8 @@ if (process.env.ELECTRON_RUN_AS_NODE !== undefined && process.env.ELECTRON_RUN_A
 }
 
 // P2.5 perf harness (`npm run perf`): on only with VP_PERF_QUALITY set in an unpackaged build. It
-// overrides the grid quality the renderer is shown (in memory, never saved) and drives the window
-// from `startPerfRun` below; see src/main/perf/.
+// overrides the grid quality and the Views the renderer is shown (in memory, never saved) and
+// drives the window from `startPerfRun` below; see src/main/perf/.
 const perfEnv = parsePerfEnv(process.env, app.isPackaged)
 if (perfEnv.kind === 'invalid') {
   console.error(`[perf] ${perfEnv.problem}`)
@@ -54,6 +55,13 @@ if (perfEnv.kind === 'invalid') {
 }
 if (perfEnv.kind === 'ignored') console.warn(`[perf] ${perfEnv.reason}`)
 const perfConfig = perfEnv.kind === 'on' ? perfEnv.config : null
+/**
+ * The perf run's View (P3.2), set by `startPerfRun` once it knows the cameras and read by the
+ * router's `settingsView` on every state answer. Null until then, and always outside a perf run.
+ * Lives only here: the stored config never sees it, because while it is set the router refuses
+ * every View write (`viewWritesBlocked`).
+ */
+let perfView: View | null = null
 
 let mainWindow: BrowserWindow | null = null
 
@@ -520,7 +528,10 @@ function startPerf(config: NonNullable<typeof perfConfig>): void {
     config,
     window: win,
     connect: () => manager.connect(),
-    cameraCount: () => manager.cachedCameras().length,
+    cameras: () => manager.cachedCameras(),
+    setPerfView: (view) => {
+      perfView = view
+    },
     go2rtcPid: () => go2rtc?.pid() ?? null,
     stopStreaming: async () => {
       streams?.shutdown()
@@ -604,7 +615,14 @@ if (!app.requestSingleInstanceLock()) {
           appVersion: () => app.getVersion(),
           ...(perfConfig === null
             ? {}
-            : { settingsView: (s) => withPerfGridQuality(s, perfConfig.quality) }),
+            : {
+                settingsView: (s) =>
+                  withPerfView(withPerfGridQuality(s, perfConfig.quality), perfView),
+                // The renderer is shown only `[perf]` once the perf View is set, so a View write
+                // from it would store that list over the user's Views. Refuse them for the run.
+                viewWritesBlocked: () =>
+                  perfView === null ? null : 'Views cannot be changed during a perf run.',
+              }),
         }),
       )
       // A `second-instance` can arrive while the await above is pending and open the window first;

@@ -1,24 +1,25 @@
-// P2.4: the grid's pure decisions (VIEW-1, VIEW-5, CELL-1, QUAL-3).
+// P3.2: what a View puts on screen (src/renderer/src/features/grid/gridLayout.ts; VIEW-1/2/5,
+// CELL-1, CAM-4, QUAL-3).
 //
 // What these tests protect:
-//  - the CSS template uses `minmax(0, 1fr)`, so a cell's content can never push the grid past the
-//    window (VIEW-5's "no scrollbars").
-//  - the temporary presets are VIEW-1 sizes and the assignment fills them in the camera list's
-//    order, with empty slots past the camera count and no camera past the slot count.
-//  - keys are camera ids, so a size change keeps the shared players mounted (no reconnects).
-//  - the grid quality comes from the settings default through QUAL-3's chain, never a literal.
+//  - every cell becomes exactly one slot, in the View's order, carrying its placement for `cellRect`.
+//  - a cell shows its first camera (multi-camera rotation is Phase 4).
+//  - quality comes from QUAL-3's chain (cell → View → settings), never a literal; a
+//    `<cameraId>:package` ref plays the package channel instead (CAM-4).
+//  - keys follow the camera across Views and stay distinct for duplicates in one View, so a View
+//    switch keeps shared players mounted and React never sees two siblings with one key.
+//  - a camera the inventory no longer has gets a `missing` slot, not a player; so does a package
+//    ref to a camera without `hasPackageCamera`.
 import type { Camera } from '@shared/ipc'
-import { QUALITIES } from '@shared/quality'
+import type { Cell, View } from '@shared/models'
+import { PACKAGE_CHANNEL, type QualityDefaults } from '@shared/quality'
+import { LAYOUT_PRESETS, presetCells, uniformCells } from '@shared/viewLayout'
 import { describe, expect, it } from 'vitest'
 import {
-  assignTempGridSlots,
+  buildViewSlots,
+  cameraSlotKey,
   emptySlotKey,
-  gridTemplate,
-  isValidGridSize,
-  MAX_GRID_DIMENSION,
-  slotCount,
-  TEMP_GRID_PRESETS,
-  tempGridQuality,
+  parseCameraRef,
   type GridSlot,
 } from '../../src/renderer/src/features/grid/gridLayout'
 
@@ -37,141 +38,220 @@ function camera(overrides: Partial<Camera> & { id: string }): Camera {
   }
 }
 
-/** `n` cameras named `Cam 1`…`Cam n`, handed over in reverse so the sort has work to do. */
-function cameras(n: number): Camera[] {
-  return Array.from({ length: n }, (_, i) =>
-    camera({ id: `id${String(i + 1)}`, name: `Cam ${String(i + 1)}` }),
-  ).reverse()
+const INVENTORY: Camera[] = [
+  camera({ id: 'a', name: 'Front' }),
+  camera({ id: 'b', name: 'Back' }),
+  camera({ id: 'd', name: 'Doorbell', hasPackageCamera: true }),
+  camera({ id: 'm', model: 'G4 Bullet' }),
+]
+
+const STREAMS: QualityDefaults = { defaultGridQuality: 'low', defaultFillQuality: 'high' }
+
+/** A View whose cells hold `ids[i]` (a string, an array, or nothing) in canonical order. */
+function view(
+  cols: number,
+  rows: number,
+  ids: readonly (string | readonly string[] | null)[],
+  overrides: Partial<View> = {},
+  cells: Cell[] = uniformCells(cols, rows),
+): View {
+  return {
+    id: 'v',
+    name: 'V',
+    cols,
+    rows,
+    fit: 'contain',
+    aspect: { w: 16, h: 9 },
+    gap: 0,
+    gridQuality: null,
+    fillQuality: null,
+    cells: cells.map((cell, i) => {
+      const entry = ids[i] ?? null
+      return {
+        ...cell,
+        cameraIds: entry === null ? [] : typeof entry === 'string' ? [entry] : [...entry],
+      }
+    }),
+    ...overrides,
+  }
 }
 
-const QUALITY = QUALITIES[1]
-
-function cameraIds(slots: readonly GridSlot[]): (string | null)[] {
-  return slots.map((slot) => (slot.kind === 'camera' ? slot.cameraId : null))
+function slots(v: View, cameras: readonly Camera[] = INVENTORY): GridSlot[] {
+  return buildViewSlots({ view: v, cameras, streams: STREAMS })
 }
 
-describe('gridTemplate (VIEW-5)', () => {
-  it('gives every track an equal share with a zero minimum, so content cannot overflow', () => {
-    expect(gridTemplate({ cols: 4, rows: 3 })).toEqual({
-      gridTemplateColumns: 'repeat(4, minmax(0, 1fr))',
-      gridTemplateRows: 'repeat(3, minmax(0, 1fr))',
+function cameraSlot(slot: GridSlot | undefined): Extract<GridSlot, { kind: 'camera' }> {
+  if (slot?.kind !== 'camera') throw new Error(`expected a camera slot, got ${String(slot?.kind)}`)
+  return slot
+}
+
+describe('parseCameraRef (CAM-4)', () => {
+  it('reads a plain camera id as itself', () => {
+    expect(parseCameraRef('abc123')).toEqual({ cameraId: 'abc123', packageChannel: false })
+  })
+
+  it('reads `<id>:package` as the package channel of that camera', () => {
+    expect(parseCameraRef(`abc123:${PACKAGE_CHANNEL}`)).toEqual({
+      cameraId: 'abc123',
+      packageChannel: true,
+    })
+  })
+
+  it('does not treat a bare `:package` or another suffix as a package ref', () => {
+    expect(parseCameraRef(':package')).toEqual({ cameraId: ':package', packageChannel: false })
+    expect(parseCameraRef('abc:low')).toEqual({ cameraId: 'abc:low', packageChannel: false })
+    expect(parseCameraRef('abc:packages')).toEqual({
+      cameraId: 'abc:packages',
+      packageChannel: false,
     })
   })
 })
 
-describe('isValidGridSize / slotCount (VIEW-1)', () => {
-  it('accepts whole sizes from 1×1 to 4×4', () => {
-    expect(isValidGridSize({ cols: 1, rows: 1 })).toBe(true)
-    expect(isValidGridSize({ cols: MAX_GRID_DIMENSION, rows: MAX_GRID_DIMENSION })).toBe(true)
+describe('buildViewSlots: placement and contents', () => {
+  it('makes one slot per cell, in order, with each cell’s placement', () => {
+    const preset = LAYOUT_PRESETS.find((p) => p.id === '1+5')
+    if (preset === undefined) throw new Error('missing preset')
+    const v = view(3, 3, ['a', 'b'], {}, presetCells(preset))
+    const result = slots(v)
+    expect(result).toHaveLength(preset.cells.length)
+    expect(result.map((s) => s.placement)).toEqual(preset.cells)
+    expect(result.map((s) => s.kind)).toEqual([
+      'camera',
+      'camera',
+      'empty',
+      'empty',
+      'empty',
+      'empty',
+    ])
   })
 
-  it.each([
-    { cols: 0, rows: 3 },
-    { cols: 3, rows: 5 },
-    { cols: 2.5, rows: 2 },
-    { cols: Number.NaN, rows: 2 },
-  ])('rejects %o', (size) => {
-    expect(isValidGridSize(size)).toBe(false)
+  it('names the camera by its display name, with the model as fallback', () => {
+    const result = slots(view(2, 1, ['a', 'm']))
+    expect(result.map((s) => cameraSlot(s).name)).toEqual(['Front', 'G4 Bullet'])
   })
 
-  it('counts cols × rows', () => {
-    expect(slotCount({ cols: 4, rows: 3 })).toBe(12)
+  it('shows the first camera of a multi-camera cell (rotation is Phase 4)', () => {
+    const slot = cameraSlot(slots(view(1, 1, [['b', 'a']]))[0])
+    expect(slot.cameraId).toBe('b')
+  })
+
+  it('passes the View’s fit through', () => {
+    const slot = cameraSlot(slots(view(1, 1, ['a'], { fit: 'cover' }))[0])
+    expect(slot.fit).toBe('cover')
+  })
+
+  it('renders a View with every cell empty as empty slots', () => {
+    expect(slots(view(2, 2, [])).map((s) => s.kind)).toEqual(['empty', 'empty', 'empty', 'empty'])
   })
 })
 
-describe('TEMP_GRID_PRESETS', () => {
-  it('are exactly 3×3 and 4×3, as cols × rows, and valid VIEW-1 sizes', () => {
-    expect(TEMP_GRID_PRESETS.map((p) => [p.cols, p.rows])).toEqual([
-      [3, 3],
-      [4, 3],
-    ])
-    expect(TEMP_GRID_PRESETS.every(isValidGridSize)).toBe(true)
-    expect(new Set(TEMP_GRID_PRESETS.map((p) => p.id)).size).toBe(TEMP_GRID_PRESETS.length)
-  })
-})
-
-describe('assignTempGridSlots', () => {
-  it('fills slots in the camera list order (numeric, by display name)', () => {
-    const slots = assignTempGridSlots(cameras(9), { cols: 3, rows: 3 }, QUALITY)
-    expect(cameraIds(slots)).toEqual([
-      'id1',
-      'id2',
-      'id3',
-      'id4',
-      'id5',
-      'id6',
-      'id7',
-      'id8',
-      'id9',
-    ])
+describe('buildViewSlots: quality (QUAL-3, CAM-4)', () => {
+  it('falls back to the settings default with no overrides', () => {
+    expect(cameraSlot(slots(view(1, 1, ['a']))[0]).quality).toBe('low')
   })
 
-  it('leaves slots past the camera count empty, with distinct keys', () => {
-    const slots = assignTempGridSlots(cameras(10), { cols: 4, rows: 3 }, QUALITY)
-    expect(slots).toHaveLength(12)
-    expect(cameraIds(slots).slice(10)).toEqual([null, null])
-    expect(slots[10]).toEqual({ kind: 'empty', key: emptySlotKey(10) })
-    expect(new Set(slots.map((s) => s.key)).size).toBe(12)
-  })
-
-  it('shows only the first cols × rows cameras when there are more', () => {
-    const slots = assignTempGridSlots(cameras(15), { cols: 3, rows: 3 }, QUALITY)
-    expect(slots).toHaveLength(9)
-    expect(cameraIds(slots)).not.toContain('id10')
-  })
-
-  it('keys a camera by its id, so 3×3 → 4×3 keeps the same nine players', () => {
-    const inventory = cameras(12)
-    const small = assignTempGridSlots(inventory, { cols: 3, rows: 3 }, QUALITY)
-    const large = assignTempGridSlots(inventory, { cols: 4, rows: 3 }, QUALITY)
-    expect(large.slice(0, 9).map((s) => s.key)).toEqual(small.map((s) => s.key))
-    expect(small.map((s) => s.key)).toEqual(cameraIds(small))
-  })
-
-  it('keeps offline cameras in place rather than shifting later cameras up (CAM-3)', () => {
-    const inventory = [
-      camera({ id: 'a', name: 'A' }),
-      camera({ id: 'b', name: 'B', state: 'DISCONNECTED' }),
-      camera({ id: 'c', name: 'C' }),
-    ]
-    expect(cameraIds(assignTempGridSlots(inventory, { cols: 2, rows: 2 }, QUALITY))).toEqual([
-      'a',
-      'b',
-      'c',
-      null,
-    ])
-  })
-
-  it('uses the display-name fallback and passes the given quality through', () => {
-    const [slot] = assignTempGridSlots(
-      [camera({ id: 'x', name: null, model: 'G4 Bullet' })],
-      { cols: 1, rows: 1 },
-      QUALITY,
+  it('takes the View override over the settings default', () => {
+    expect(cameraSlot(slots(view(1, 1, ['a'], { gridQuality: 'medium' }))[0]).quality).toBe(
+      'medium',
     )
+  })
+
+  it('takes the cell override over the View', () => {
+    const v = view(2, 1, ['a', 'b'], { gridQuality: 'medium' })
+    const cells = v.cells.map((cell, i) => (i === 0 ? { ...cell, quality: 'high' as const } : cell))
+    const result = slots({ ...v, cells })
+    expect(result.map((s) => cameraSlot(s).quality)).toEqual(['high', 'medium'])
+  })
+
+  it('plays the package channel for a package ref, whatever the overrides say', () => {
+    const v = view(1, 1, [`d:${PACKAGE_CHANNEL}`], { gridQuality: 'high' })
+    const slot = cameraSlot(slots(v)[0])
+    expect(slot).toMatchObject({
+      cameraId: 'd',
+      quality: PACKAGE_CHANNEL,
+      name: 'Doorbell (package)',
+    })
+  })
+})
+
+describe('buildViewSlots: keys', () => {
+  it('keys a camera by ref and occurrence, so it is the same in two Views', () => {
+    const first = slots(view(2, 1, ['a', 'b']))
+    const second = slots(view(3, 3, [null, null, 'b', 'a']))
+    const keyOf = (list: GridSlot[], id: string): string | undefined =>
+      list.find((s) => s.kind === 'camera' && s.cameraId === id)?.key
+    expect(keyOf(first, 'a')).toBe(cameraSlotKey('a', 0))
+    expect(keyOf(second, 'a')).toBe(keyOf(first, 'a'))
+    expect(keyOf(second, 'b')).toBe(keyOf(first, 'b'))
+  })
+
+  it('gives duplicates of one camera distinct keys, and a package ref its own', () => {
+    const result = slots(view(2, 2, ['a', 'a', `a:${PACKAGE_CHANNEL}`]))
+    expect(result.map((s) => s.key)).toEqual([
+      cameraSlotKey('a', 0),
+      cameraSlotKey('a', 1),
+      cameraSlotKey(`a:${PACKAGE_CHANNEL}`, 0),
+      emptySlotKey({ col: 1, row: 1 }),
+    ])
+  })
+
+  it('keys empty slots by position, and never collides with a camera key', () => {
+    const result = slots(view(4, 4, ['a']))
+    const keys = result.map((s) => s.key)
+    expect(new Set(keys).size).toBe(keys.length)
+    expect(result[1]?.key).toBe(emptySlotKey({ col: 1, row: 0 }))
+  })
+})
+
+describe('buildViewSlots: a camera no longer on the console (CAM-2)', () => {
+  it('gives it a missing slot with its ref and its camera key, and no player', () => {
+    const [slot] = slots(view(1, 1, ['gone']))
     expect(slot).toEqual({
-      kind: 'camera',
-      key: 'x',
-      cameraId: 'x',
-      name: 'G4 Bullet',
-      quality: QUALITY,
+      kind: 'missing',
+      key: cameraSlotKey('gone', 0),
+      placement: { col: 0, row: 0, colSpan: 1, rowSpan: 1 },
+      ref: 'gone',
+      label: 'Camera not found (gone)',
     })
   })
 
-  it('renders nothing for an invalid size instead of a runaway grid', () => {
-    expect(assignTempGridSlots(cameras(3), { cols: 0, rows: 3 }, QUALITY)).toEqual([])
-    expect(assignTempGridSlots(cameras(3), { cols: 100, rows: 100 }, QUALITY)).toEqual([])
+  it('treats a package ref to a missing camera the same way', () => {
+    expect(slots(view(1, 1, [`gone:${PACKAGE_CHANNEL}`]))[0]?.kind).toBe('missing')
   })
 
-  it('returns all-empty slots when there are no cameras', () => {
-    expect(cameraIds(assignTempGridSlots([], { cols: 3, rows: 3 }, QUALITY))).toEqual(
-      Array.from({ length: 9 }, () => null),
-    )
+  it('becomes a camera slot again, under the same key, when the camera comes back', () => {
+    const v = view(1, 1, ['z'])
+    const before = slots(v)[0]
+    const after = slots(v, [...INVENTORY, camera({ id: 'z', name: 'Back again' })])[0]
+    expect(before?.kind).toBe('missing')
+    expect(after?.kind).toBe('camera')
+    expect(after?.key).toBe(before?.key)
   })
 })
 
-describe('tempGridQuality (QUAL-1/3)', () => {
-  it.each(QUALITIES)('is the settings grid default (%s), not the fill default', (quality) => {
-    const fill = QUALITIES.find((q) => q !== quality) ?? quality
-    expect(tempGridQuality({ defaultGridQuality: quality, defaultFillQuality: fill })).toBe(quality)
+describe('buildViewSlots: a package ref to a camera without a package camera (CAM-4)', () => {
+  it('gives it a missing slot naming the camera, with its camera key, and no player', () => {
+    const [slot] = slots(view(1, 1, [`a:${PACKAGE_CHANNEL}`]))
+    expect(slot).toEqual({
+      kind: 'missing',
+      key: cameraSlotKey(`a:${PACKAGE_CHANNEL}`, 0),
+      placement: { col: 0, row: 0, colSpan: 1, rowSpan: 1 },
+      ref: `a:${PACKAGE_CHANNEL}`,
+      label: 'No package camera (Front)',
+    })
+  })
+
+  it('still shows the camera itself in another cell', () => {
+    const result = slots(view(2, 1, ['a', `a:${PACKAGE_CHANNEL}`]))
+    expect(result.map((s) => s.kind)).toEqual(['camera', 'missing'])
+  })
+
+  it('becomes a package player, under the same key, when the flag comes back', () => {
+    const v = view(1, 1, [`a:${PACKAGE_CHANNEL}`])
+    const before = slots(v)[0]
+    const withPackage = INVENTORY.map((c) => (c.id === 'a' ? { ...c, hasPackageCamera: true } : c))
+    const after = cameraSlot(slots(v, withPackage)[0])
+    expect(before?.kind).toBe('missing')
+    expect(after).toMatchObject({ quality: PACKAGE_CHANNEL, key: before?.key })
   })
 })

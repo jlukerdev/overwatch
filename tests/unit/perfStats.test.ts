@@ -1,12 +1,13 @@
 // P2.5 perf harness: the pure half (src/main/perf/perfStats.ts) — env parsing, the settings
-// override, preset choice, ps/ioreg parsing, per-role CPU/RAM, playback stats, the summary and its
+// override, the perf View and its size, ps/ioreg parsing, per-role CPU/RAM, playback stats, the summary and its
 // markdown row.
 import { describe, expect, it } from 'vitest'
-import { SettingsSchema } from '@shared/models'
+import { SettingsSchema, ViewSchema } from '@shared/models'
 import { asBool, parsePsColumns } from '../../src/main/perf/measure'
 import {
   bufferLag,
-  choosePerfPreset,
+  PERF_GRID_SIZES,
+  buildPerfView,
   droppedPercentOver,
   isFailedRun,
   metricTypeRole,
@@ -25,6 +26,7 @@ import {
   summaryTableRow,
   sumRoles,
   withPerfGridQuality,
+  withPerfView,
   type CellStat,
   type PerfRunInfo,
   type PerfSample,
@@ -106,16 +108,96 @@ describe('withPerfGridQuality', () => {
   })
 })
 
-describe('choosePerfPreset', () => {
+describe('buildPerfView', () => {
+  const ids = (n: number): string[] => Array.from({ length: n }, (_, i) => `cam${String(i)}`)
+
   it.each([
     [0, '3×3', 0],
-    [4, '3×3', 4],
+    [1, '3×3', 1],
     [9, '3×3', 9],
     [10, '4×3', 10],
     [11, '4×3', 11],
-    [20, '4×3', 12],
+    [12, '4×3', 12],
+    [15, '4×3', 12],
   ])('%i cameras → %s with %i streams', (cameras, label, streams) => {
-    expect(choosePerfPreset(cameras)).toMatchObject({ label, streams })
+    const perf = buildPerfView(ids(cameras))
+    expect(perf).toMatchObject({ label, streams })
+    expect(perf.slots).toBe(perf.view.cols * perf.view.rows)
+    expect(perf.view.cells).toHaveLength(perf.slots)
+  })
+
+  it('fills 1×1 cells with the first N cameras in (row, col) order, the rest empty', () => {
+    const { view } = buildPerfView(ids(11))
+    expect(view.cells.map((c) => [c.row, c.col, c.colSpan, c.rowSpan])).toEqual(
+      Array.from({ length: 12 }, (_, i) => [Math.floor(i / 4), i % 4, 1, 1]),
+    )
+    expect(view.cells.map((c) => c.cameraIds)).toEqual([...ids(11).map((id) => [id]), []])
+  })
+
+  it('leaves cameras beyond the slots out', () => {
+    const { view } = buildPerfView(ids(15))
+    expect(view.cells.flatMap((c) => c.cameraIds)).toEqual(ids(12))
+  })
+
+  it('is a schema-valid View with the defaults a new View gets', () => {
+    const { view } = buildPerfView(ids(9))
+    expect(ViewSchema.parse(view)).toEqual(view)
+    expect(view).toMatchObject({
+      id: 'perf',
+      name: 'Perf',
+      aspect: { w: 16, h: 9 },
+      gap: 0,
+      fit: 'contain',
+      gridQuality: null,
+      fillQuality: null,
+    })
+  })
+
+  it('PERF_GRID_SIZES is declared smallest first, which buildPerfView relies on', () => {
+    const areas = PERF_GRID_SIZES.map((s) => s.cols * s.rows)
+    expect(areas).toEqual([...areas].sort((a, b) => a - b))
+  })
+
+  it('does not mutate its input', () => {
+    const input = ids(10)
+    const copy = [...input]
+    buildPerfView(input)
+    expect(input).toEqual(copy)
+  })
+})
+
+describe('withPerfView', () => {
+  const userView = ViewSchema.parse({
+    id: 'mine',
+    name: 'Mine',
+    cols: 1,
+    rows: 1,
+    cells: [{ col: 0, row: 0 }],
+  })
+  const settings = SettingsSchema.parse({ views: [userView], lastViewId: 'mine' })
+
+  it('shows only the perf View, as the active one', () => {
+    const { view } = buildPerfView(['a', 'b'])
+    const shown = withPerfView(settings, view)
+    expect(shown.views).toEqual([view])
+    expect(shown.lastViewId).toBe('perf')
+    expect(shown.streams).toEqual(settings.streams)
+  })
+
+  it('leaves the stored settings untouched', () => {
+    const before = structuredClone(settings)
+    withPerfView(settings, buildPerfView(['a']).view)
+    expect(settings).toEqual(before)
+  })
+
+  it('returns the settings as they are before a View is built', () => {
+    expect(withPerfView(settings, null)).toBe(settings)
+  })
+
+  it('composes with withPerfGridQuality', () => {
+    const shown = withPerfView(withPerfGridQuality(settings, 'high'), buildPerfView(['a']).view)
+    expect(shown.streams.defaultGridQuality).toBe('high')
+    expect(shown.lastViewId).toBe('perf')
   })
 })
 

@@ -33,6 +33,7 @@ import {
   useViews,
   viewsActions,
 } from '../../state/viewsStore'
+import { CameraIcon, GearIcon, PlusIcon } from '../../ui/icons'
 import { ViewEditor } from '../viewEditor/ViewEditor'
 import { ViewSwitcher } from '../viewSwitcher/ViewSwitcher'
 import { GridView } from './GridView'
@@ -105,7 +106,7 @@ function LiveBody({ activeView, onOpenSettings, onOpenCameras }: LiveBodyProps):
       <Notice
         title="Not set up yet"
         hint={`Nothing to stream until setup is done: ${gaps.map((g) => SETUP_GAP_LABELS[g]).join('; ')}.`}
-        action={{ label: 'Open settings', onClick: onOpenSettings }}
+        action={{ label: 'Open settings', icon: <GearIcon />, onClick: onOpenSettings }}
       />
     )
   }
@@ -114,7 +115,7 @@ function LiveBody({ activeView, onOpenSettings, onOpenCameras }: LiveBodyProps):
       <Notice
         title="No cameras"
         hint="Connect to the console from the Cameras screen; the Views fill from its list."
-        action={{ label: 'Open cameras', onClick: onOpenCameras }}
+        action={{ label: 'Open cameras', icon: <CameraIcon />, onClick: onOpenCameras }}
       />
     )
   }
@@ -151,7 +152,7 @@ function NoViews({ cameraIds }: { readonly cameraIds: readonly string[] }): JSX.
     <Notice
       title="No Views yet"
       hint="A View is a grid of cameras. Start with one that shows all of them; you can change its layout later."
-      action={{ label: 'Create a View', onClick: create, disabled: pending }}
+      action={{ label: 'Create a View', icon: <PlusIcon />, onClick: create, disabled: pending }}
       error={error}
     />
   )
@@ -168,6 +169,8 @@ function Notice({
   readonly hint?: string
   readonly action?: {
     readonly label: string
+    /** Shown before the label (ui/icons.tsx). */
+    readonly icon: JSX.Element
     readonly onClick: () => void
     readonly disabled?: boolean
   }
@@ -180,10 +183,11 @@ function Notice({
       {action === undefined ? null : (
         <button
           type="button"
-          className="button"
+          className="button button--primary"
           disabled={action.disabled === true}
           onClick={action.onClick}
         >
+          {action.icon}
           {action.label}
         </button>
       )}

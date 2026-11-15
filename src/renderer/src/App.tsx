@@ -20,6 +20,7 @@ import { ConnectionBadge } from './features/status/ConnectionBadge'
 import { navClass } from './navClass'
 import { useAppStore } from './state/appStore'
 import { blockUnload, confirmLeave } from './state/unsavedGuard'
+import { CameraIcon, GearIcon, GridIcon, RefreshIcon } from './ui/icons'
 
 type Screen = 'cameras' | 'grid' | 'settings'
 
@@ -82,7 +83,8 @@ export function App(): JSX.Element {
         <p className="app__error">
           {loadError?.message ?? 'The app could not read its own state from the main process.'}
         </p>
-        <button type="button" className="button" onClick={() => void load()}>
+        <button type="button" className="button button--primary" onClick={() => void load()}>
+          <RefreshIcon />
           Try again
         </button>
       </main>
@@ -102,6 +104,7 @@ export function App(): JSX.Element {
               go('cameras')
             }}
           >
+            <CameraIcon />
             Cameras
           </button>
           <button
@@ -112,6 +115,7 @@ export function App(): JSX.Element {
               go('grid')
             }}
           >
+            <GridIcon />
             Live
           </button>
           <button
@@ -122,6 +126,7 @@ export function App(): JSX.Element {
               go('settings')
             }}
           >
+            <GearIcon />
             Settings
           </button>
         </nav>

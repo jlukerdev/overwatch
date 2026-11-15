@@ -21,6 +21,7 @@
 import { useState, type JSX } from 'react'
 import type { AccessProbe, IpcError, IpcSecretKey, ProtectProbe, Settings } from '@shared/ipc'
 import { useAppStore } from '../../state/appStore'
+import { CheckIcon, PlugIcon, PulseIcon, TrashIcon, UnplugIcon } from '../../ui/icons'
 import { CertificateCard } from './CertificateCard'
 import { QualityOptions } from '../quality/QualityOptions'
 import {
@@ -248,6 +249,7 @@ function ConsoleCard({
             void save()
           }}
         >
+          <CheckIcon />
           {saving ? 'Saving…' : 'Save console'}
         </button>
         {dirty ? <span className="field__hint">Unsaved changes</span> : null}
@@ -340,6 +342,7 @@ function SecretField({
             void save()
           }}
         >
+          <CheckIcon />
           {busy === 'save' ? 'Saving…' : 'Save'}
         </button>
         {stored ? (
@@ -351,6 +354,7 @@ function SecretField({
               void clear()
             }}
           >
+            <TrashIcon />
             {busy === 'clear' ? 'Clearing…' : 'Clear'}
           </button>
         ) : null}
@@ -446,6 +450,7 @@ function ConnectionCard({ accessEnabled }: { accessEnabled: boolean }): JSX.Elem
             void runTest()
           }}
         >
+          <PulseIcon />
           {busy === 'test' ? 'Testing…' : 'Test connection'}
         </button>
         <button
@@ -456,6 +461,7 @@ function ConnectionCard({ accessEnabled }: { accessEnabled: boolean }): JSX.Elem
             void run('connect')
           }}
         >
+          <PlugIcon />
           {busy === 'connect' ? 'Connecting…' : 'Connect'}
         </button>
         <button
@@ -466,6 +472,7 @@ function ConnectionCard({ accessEnabled }: { accessEnabled: boolean }): JSX.Elem
             void run('disconnect')
           }}
         >
+          <UnplugIcon />
           {busy === 'disconnect' ? 'Disconnecting…' : 'Disconnect'}
         </button>
       </div>

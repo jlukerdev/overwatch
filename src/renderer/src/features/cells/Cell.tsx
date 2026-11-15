@@ -32,6 +32,7 @@ import { memo, useMemo, type JSX, type MouseEvent } from 'react'
 import type { Fit } from '@shared/models'
 import type { Quality, StreamQuality } from '@shared/quality'
 import { LivePlayer } from '../../player/LivePlayer'
+import { GridIcon } from '../../ui/icons'
 import type { FillClickEvent } from '../fill/fillMode'
 import { useZoomPan, ZoomPanLayer } from '../zoom/ZoomPan'
 import { CellOverlay } from './CellOverlay'
@@ -160,7 +161,7 @@ export const Cell = memo(function Cell({
               title="Back to grid (Esc)"
               onClick={onBack}
             >
-              <GridIcon />
+              <GridIcon className="cellOverlay__icon" />
             </button>
           ) : undefined
         }
@@ -204,15 +205,3 @@ export const Cell = memo(function Cell({
     </div>
   )
 })
-
-/** FILL-1's back control: a 2×2 grid, i.e. "back to the grid". Decorative; the button is labelled. */
-function GridIcon(): JSX.Element {
-  return (
-    <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false">
-      <rect x="1.5" y="1.5" width="5.5" height="5.5" rx="1" fill="currentColor" />
-      <rect x="9" y="1.5" width="5.5" height="5.5" rx="1" fill="currentColor" />
-      <rect x="1.5" y="9" width="5.5" height="5.5" rx="1" fill="currentColor" />
-      <rect x="9" y="9" width="5.5" height="5.5" rx="1" fill="currentColor" />
-    </svg>
-  )
-}

@@ -105,6 +105,7 @@ VIEW-1…7, FILL-1…3, ZOOM-1…3, CELL-3/4, QUAL-1…7
 | P3.5 | Fill mode with low→high seamless swap, Esc/back |
 | P3.6 | Zoom/pan component (wheel, pinch, drag, 100% reset) |
 | P3.7 | Quality selection: settings defaults, View `gridQuality`/`fillQuality` in the editor, per-cell picker in the overlay, fill-mode picker with "save as default" (QUAL-1…7) |
+| P3.8 | UI polish: icons and action colours on buttons app-wide (shared inline-SVG icon set, button variants); View switcher's New / Edit pinned to the bottom of the pane; View editor layout — settings grouped with more spacing, actions placed by what they act on (View list: New / Duplicate / Delete; header: Close; a save bar under the canvas: Discard / Save; selection toolbar: Merge / Split / Clear) |
 
 **Gate G3:** build three Views from scratch, restart the app, and they come back. Changing a cell between Low/Med/High swaps without a black frame and persists. Fill/zoom/back works smoothly at 60 fps UI. A View with a 2×2 cell and an 8 px gap keeps 16:9 unit cells, centred, when the window is resized to very wide and very tall.
 

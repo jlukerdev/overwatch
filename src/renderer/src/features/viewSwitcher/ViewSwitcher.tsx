@@ -11,13 +11,16 @@
 // The key rules are `viewShortcutIndex` (./viewShortcut), pure and tested; the hook below only
 // listens and calls it.
 //
-// Below the list, "New View" and "Edit View" open the View editor (P3.3; VIEW-3): New View first
-// creates `View N` (the next free name, `nextViewName`) and then edits it, Edit View edits the
-// active View. They are plain buttons with **no** `data-view-id`, so the harness selector above
-// still matches View buttons only.
+// Pinned to the bottom of the pane (P3.8), under the list, "New View" and "Edit View" open the
+// View editor (P3.3; VIEW-3): New View first creates `View N` (the next free name,
+// `nextViewName`) and then edits it, Edit View edits the active View. They are plain buttons with
+// **no** `data-view-id`, so the harness selector above still matches View buttons only. The list
+// scrolls in its own region (`viewSwitcher__list`) so the actions, and an error above them, stay
+// in view however many Views there are.
 import { useCallback, useEffect, useRef, useState, type JSX } from 'react'
 import type { View } from '@shared/models'
 import { selectionNeedsStore, useLastViewId, viewsActions } from '../../state/viewsStore'
+import { PencilIcon, PlusIcon } from '../../ui/icons'
 import { nextViewName } from '../viewEditor/viewEditorHelpers'
 import { keyEventTarget, viewShortcutIndex } from './viewShortcut'
 
@@ -55,34 +58,41 @@ export function ViewSwitcher({ views, activeViewId, onEditView }: ViewSwitcherPr
 
   return (
     <nav className="viewSwitcher" aria-label="Views">
-      {views.length === 0 ? <p className="viewSwitcher__empty">No Views</p> : null}
-      {views.map((view, index) => {
-        const active = view.id === activeViewId
-        const key = index < SHORTCUT_COUNT ? String(index + 1) : null
-        return (
-          <button
-            key={view.id}
-            type="button"
-            className="viewSwitcher__item"
-            data-view-id={view.id}
-            aria-pressed={active}
-            aria-keyshortcuts={key ?? undefined}
-            title={key === null ? view.name : `${view.name} (${key})`}
-            onClick={() => {
-              select(view.id)
-            }}
-          >
-            <span className="viewSwitcher__key" aria-hidden="true">
-              {key ?? ''}
-            </span>
-            <span className="viewSwitcher__name">{view.name}</span>
-          </button>
-        )
-      })}
+      <div className="viewSwitcher__list">
+        {views.length === 0 ? <p className="viewSwitcher__empty">No Views</p> : null}
+        {views.map((view, index) => {
+          const active = view.id === activeViewId
+          const key = index < SHORTCUT_COUNT ? String(index + 1) : null
+          return (
+            <button
+              key={view.id}
+              type="button"
+              className="viewSwitcher__item"
+              data-view-id={view.id}
+              aria-pressed={active}
+              aria-keyshortcuts={key ?? undefined}
+              title={key === null ? view.name : `${view.name} (${key})`}
+              onClick={() => {
+                select(view.id)
+              }}
+            >
+              <span className="viewSwitcher__key" aria-hidden="true">
+                {key ?? ''}
+              </span>
+              <span className="viewSwitcher__name">{view.name}</span>
+            </button>
+          )
+        })}
+      </div>
+      {error === null ? null : (
+        <p className="viewSwitcher__error" role="alert">
+          {error}
+        </p>
+      )}
       <div className="viewSwitcher__actions">
         <button
           type="button"
-          className="button"
+          className="button button--primary"
           disabled={creating}
           onClick={() => {
             setCreating(true)
@@ -99,6 +109,7 @@ export function ViewSwitcher({ views, activeViewId, onEditView }: ViewSwitcherPr
             })
           }}
         >
+          <PlusIcon />
           New View
         </button>
         <button
@@ -109,14 +120,10 @@ export function ViewSwitcher({ views, activeViewId, onEditView }: ViewSwitcherPr
             if (activeViewId !== null) onEditView(activeViewId)
           }}
         >
+          <PencilIcon />
           Edit View
         </button>
       </div>
-      {error === null ? null : (
-        <p className="viewSwitcher__error" role="alert">
-          {error}
-        </p>
-      )}
     </nav>
   )
 }

@@ -33,6 +33,7 @@ import {
   qualityOptionValue,
 } from '../quality/qualityChoice'
 import { QualityOptions } from '../quality/QualityOptions'
+import { SaveIcon } from '../../ui/icons'
 import { blursOnKey } from './overlayVisibility'
 
 /**
@@ -123,10 +124,11 @@ export function FillQualityPicker({
       {canSave ? (
         <button
           type="button"
-          className="cellOverlay__back"
+          className="cellOverlay__back cellOverlay__iconButton cellOverlay__iconButton--labelled"
           title="Use this quality whenever a cell of this View fills"
           onClick={onSave}
         >
+          <SaveIcon className="cellOverlay__icon" />
           Save for this View
         </button>
       ) : null}

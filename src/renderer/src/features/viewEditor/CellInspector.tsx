@@ -21,6 +21,7 @@ import {
   qualityOptionValue,
 } from '../quality/qualityChoice'
 import { QualityOptions } from '../quality/QualityOptions'
+import { ChevronDownIcon, ChevronUpIcon, XIcon } from '../../ui/icons'
 import { cameraRefLabel, type CameraChoice } from './editorModel'
 
 export interface CellInspectorProps {
@@ -94,35 +95,38 @@ export function CellInspector({
                 </span>
                 <button
                   type="button"
-                  className="button viewEditor__iconButton"
+                  className="button button--icon button--ghost button--sm"
                   aria-label={`Move ${label} up`}
+                  title={`Move ${label} up`}
                   disabled={position === 0}
                   onClick={() => {
                     onMove(position, -1)
                   }}
                 >
-                  ▲
+                  <ChevronUpIcon />
                 </button>
                 <button
                   type="button"
-                  className="button viewEditor__iconButton"
+                  className="button button--icon button--ghost button--sm"
                   aria-label={`Move ${label} down`}
+                  title={`Move ${label} down`}
                   disabled={position === last}
                   onClick={() => {
                     onMove(position, 1)
                   }}
                 >
-                  ▼
+                  <ChevronDownIcon />
                 </button>
                 <button
                   type="button"
-                  className="button viewEditor__iconButton"
+                  className="button button--icon button--ghost button--danger button--sm"
                   aria-label={`Remove ${label}`}
+                  title={`Remove ${label}`}
                   onClick={() => {
                     onRemove(position)
                   }}
                 >
-                  ✕
+                  <XIcon />
                 </button>
               </li>
             )

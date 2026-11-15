@@ -11,6 +11,7 @@ Recorded with the P2.5 perf harness (`npm run perf`, `scripts/perf/` + `src/main
 | macOS 27.2.1 (arm64, Apple M5 Pro, 15 cores, 64 GB) | low | 9 | — | — | — | — | — | — | — | — | — | — | — | skipped (user decision, 2026-11-14): `medium` and `high` cost about the same CPU, so `low` sets no limit. Only a 1-min smoke run exists: about 34 % of one core, 0.98 s buffer lag |
 | macOS 27.2.1 (arm64, Apple M5 Pro, 15 cores, 64 GB) | medium | 9 | 51.5 / 53.4 | 22.1 / 24.0 | 18.6 / 19.4 | 5.4 / 5.8 | 0 / 0 | 777 / 837 | 347.9 | 0.99 / 1.04 / 1.27 | 0.78 | 1 / 1 | VideoToolboxVideoDecoder (platform; gpu enabled) | 2026-11-14, 30 min |
 | macOS 27.2.1 (arm64, Apple M5 Pro, 15 cores, 64 GB) | high | 9 (10 seen) | 51.4 / 55.0 | 20.7 / 22.2 | 18.0 / 19.6 | 5.8 / 6.2 | 3 / 13 | 928 / 998 | 396.0 | 0.99 / 1.04 / 1.09 | 0.86 | 1 / 2 | VideoToolboxVideoDecoder (platform; gpu enabled) | 2026-11-14, 30 min |
+| macOS 27.2.1 (arm64, Apple M5 Pro, 15 cores, 64 GB) | high | 9 (10 seen) | 50.9 / 52.4 | 20.3 / 21.2 | 18.5 / 19.2 | 5.8 / 6.0 | 0 / 0 | 970 / 1012 | 63.9 | 0.99 / 1.04 / 4.92 | 0.38 | 1 / 6 | VideoToolboxVideoDecoder (platform; gpu enabled) | 2026-11-14, 120 min, long |
 
 **Reading the macOS runs (2026-11-14):**
 
@@ -24,7 +25,18 @@ Recorded with the P2.5 perf harness (`npm run perf`, `scripts/perf/` + `src/main
   | high | 311 | 381 | 424 | 455 | 485 | 498 | 506 |
 
   So the linear slope (350–400 MB/h) overstates it. Over the last 7.5 minutes it is still about 70 MB/h at `medium` and about 110 MB/h at `high`. Main, GPU, utility and go2rtc stay flat (±5 MB). 30 minutes is not long enough to tell a plateau from a slow leak.
-- **Reconnects:** the camera in cell 7 (index 6) changed its `<video>` 5 times in the `high` run and once in the `medium` run, and cell 8 changed twice at `high`. That is the player retrying (NFR-7). Each time it recovered within one or two samples: "Not playing" peaked at 1 cell, in 1–2 samples. Both cameras are on a weaker Wi-Fi link, so the drops are expected; what matters is that the player recovered each time without help.
+
+  **The 2-hour `high` run settles this for macOS: renderer memory levels off.** Here is the slope of each 30-minute window:
+
+  | Window | Renderer MB/h | Total MB/h |
+  |---|---|---|
+  | 0–30 min | 357 | 382 |
+  | 30–60 min | 24 | 31 |
+  | 60–90 min | 21 | 29 |
+  | 90–120 min | 14 | 17 |
+
+  The renderer went 282 → 476 MB in the first 30 minutes, then 476 → 508 MB over the next 90. Its growth rate kept falling, which is the shape of caches and the allocator settling, not of a steady leak. Even at the last window's rate, an 8-hour day adds about 100 MB (NFR-4). The whole-run slope of 63.9 MB/h is dominated by the first 30 minutes. GPU, utility and go2rtc stayed flat, and main stayed within 219–235 MB. **macOS: no memory growth that matters. G2's memory check passes.**
+- **Reconnects:** the camera in cell 7 (index 6) changed its `<video>` 5 times in the `high` run and once in the `medium` run, and cell 8 changed twice at `high`. That is the player retrying (NFR-7). Each time it recovered within one or two samples: "Not playing" peaked at 1 cell, in 1–2 samples. In the 2-hour run the same two cells reconnected again (cell 7 about 8 times, mostly around 15 min; cell 8 twice). The 4.9 s and 3.1 s buffer-lag maximums are cell 7 catching up after a reconnect: only 2 of 12,960 readings were above 2 s. Both cameras are on a weaker Wi-Fi link, so the drops are expected; what matters is that the player recovered each time without help.
 - **First frame (`FIRST_FRAME_TIMEOUT_MS` = 10 s, P2.3):** the harness does not time first frames. In these runs the user saw every cell's first frame within 10 s, so 10 s is not too tight. It is kept as is.
 
 ### Windows

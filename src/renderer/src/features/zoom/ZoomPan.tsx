@@ -41,7 +41,7 @@
 // `onClick`, so a pan never arms — or fires — fill's double-click exit. The same listener handles
 // ZOOM-2's modifier + double-click (fillClickStep already ignores it). It never swallows a click on
 // a control: a touch drag or pinch ends with no click to clear the swallow it sets, and the next tap
-// on "100%" or "← Grid" must still work. A press on a control is still fed to the guard as a press,
+// on "100%" or the back-to-grid control must still work. A press on a control is still fed to the guard as a press,
 // so that leftover swallow is forgotten before any later click on the picture.
 //
 // **Hot path.** Wheel ticks and pointer moves arrive many times a frame. The zoom state lives in a

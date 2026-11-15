@@ -5,7 +5,7 @@
 // **Fill (P3.5; FILL-1/2).** The same cell is the filled view: `<GridView>` enlarges its box to the
 // grid area and hands it `filled`, the fill quality and the fill fit (features/fill/fillMode.ts). This
 // file only reports the cell's clicks and double-clicks upward, as plain data, and — while filled —
-// puts the back control in the overlay's slot. Whether a click fills, unfills or does nothing is
+// puts the back control (a 2×2 grid icon) top centre in the overlay (`centerControls`). Whether a click fills, unfills or does nothing is
 // `fillClickStep`'s call, not this file's. A click on a control never arrives here (CellOverlay stops
 // it at its slot), so a control press is never a cell click.
 //
@@ -125,9 +125,9 @@ export const Cell = memo(function Cell({
   onFillQualityPick,
   onSaveFillQuality,
 }: CellProps): JSX.Element {
-  const zoom = useZoomPan(filled)
+  const { cellRef, layerRef, zoomed, resetZoom } = useZoomPan(filled)
   // The same element object across renders that change nothing of the player's own, so a flip of
-  // `zoom.zoomed` (or of `filled` alone) re-renders the overlay and never the player.
+  // `zoomed` (or of `filled` alone) re-renders the overlay and never the player.
   const player = useMemo(
     () => <LivePlayer cameraId={cameraId} quality={quality} muted fit={fit} />,
     [cameraId, quality, fit],
@@ -137,7 +137,7 @@ export const Cell = memo(function Cell({
     // or the back control. `gridCell--fillable` is the pointer cursor (cells.css); `gridCell--filled`
     // keeps touch gestures for the zoom (zoom.css). The zoom's cursor classes are the hook's.
     <div
-      ref={zoom.cellRef}
+      ref={cellRef}
       className={filled ? 'gridCell gridCell--filled' : 'gridCell gridCell--fillable'}
       onClick={(event) => {
         onClickEvent(slotKey, filled, toFillClick(event, 'click'))
@@ -146,8 +146,25 @@ export const Cell = memo(function Cell({
         onClickEvent(slotKey, filled, toFillClick(event, 'dblclick'))
       }}
     >
-      <ZoomPanLayer layerRef={zoom.layerRef}>{player}</ZoomPanLayer>
-      <CellOverlay name={name} quality={quality} autoHideMs={overlayAutoHideMs}>
+      <ZoomPanLayer layerRef={layerRef}>{player}</ZoomPanLayer>
+      <CellOverlay
+        name={name}
+        quality={quality}
+        autoHideMs={overlayAutoHideMs}
+        centerControls={
+          filled ? (
+            <button
+              type="button"
+              className="cellOverlay__back cellOverlay__iconButton"
+              aria-label="Back to grid"
+              title="Back to grid (Esc)"
+              onClick={onBack}
+            >
+              <GridIcon />
+            </button>
+          ) : undefined
+        }
+      >
         {filled ? (
           <>
             {inheritedQuality !== null ? (
@@ -162,26 +179,17 @@ export const Cell = memo(function Cell({
                 }}
               />
             ) : null}
-            {zoom.zoomed ? (
+            {zoomed ? (
               <button
                 type="button"
                 className="cellOverlay__back"
                 aria-label="Reset zoom to 100%"
                 title={ZOOM_RESET_TITLE}
-                onClick={zoom.resetZoom}
+                onClick={resetZoom}
               >
                 100%
               </button>
             ) : null}
-            <button
-              type="button"
-              className="cellOverlay__back"
-              aria-label="Back to grid"
-              title="Back to grid (Esc)"
-              onClick={onBack}
-            >
-              ← Grid
-            </button>
           </>
         ) : inheritedQuality !== null ? (
           <CellQualityPicker
@@ -196,3 +204,15 @@ export const Cell = memo(function Cell({
     </div>
   )
 })
+
+/** FILL-1's back control: a 2×2 grid, i.e. "back to the grid". Decorative; the button is labelled. */
+function GridIcon(): JSX.Element {
+  return (
+    <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false">
+      <rect x="1.5" y="1.5" width="5.5" height="5.5" rx="1" fill="currentColor" />
+      <rect x="9" y="1.5" width="5.5" height="5.5" rx="1" fill="currentColor" />
+      <rect x="1.5" y="9" width="5.5" height="5.5" rx="1" fill="currentColor" />
+      <rect x="9" y="9" width="5.5" height="5.5" rx="1" fill="currentColor" />
+    </svg>
+  )
+}

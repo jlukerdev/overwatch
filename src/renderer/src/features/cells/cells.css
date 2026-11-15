@@ -93,18 +93,69 @@
   pointer-events: auto;
 }
 
-/* QUAL-7: the effective quality, e.g. `MED`. Information, not a control. */
+/*
+ * QUAL-7: the effective quality, e.g. `MED`. Information, not a control. Each quality has its own
+ * colour (`data-quality`, CellOverlay.tsx), so a wall of cells reads at a glance: green for HIGH,
+ * amber for MED, blue for LOW, violet for the doorbell's package channel.
+ */
 .cellOverlay__badge {
+  --quality-colour: var(--muted);
+
   flex-shrink: 0;
   padding: 0.1rem 0.35rem;
-  border: 1px solid var(--border);
+  border: 1px solid color-mix(in srgb, var(--quality-colour) 70%, transparent);
   border-radius: var(--radius);
-  background: rgb(0 0 0 / 55%);
-  color: var(--muted);
+  background: color-mix(in srgb, var(--quality-colour) 22%, rgb(0 0 0 / 65%));
+  color: var(--quality-colour);
   font-size: 0.7rem;
   font-variant-numeric: tabular-nums;
   font-weight: 600;
   letter-spacing: 0.04em;
+}
+
+.cellOverlay__badge[data-quality='high'] {
+  --quality-colour: var(--quality-high);
+}
+
+.cellOverlay__badge[data-quality='medium'] {
+  --quality-colour: var(--quality-medium);
+}
+
+.cellOverlay__badge[data-quality='low'] {
+  --quality-colour: var(--quality-low);
+}
+
+.cellOverlay__badge[data-quality='package'] {
+  --quality-colour: var(--quality-package);
+}
+
+/*
+ * The top-centre controls (CellOverlay `centerControls`): fill's back-to-grid control, apart from
+ * the strip's quality picker. Faded with the strip, and like it lets the pointer through except on
+ * the controls themselves while shown.
+ */
+.cellOverlay__center {
+  position: absolute;
+  top: 0.35rem;
+  left: 50%;
+  display: flex;
+  opacity: 0;
+  pointer-events: none;
+  transform: translateX(-50%);
+  transition: opacity 150ms ease-out;
+}
+
+.cellOverlay--controlsShown .cellOverlay__center {
+  opacity: 1;
+}
+
+/* An icon-only chip, e.g. the 2×2 grid of fill's back control. */
+.cellOverlay__iconButton {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0.2rem 0.35rem;
+  line-height: 0;
 }
 
 /* FILL-1's back control (P3.5), shown only while filled. The badge's chip, as a button. */
@@ -156,7 +207,8 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .cellOverlay__controls {
+  .cellOverlay__controls,
+  .cellOverlay__center {
     transition: none;
   }
 }

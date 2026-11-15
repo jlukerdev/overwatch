@@ -18,6 +18,11 @@
   --ok: #3fb950;
   --warn: #d29922;
   --error: #f85149;
+  /* QUAL-7 quality badge colours (features/cells/cells.css). */
+  --quality-high: #3fb950;
+  --quality-medium: #e3b341;
+  --quality-low: #58a6ff;
+  --quality-package: #bc8cff;
   --radius: 6px;
   font-family:
     system-ui,

@@ -4,9 +4,11 @@
 //
 // What is in the strip, and when the rest arrives. Today: the effective quality badge (QUAL-7, e.g.
 // `MED`); the quality picker (P3.7) — the cell's own in the grid (QUAL-4), the fill picker while
-// filled (QUAL-5), none on a package-channel cell; while filled, fill's back control (P3.5, FILL-1);
-// and while filled *and* zoomed, the zoom's "100%" reset (P3.6, ZOOM-2) — all passed in by `<Cell>`.
-// `children` is the slot for those controls, top right next to the badge; later tasks add the
+// filled (QUAL-5), none on a package-channel cell; and while filled *and* zoomed, the zoom's "100%"
+// reset (P3.6, ZOOM-2) — all passed in by `<Cell>`. `children` is the slot for those controls, top
+// right next to the badge. Fill's back control (P3.5, FILL-1), a 2×2 grid icon, is the one control
+// apart from them: `centerControls`, top centre, so it is not mis-clicked for the quality picker. It
+// fades with the strip and keeps its presses the same way. Later tasks add the
 // position and next / previous plus the motion badge (P4.3, CELL-2/3), mute (P5.1, AUD) and unlock
 // (P5.3, DOOR). No placeholder buttons until then, and no control shown while it would do nothing
 // (the 100% control at 1×): a control that does nothing is a control someone presses.
@@ -89,6 +91,12 @@ export interface CellOverlayProps {
   readonly autoHideMs: number
   /** Controls for the strip, top right (see the header for which task adds which). */
   readonly children?: ReactNode
+  /**
+   * Controls shown top centre, apart from the strip — fill's back-to-grid control, kept away from
+   * the quality picker so the two are not mis-clicked for each other. Same rules as `children`:
+   * shown and hidden with the strip, and their presses never reach the cell.
+   */
+  readonly centerControls?: ReactNode
 }
 
 /** Set on the cell element while the idle cursor is hidden (cells.css). */
@@ -131,6 +139,7 @@ export function CellOverlay({
   quality,
   autoHideMs,
   children,
+  centerControls,
 }: CellOverlayProps): JSX.Element {
   const rootRef = useRef<HTMLDivElement | null>(null)
   /** The `.gridCell` around the overlay, once mounted. */
@@ -307,11 +316,26 @@ export function CellOverlay({
               {children}
             </div>
           ) : null}
-          <span className="cellOverlay__badge" title="Stream quality">
+          {/* `data-quality` gives each quality its own colour (cells.css). */}
+          <span className="cellOverlay__badge" title="Stream quality" data-quality={quality}>
             {qualityBadgeLabel(quality)}
           </span>
         </div>
       </div>
+      {centerControls !== undefined ? (
+        <div className="cellOverlay__center">
+          {/* `cellOverlay__slot` too, so ZoomPan skips presses here and the pointer rules apply. */}
+          <div
+            className="cellOverlay__slot"
+            onPointerDown={stopAtControls}
+            onPointerUp={stopAtControls}
+            onClick={stopAtControls}
+            onDoubleClick={stopAtControls}
+          >
+            {centerControls}
+          </div>
+        </div>
+      ) : null}
     </div>
   )
 }

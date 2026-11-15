@@ -15,6 +15,13 @@
 //     picked (and remembered) before the console is reached.
 //  3. "No Views yet", with a button that makes a first View of the cameras (`starterPreset`).
 //  4. The active View.
+//
+// **Editing** (P3.3; VIEW-3). "New View" / "Edit View" in the switcher put the screen in editing
+// mode: the View editor replaces the switcher and the grid until it is closed. Unmounting the
+// switcher is what turns the `1`–`9` shortcuts off while editing (typing a name must not switch
+// Views). The editor is shown whatever the console state, since editing needs only the Views;
+// without cameras its palette is simply empty. Which View is being edited is the app shell's state
+// (`editingViewId`), not this screen's, so it survives a trip to another screen (App).
 import { useState, type JSX } from 'react'
 import type { View } from '@shared/models'
 import { useAppStore } from '../../state/appStore'
@@ -26,22 +33,46 @@ import {
   useViews,
   viewsActions,
 } from '../../state/viewsStore'
+import { ViewEditor } from '../viewEditor/ViewEditor'
 import { ViewSwitcher } from '../viewSwitcher/ViewSwitcher'
 import { GridView } from './GridView'
 import './grid.css'
 
 export interface LiveScreenProps {
+  /** The id of the View the editor is on, or `null` when not editing. Owned by App. */
+  readonly editingViewId: string | null
+  readonly onEditingChange: (id: string | null) => void
   readonly onOpenSettings: () => void
   /** The Cameras screen is where the console is connected and its list is refreshed. */
   readonly onOpenCameras: () => void
 }
 
-export function LiveScreen({ onOpenSettings, onOpenCameras }: LiveScreenProps): JSX.Element {
+export function LiveScreen({
+  editingViewId,
+  onEditingChange,
+  onOpenSettings,
+  onOpenCameras,
+}: LiveScreenProps): JSX.Element {
   const views = useViews()
   const activeView = useActiveView()
+  if (editingViewId !== null) {
+    return (
+      <ViewEditor
+        viewId={editingViewId}
+        onOpen={onEditingChange}
+        onClose={() => {
+          onEditingChange(null)
+        }}
+      />
+    )
+  }
   return (
     <section className="liveScreen">
-      <ViewSwitcher views={views} activeViewId={activeView?.id ?? null} />
+      <ViewSwitcher
+        views={views}
+        activeViewId={activeView?.id ?? null}
+        onEditView={onEditingChange}
+      />
       <div className="liveScreen__main">
         <LiveBody
           activeView={activeView}
@@ -53,7 +84,7 @@ export function LiveScreen({ onOpenSettings, onOpenCameras }: LiveScreenProps): 
   )
 }
 
-interface LiveBodyProps extends LiveScreenProps {
+interface LiveBodyProps extends Pick<LiveScreenProps, 'onOpenSettings' | 'onOpenCameras'> {
   /** The one active View LiveScreen read, also the one the switcher marks. */
   readonly activeView: View | null
 }

@@ -53,6 +53,11 @@ export interface CameraRef {
 
 const PACKAGE_SUFFIX = `:${PACKAGE_CHANNEL}`
 
+/** The ref of a camera's package channel (CAM-4): `<cameraId>:package`, as `parseCameraRef` reads it. */
+export function packageRef(cameraId: string): string {
+  return `${cameraId}${PACKAGE_SUFFIX}`
+}
+
 /**
  * Splits a cell's camera ref. Only the exact suffix `:package` with a non-empty id before it is the
  * package channel; anything else is a plain camera id, passed through as is (Protect ids are hex and

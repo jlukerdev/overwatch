@@ -83,6 +83,16 @@
   white-space: nowrap;
 }
 
+/* New View / Edit View (P3.3), under the list and set off from it. */
+.viewSwitcher__actions {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  margin-top: 0.5rem;
+  padding-top: 0.5rem;
+  border-top: 1px solid var(--border);
+}
+
 .viewSwitcher__empty,
 .viewSwitcher__error {
   margin: 0;

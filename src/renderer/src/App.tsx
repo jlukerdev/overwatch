@@ -5,6 +5,11 @@
 // The third screen is Live (`LiveScreen`, P3.2): the View switcher and the active View. It is never
 // the default screen — nothing connects on launch (CON-4), so it would open on "No cameras".
 //
+// The View editor (P3.3) is part of Live, but which View it is editing is kept here, so leaving Live
+// for another screen and coming back reopens the editor rather than dropping it. Leaving with
+// unsaved changes asks first (VIEW-3): the nav buttons consult `confirmLeave`, and a `beforeunload`
+// listener (`blockUnload`) holds a window close or reload (main asks the user, src/main/index.ts).
+//
 // The connection indicator lives in the header, outside the switch: CON-5 asks for it to be visible
 // at all times, not only on the Settings screen.
 import { useEffect, useState, type JSX } from 'react'
@@ -14,6 +19,7 @@ import { SettingsPage } from './features/settings/SettingsPage'
 import { ConnectionBadge } from './features/status/ConnectionBadge'
 import { navClass } from './navClass'
 import { useAppStore } from './state/appStore'
+import { blockUnload, confirmLeave } from './state/unsavedGuard'
 
 type Screen = 'cameras' | 'grid' | 'settings'
 
@@ -25,6 +31,15 @@ export function App(): JSX.Element {
   const subscribe = useAppStore((s) => s.subscribe)
 
   const [screen, setScreen] = useState<Screen | null>(null)
+  // The id of the View the editor is on, or `null` when not editing (see the header).
+  const [editingViewId, setEditingViewId] = useState<string | null>(null)
+
+  useEffect(() => {
+    window.addEventListener('beforeunload', blockUnload)
+    return () => {
+      window.removeEventListener('beforeunload', blockUnload)
+    }
+  }, [])
 
   useEffect(() => {
     // Subscribe before loading, so a status change that arrives during the load is not missed: the
@@ -45,6 +60,12 @@ export function App(): JSX.Element {
 
   // Settings until the load says otherwise (see the effect above).
   const current = screen ?? 'settings'
+
+  /** Switches screens, unless that would drop unsaved editor changes the user wants to keep. */
+  const go = (next: Screen): void => {
+    if (next !== current && !confirmLeave()) return
+    setScreen(next)
+  }
 
   if (phase === 'loading') {
     return (
@@ -78,7 +99,7 @@ export function App(): JSX.Element {
             className={navClass(current === 'cameras')}
             aria-current={current === 'cameras' ? 'page' : undefined}
             onClick={() => {
-              setScreen('cameras')
+              go('cameras')
             }}
           >
             Cameras
@@ -88,7 +109,7 @@ export function App(): JSX.Element {
             className={navClass(current === 'grid')}
             aria-current={current === 'grid' ? 'page' : undefined}
             onClick={() => {
-              setScreen('grid')
+              go('grid')
             }}
           >
             Live
@@ -98,7 +119,7 @@ export function App(): JSX.Element {
             className={navClass(current === 'settings')}
             aria-current={current === 'settings' ? 'page' : undefined}
             onClick={() => {
-              setScreen('settings')
+              go('settings')
             }}
           >
             Settings
@@ -112,16 +133,18 @@ export function App(): JSX.Element {
         {current === 'cameras' ? (
           <CameraList
             onOpenSettings={() => {
-              setScreen('settings')
+              go('settings')
             }}
           />
         ) : current === 'grid' ? (
           <LiveScreen
+            editingViewId={editingViewId}
+            onEditingChange={setEditingViewId}
             onOpenSettings={() => {
-              setScreen('settings')
+              go('settings')
             }}
             onOpenCameras={() => {
-              setScreen('cameras')
+              go('cameras')
             }}
           />
         ) : (

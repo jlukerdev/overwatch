@@ -2,7 +2,7 @@
 // main-process services are assembled from their parts (config, secrets, TLS pins, the shared
 // Protect request throttle and the two API clients).
 import { basename, join } from 'node:path'
-import { app, BrowserWindow, ipcMain, safeStorage, session } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, safeStorage, session } from 'electron'
 import { IPC_EVENTS } from '@shared/ipc'
 import type { View } from '@shared/models'
 import { STREAM_RUNTIME_DOWN, type StreamRuntime } from '@shared/streams'
@@ -507,6 +507,20 @@ function createWindow(): void {
   })
   win.on('closed', () => {
     if (mainWindow === win) mainWindow = null
+  })
+  // The renderer cancels an unload while the View editor has unsaved changes (VIEW-3,
+  // `blockUnload`). Electron shows no prompt for that on its own, so ask here; "Leave" lets the
+  // close or reload go ahead.
+  win.webContents.on('will-prevent-unload', (event) => {
+    const choice = dialog.showMessageBoxSync(win, {
+      type: 'question',
+      buttons: ['Leave', 'Stay'],
+      defaultId: 1,
+      cancelId: 1,
+      title: 'Unsaved changes',
+      message: 'You have unsaved changes to a View. Leave and discard them?',
+    })
+    if (choice === 0) event.preventDefault()
   })
 
   const load = rendererDevUrl ? win.loadURL(rendererDevUrl) : win.loadFile(rendererIndexPath)

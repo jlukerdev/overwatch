@@ -251,7 +251,7 @@ export function splitCell<V extends LayoutView>(view: V, cellIndex: number): Lay
 }
 
 /** Whether two placements share at least one slot. */
-function intersects(a: CellPlacement, b: CellPlacement): boolean {
+export function intersects(a: CellPlacement, b: CellPlacement): boolean {
   return (
     a.col < b.col + b.colSpan &&
     b.col < a.col + a.colSpan &&
@@ -261,7 +261,7 @@ function intersects(a: CellPlacement, b: CellPlacement): boolean {
 }
 
 /** Whether `inner` lies entirely within `outer`. */
-function contains(outer: CellPlacement, inner: CellPlacement): boolean {
+export function contains(outer: CellPlacement, inner: CellPlacement): boolean {
   return (
     inner.col >= outer.col &&
     inner.row >= outer.row &&

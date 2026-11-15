@@ -22,9 +22,25 @@
 //     needless strictness is a VIEW-6 hazard.
 import { z } from 'zod'
 import { QualitySchema } from './quality'
+import { normalizeCells, tilingIssues } from './viewTiling'
 
 /** Largest layout preset, so a custom layout cannot exceed 4×4 either (VIEW-1). */
 export const MAX_GRID_DIMENSION = 4
+
+/**
+ * Largest gap between adjacent cells, in CSS px (VIEW-1). Generous for a 4×4 wall on a 4K screen;
+ * the cap exists so a hand-edited `gap: 100000` cannot collapse every cell to nothing (the layout
+ * math would survive it, the user would see a black window).
+ */
+export const MAX_GRID_GAP = 64
+
+/**
+ * VIEW-5: the shape a 1×1 cell is laid out at. 16:9 because that is what every current Protect
+ * camera streams at in landscape, and the Integration API reports **no** camera resolution to read
+ * a better default from (SPEC §5.1). A camera of another shape still letterboxes or crops inside its
+ * cell through the View's `fit`.
+ */
+export const DEFAULT_VIEW_ASPECT: { readonly w: number; readonly h: number } = { w: 16, h: 9 }
 
 /** CELL-2: a rotation faster than 5 s is not allowed. */
 export const MIN_ROTATE_INTERVAL_SEC = 5
@@ -59,12 +75,24 @@ export const DEFAULT_MOTION_TRIGGERS: readonly MotionTrigger[] = MOTION_TRIGGERS
 const InheritedQualitySchema = QualitySchema.nullable().default(null)
 
 /**
- * One grid slot. Zero or more cameras (VIEW-2); several make it a multi-camera cell (CELL-2).
+ * One cell of a View: a rectangle of grid slots (VIEW-1) holding zero or more cameras (VIEW-2);
+ * several cameras make it a multi-camera cell (CELL-2).
+ *
+ * **Placement** (`col`, `row`, `colSpan`, `rowSpan`, added in schemaVersion 2): the 0-based top-left
+ * slot and how many slots the cell spans, so one camera can take a 2×2 corner of a 3×3 wall.
+ * `col`/`row` have no default — there is no sensible guess for where a cell goes, and the v1 → v2
+ * migration supplies them for older files. The spans default to 1, so a hand-written unit cell
+ * needs only its position. Whether the cells of a View tile its grid is `ViewSchema`'s check, not
+ * this one's: a single cell cannot know its neighbours.
  *
  * `cameraIds` entries are Protect camera ids, or `<cameraId>:package` for a doorbell's package
  * channel (CAM-4), so they are plain non-empty strings here.
  */
 export const CellSchema = z.object({
+  col: z.int().min(0),
+  row: z.int().min(0),
+  colSpan: z.int().min(1).default(1),
+  rowSpan: z.int().min(1).default(1),
   cameraIds: z.array(z.string().min(1)).default(() => []),
   /** Overrides the View's grid quality for this cell (QUAL-3). */
   quality: InheritedQualitySchema,
@@ -84,9 +112,28 @@ export const CellSchema = z.object({
 })
 export type Cell = z.infer<typeof CellSchema>
 
+/** VIEW-5: a width:height ratio, e.g. `{ w: 16, h: 9 }`. Whole numbers, so `4:3` stays `4:3`. */
+export const AspectSchema = z.object({
+  w: z.int().positive(),
+  h: z.int().positive(),
+})
+export type Aspect = z.infer<typeof AspectSchema>
+
 /**
- * A named grid View (VIEW-1/2/5). `cells` is row-major and must be exactly `cols * rows` long
- * (SPEC §6) — the grid is uniform in the prototype, so a short or long array is a bug, not a layout.
+ * A named grid View (VIEW-1/2/5).
+ *
+ * The grid is `cols × rows` slots, and `cells` must **tile** it: every cell inside the grid, no two
+ * overlapping, every slot covered by exactly one cell (an empty slot is an explicit cell with no
+ * cameras). The rules and their messages live in `tilingIssues` (./viewTiling); each issue is
+ * reported under `cells[<index>]` when a cell is to blame, so a rejected config names the cell.
+ *
+ * On a successful parse `cells` comes back in canonical order — by the top-left slot's row, then
+ * column (`normalizeCells`). The order has no layout meaning, but keeping one means a cell's index
+ * survives a save round trip, which is what the editor addresses cells by.
+ *
+ * `aspect` and `gap` drive the on-screen layout (`layoutGrid` in ./viewLayout): the grid is scaled
+ * and centred in its box so that a 1×1 cell is exactly `aspect`, with `gap` CSS px between
+ * adjacent cells and none around the outer edge.
  */
 export const ViewSchema = z
   .object({
@@ -95,27 +142,31 @@ export const ViewSchema = z
     cols: z.int().min(1).max(MAX_GRID_DIMENSION),
     rows: z.int().min(1).max(MAX_GRID_DIMENSION),
     fit: FitSchema.default('contain'),
+    /** Shape of a 1×1 cell (VIEW-5). See {@link DEFAULT_VIEW_ASPECT} for why 16:9. */
+    aspect: AspectSchema.default(() => ({ ...DEFAULT_VIEW_ASPECT })),
+    /** CSS px between adjacent cells, never around the outside (VIEW-1). */
+    gap: z.int().min(0).max(MAX_GRID_GAP).default(0),
     /** Overrides `streams.defaultGridQuality` for every cell in this View (QUAL-2). */
     gridQuality: InheritedQualitySchema,
     /** Overrides `streams.defaultFillQuality` in fill mode (QUAL-5). */
     fillQuality: InheritedQualitySchema,
     cells: z.array(CellSchema),
   })
-  // Runs only once the fields above are valid, so cols/rows are real numbers here.
+  // Runs only once the fields above are valid, so cols/rows and every placement are whole numbers.
   .check((ctx) => {
-    const { cols, rows, cells } = ctx.value
-    const expected = cols * rows
-    if (cells.length !== expected) {
+    for (const issue of tilingIssues(ctx.value)) {
       ctx.issues.push({
         code: 'custom',
-        input: cells,
-        path: ['cells'],
-        message:
-          `cells.length must be cols * rows (${String(cols)} * ${String(rows)} = ` +
-          `${String(expected)}), got ${String(cells.length)}`,
+        input: issue.cellIndex === null ? ctx.value.cells : ctx.value.cells[issue.cellIndex],
+        path: issue.cellIndex === null ? ['cells'] : ['cells', issue.cellIndex],
+        message: issue.message,
       })
     }
   })
+  // `overwrite`, not `transform`: the output type stays `View`, so the schema can still be composed
+  // and its input/output types do not split. zod may run it on a View that failed the tiling check
+  // too, which is harmless: it only reorders, and that parse fails anyway.
+  .overwrite((view) => ({ ...view, cells: normalizeCells(view.cells) }))
 export type View = z.infer<typeof ViewSchema>
 
 /**

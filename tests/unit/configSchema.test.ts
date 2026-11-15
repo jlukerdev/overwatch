@@ -1,22 +1,33 @@
-// P1.1: the persisted config schema (src/main/config/schema.ts + src/shared/models.ts) against SPEC §6 — the constraints
-// the spec states (cells.length === cols * rows, rotateIntervalSec >= 5, 4x4 maximum), the defaults
-// (QUAL-1, DOOR-0, CELL-2/4) and the `null` = inherit rule (QUAL-2/3).
+// P1.1/P3.1: the persisted config schema (src/main/config/schema.ts + src/shared/models.ts) against
+// SPEC §6 — the constraints the spec states (cells tile the grid, rotateIntervalSec >= 5, 4x4
+// maximum, gap 0..64), the defaults (QUAL-1, DOOR-0, CELL-2/4, VIEW-5's 16:9) and the `null` =
+// inherit rule (QUAL-2/3). The tiling rules themselves are tested in viewLayout.test.ts.
 import { describe, expect, it } from 'vitest'
 import { ConfigSchema, CONFIG_SCHEMA_VERSION, defaultConfig } from '../../src/main/config/schema'
 import { CellSchema, ViewSchema } from '../../src/shared/models'
 
-/** `cols * rows` empty cells, row-major (SPEC §6). */
-function cells(count: number): { cameraIds: string[] }[] {
-  return Array.from({ length: count }, () => ({ cameraIds: [] }))
+/** `cols * rows` empty 1×1 cells, in canonical (row-major) order. */
+function cells(cols: number, rows: number): { cameraIds: string[]; col: number; row: number }[] {
+  return Array.from({ length: cols * rows }, (_, i) => ({
+    cameraIds: [],
+    col: i % cols,
+    row: Math.floor(i / cols),
+  }))
 }
 
 function view(overrides: Record<string, unknown> = {}): Record<string, unknown> {
-  return { id: 'v1', name: 'Perimeter', cols: 3, rows: 3, cells: cells(9), ...overrides }
+  return { id: 'v1', name: 'Perimeter', cols: 3, rows: 3, cells: cells(3, 3), ...overrides }
 }
 
-/** The document in SPEC §6, verbatim apart from `accessCertFingerprint` (see the task notes). */
+/** Where a lone cell sits; CellSchema requires a position (it has no sensible default). */
+const AT = { col: 0, row: 0 }
+
+/**
+ * The document in SPEC §6, verbatim apart from `accessCertFingerprint` (see the task notes) and the
+ * schemaVersion 2 cell placements (P3.1), which put the nine cells of the 3×3 in row-major order.
+ */
 const specExample = {
-  schemaVersion: 1,
+  schemaVersion: 2,
   console: {
     host: '192.0.2.10',
     certFingerprint: 'sha256/AAAA',
@@ -34,8 +45,10 @@ const specExample = {
       gridQuality: null,
       fillQuality: null,
       cells: [
-        { cameraIds: ['camA'], quality: 'medium' },
+        { col: 0, row: 0, cameraIds: ['camA'], quality: 'medium' },
         {
+          col: 1,
+          row: 0,
           cameraIds: ['camB', 'camC', 'camD'],
           rotateIntervalSec: 10,
           motionSwitch: true,
@@ -43,13 +56,13 @@ const specExample = {
           smartDetectTypes: ['person'],
           motionHoldSec: 15,
         },
-        { cameraIds: [] },
-        { cameraIds: [] },
-        { cameraIds: [] },
-        { cameraIds: [] },
-        { cameraIds: [] },
-        { cameraIds: [] },
-        { cameraIds: [] },
+        { col: 2, row: 0, cameraIds: [] },
+        { col: 0, row: 1, cameraIds: [] },
+        { col: 1, row: 1, cameraIds: [] },
+        { col: 2, row: 1, cameraIds: [] },
+        { col: 0, row: 2, cameraIds: [] },
+        { col: 1, row: 2, cameraIds: [] },
+        { col: 2, row: 2, cameraIds: [] },
       ],
     },
   ],
@@ -88,10 +101,16 @@ describe('defaultConfig', () => {
       cols: 1,
       rows: 1,
       fit: 'contain',
+      aspect: { w: 16, h: 9 },
+      gap: 0,
       gridQuality: null,
       fillQuality: null,
       cells: [
         {
+          col: 0,
+          row: 0,
+          colSpan: 1,
+          rowSpan: 1,
           cameraIds: [],
           quality: null,
           motionSwitch: false,
@@ -112,7 +131,13 @@ describe('ConfigSchema', () => {
   it('accepts the SPEC §6 document and fills in what it omits', () => {
     const parsed = ConfigSchema.parse(specExample)
     expect(parsed.console.accessCertFingerprint).toBeNull()
+    expect(parsed.views[0]?.aspect).toEqual({ w: 16, h: 9 })
+    expect(parsed.views[0]?.gap).toBe(0)
     expect(parsed.views[0]?.cells[0]).toEqual({
+      col: 0,
+      row: 0,
+      colSpan: 1,
+      rowSpan: 1,
       cameraIds: ['camA'],
       quality: 'medium',
       motionSwitch: false,
@@ -124,30 +149,30 @@ describe('ConfigSchema', () => {
   })
 
   it('loads a minimal file: only schemaVersion is required', () => {
-    expect(ConfigSchema.parse({ schemaVersion: 1 })).toEqual(defaultConfig())
+    expect(ConfigSchema.parse({ schemaVersion: 2 })).toEqual(defaultConfig())
   })
 
   it('rejects any schemaVersion but this build’s (migrations deal with those)', () => {
-    expect(ConfigSchema.safeParse({ schemaVersion: 0 }).success).toBe(false)
-    expect(ConfigSchema.safeParse({ schemaVersion: 2 }).success).toBe(false)
+    expect(ConfigSchema.safeParse({ schemaVersion: 1 }).success).toBe(false)
+    expect(ConfigSchema.safeParse({ schemaVersion: 3 }).success).toBe(false)
     expect(ConfigSchema.safeParse({}).success).toBe(false)
   })
 
   it('strips unknown keys instead of rejecting the file (VIEW-6)', () => {
-    const parsed = ConfigSchema.parse({ schemaVersion: 1, somethingNew: 1, views: [view()] })
+    const parsed = ConfigSchema.parse({ schemaVersion: 2, somethingNew: 1, views: [view()] })
     expect(parsed).not.toHaveProperty('somethingNew')
     expect(parsed.views).toHaveLength(1)
   })
 
   it('keeps a dangling lastViewId: a deleted View must not invalidate the file', () => {
-    const parsed = ConfigSchema.parse({ schemaVersion: 1, views: [], lastViewId: 'gone' })
+    const parsed = ConfigSchema.parse({ schemaVersion: 2, views: [], lastViewId: 'gone' })
     expect(parsed.lastViewId).toBe('gone')
-    expect(ConfigSchema.safeParse({ schemaVersion: 1, lastViewId: '' }).success).toBe(false)
+    expect(ConfigSchema.safeParse({ schemaVersion: 2, lastViewId: '' }).success).toBe(false)
   })
 
   it('validates the console block (CON-1/3, DOOR-0) and the Access pin added after P0.4 §4', () => {
     const parsed = ConfigSchema.parse({
-      schemaVersion: 1,
+      schemaVersion: 2,
       console: {
         host: 'console.invalid',
         certFingerprint: 'sha256/AAAA',
@@ -167,76 +192,137 @@ describe('ConfigSchema', () => {
       { accessEnabled: 'yes' },
       { host: 5 },
     ]) {
-      expect(ConfigSchema.safeParse({ schemaVersion: 1, console: console_ }).success).toBe(false)
+      expect(ConfigSchema.safeParse({ schemaVersion: 2, console: console_ }).success).toBe(false)
     }
   })
 
   it('validates doorLinks as a camera id -> door id map (DOOR-2)', () => {
-    expect(ConfigSchema.parse({ schemaVersion: 1, doorLinks: { a: 'b' } }).doorLinks).toEqual({
+    expect(ConfigSchema.parse({ schemaVersion: 2, doorLinks: { a: 'b' } }).doorLinks).toEqual({
       a: 'b',
     })
-    expect(ConfigSchema.safeParse({ schemaVersion: 1, doorLinks: { a: '' } }).success).toBe(false)
-    expect(ConfigSchema.safeParse({ schemaVersion: 1, doorLinks: { '': 'b' } }).success).toBe(false)
+    expect(ConfigSchema.safeParse({ schemaVersion: 2, doorLinks: { a: '' } }).success).toBe(false)
+    expect(ConfigSchema.safeParse({ schemaVersion: 2, doorLinks: { '': 'b' } }).success).toBe(false)
   })
 
   it('takes the app-wide quality defaults from QUAL-1 and rejects anything else', () => {
     const parsed = ConfigSchema.parse({
-      schemaVersion: 1,
+      schemaVersion: 2,
       streams: { defaultGridQuality: 'medium' },
     })
     expect(parsed.streams).toEqual({ defaultGridQuality: 'medium', defaultFillQuality: 'high' })
     expect(
-      ConfigSchema.safeParse({ schemaVersion: 1, streams: { defaultGridQuality: null } }).success,
+      ConfigSchema.safeParse({ schemaVersion: 2, streams: { defaultGridQuality: null } }).success,
     ).toBe(false)
     expect(
-      ConfigSchema.safeParse({ schemaVersion: 1, streams: { defaultFillQuality: 'package' } })
+      ConfigSchema.safeParse({ schemaVersion: 2, streams: { defaultFillQuality: 'package' } })
         .success,
     ).toBe(false)
   })
 
   it('keeps overlayAutoHideSec positive (CELL-4)', () => {
-    expect(ConfigSchema.parse({ schemaVersion: 1, ui: { overlayAutoHideSec: 1.5 } }).ui).toEqual({
+    expect(ConfigSchema.parse({ schemaVersion: 2, ui: { overlayAutoHideSec: 1.5 } }).ui).toEqual({
       overlayAutoHideSec: 1.5,
     })
     for (const v of [0, -1, 'three']) {
       expect(
-        ConfigSchema.safeParse({ schemaVersion: 1, ui: { overlayAutoHideSec: v } }).success,
+        ConfigSchema.safeParse({ schemaVersion: 2, ui: { overlayAutoHideSec: v } }).success,
       ).toBe(false)
     }
   })
 })
 
 describe('ViewSchema', () => {
-  it('requires cells.length === cols * rows, row-major (SPEC §6)', () => {
-    expect(ViewSchema.parse(view({ cols: 2, rows: 2, cells: cells(4) })).cells).toHaveLength(4)
-    const short = ViewSchema.safeParse(view({ cols: 3, rows: 3, cells: cells(8) }))
+  it('requires the cells to tile the grid, naming the offending cell (SPEC §6)', () => {
+    expect(ViewSchema.parse(view({ cols: 2, rows: 2, cells: cells(2, 2) })).cells).toHaveLength(4)
+    // One cell short: the uncovered slot is reported under `cells`, as there is no cell to blame.
+    const short = ViewSchema.safeParse(view({ cells: cells(3, 3).slice(0, 8) }))
     expect(short.success).toBe(false)
     if (!short.success) {
       expect(short.error.issues[0]?.path).toEqual(['cells'])
-      expect(short.error.issues[0]?.message).toBe(
-        'cells.length must be cols * rows (3 * 3 = 9), got 8',
-      )
+      expect(short.error.issues[0]?.message).toContain('slot (col 2, row 2) is not covered')
     }
-    expect(ViewSchema.safeParse(view({ cols: 2, rows: 2, cells: cells(5) })).success).toBe(false)
+    // A duplicate cell overlaps, and is named by index.
+    const extra = ViewSchema.safeParse(
+      view({ cols: 2, rows: 2, cells: [...cells(2, 2), { col: 1, row: 1 }] }),
+    )
+    expect(extra.success).toBe(false)
+    if (!extra.success) {
+      expect(extra.error.issues[0]?.path).toEqual(['cells', 4])
+      expect(extra.error.issues[0]?.message).toBe('cell 4 overlaps cell 3')
+    }
   })
 
-  it('reports the cell count under views[n].cells inside a whole config', () => {
+  it('accepts spanned cells and returns cells in canonical order', () => {
+    const parsed = ViewSchema.parse(
+      view({
+        cells: [
+          // Deliberately out of order: the parse sorts by (row, col) of the top-left slot.
+          { col: 2, row: 2 },
+          { col: 0, row: 2 },
+          { col: 2, row: 0, rowSpan: 2 },
+          { col: 1, row: 2 },
+          { col: 0, row: 0, colSpan: 2, rowSpan: 2, cameraIds: ['camA'] },
+        ],
+      }),
+    )
+    expect(parsed.cells.map((c) => [c.col, c.row, c.colSpan, c.rowSpan])).toEqual([
+      [0, 0, 2, 2],
+      [2, 0, 1, 2],
+      [0, 2, 1, 1],
+      [1, 2, 1, 1],
+      [2, 2, 1, 1],
+    ])
+    expect(parsed.cells[0]?.cameraIds).toEqual(['camA'])
+  })
+
+  it('reports a tiling problem under views[n].cells[i] inside a whole config', () => {
     const result = ConfigSchema.safeParse({
-      schemaVersion: 1,
-      views: [view(), view({ id: 'v2', cols: 2, rows: 2, cells: cells(3) })],
+      schemaVersion: 2,
+      views: [
+        view(),
+        view({
+          id: 'v2',
+          cols: 2,
+          rows: 2,
+          cells: [...cells(2, 2).slice(0, 3), { col: 2, row: 1 }],
+        }),
+      ],
     })
     expect(result.success).toBe(false)
-    if (!result.success) expect(result.error.issues[0]?.path).toEqual(['views', 1, 'cells'])
+    if (!result.success) {
+      expect(result.error.issues.map((i) => i.path)).toContainEqual(['views', 1, 'cells', 3])
+    }
+  })
+
+  it('defaults aspect to 16:9 and gap to 0, and bounds both (VIEW-5)', () => {
+    const parsed = ViewSchema.parse(view())
+    expect(parsed.aspect).toEqual({ w: 16, h: 9 })
+    expect(parsed.gap).toBe(0)
+    expect(ViewSchema.parse(view({ aspect: { w: 4, h: 3 }, gap: 64 }))).toMatchObject({
+      aspect: { w: 4, h: 3 },
+      gap: 64,
+    })
+    for (const bad of [
+      { aspect: { w: 0, h: 9 } },
+      { aspect: { w: 16, h: -9 } },
+      { aspect: { w: 1.5, h: 1 } },
+      { aspect: { w: 16 } },
+      { gap: -1 },
+      { gap: 65 },
+      { gap: 2.5 },
+    ]) {
+      expect(ViewSchema.safeParse(view(bad)).success).toBe(false)
+    }
   })
 
   it('bounds the layout to 4x4 (VIEW-1)', () => {
-    expect(ViewSchema.parse(view({ cols: 4, rows: 4, cells: cells(16) })).cols).toBe(4)
-    expect(ViewSchema.parse(view({ cols: 1, rows: 1, cells: cells(1) })).rows).toBe(1)
+    expect(ViewSchema.parse(view({ cols: 4, rows: 4, cells: cells(4, 4) })).cols).toBe(4)
+    expect(ViewSchema.parse(view({ cols: 1, rows: 1, cells: cells(1, 1) })).rows).toBe(1)
     for (const dims of [
-      { cols: 5, rows: 1, cells: cells(5) },
-      { cols: 1, rows: 5, cells: cells(5) },
-      { cols: 0, rows: 1, cells: cells(0) },
-      { cols: 2.5, rows: 2, cells: cells(5) },
+      { cols: 5, rows: 1, cells: cells(5, 1) },
+      { cols: 1, rows: 5, cells: cells(1, 5) },
+      { cols: 0, rows: 1, cells: [] },
+      { cols: 2.5, rows: 2, cells: cells(2, 2) },
     ]) {
       expect(ViewSchema.safeParse(view(dims)).success).toBe(false)
     }
@@ -269,7 +355,11 @@ describe('ViewSchema', () => {
 
 describe('CellSchema', () => {
   it('defaults an empty cell to no cameras and the CELL-2 motion settings', () => {
-    expect(CellSchema.parse({})).toEqual({
+    expect(CellSchema.parse(AT)).toEqual({
+      col: 0,
+      row: 0,
+      colSpan: 1,
+      rowSpan: 1,
       cameraIds: [],
       quality: null,
       motionSwitch: false,
@@ -279,43 +369,62 @@ describe('CellSchema', () => {
   })
 
   it('leaves rotateIntervalSec absent rather than null, and floors it at 5 s (CELL-2)', () => {
-    expect('rotateIntervalSec' in CellSchema.parse({})).toBe(false)
-    expect(CellSchema.parse({ rotateIntervalSec: 5 }).rotateIntervalSec).toBe(5)
+    expect('rotateIntervalSec' in CellSchema.parse(AT)).toBe(false)
+    expect(CellSchema.parse({ ...AT, rotateIntervalSec: 5 }).rotateIntervalSec).toBe(5)
     for (const v of [4, 0, -5, 5.5, null]) {
-      expect(CellSchema.safeParse({ rotateIntervalSec: v }).success).toBe(false)
+      expect(CellSchema.safeParse({ ...AT, rotateIntervalSec: v }).success).toBe(false)
     }
   })
 
   it('accepts a camera id or a package channel source (CAM-4)', () => {
-    expect(CellSchema.parse({ cameraIds: ['camA', 'camB:package'] }).cameraIds).toEqual([
+    expect(CellSchema.parse({ ...AT, cameraIds: ['camA', 'camB:package'] }).cameraIds).toEqual([
       'camA',
       'camB:package',
     ])
-    expect(CellSchema.safeParse({ cameraIds: [''] }).success).toBe(false)
-    expect(CellSchema.safeParse({ cameraIds: 'camA' }).success).toBe(false)
+    expect(CellSchema.safeParse({ ...AT, cameraIds: [''] }).success).toBe(false)
+    expect(CellSchema.safeParse({ ...AT, cameraIds: 'camA' }).success).toBe(false)
   })
 
   it('validates motionTriggers and keeps motionHoldSec non-negative (CELL-2)', () => {
-    expect(CellSchema.parse({ motionTriggers: ['ring'] }).motionTriggers).toEqual(['ring'])
-    expect(CellSchema.parse({ motionTriggers: [] }).motionTriggers).toEqual([])
-    expect(CellSchema.safeParse({ motionTriggers: ['smartDetectZone'] }).success).toBe(false)
-    expect(CellSchema.parse({ motionHoldSec: 0 }).motionHoldSec).toBe(0)
-    expect(CellSchema.safeParse({ motionHoldSec: -1 }).success).toBe(false)
+    expect(CellSchema.parse({ ...AT, motionTriggers: ['ring'] }).motionTriggers).toEqual(['ring'])
+    expect(CellSchema.parse({ ...AT, motionTriggers: [] }).motionTriggers).toEqual([])
+    expect(CellSchema.safeParse({ ...AT, motionTriggers: ['smartDetectZone'] }).success).toBe(false)
+    expect(CellSchema.parse({ ...AT, motionHoldSec: 0 }).motionHoldSec).toBe(0)
+    expect(CellSchema.safeParse({ ...AT, motionHoldSec: -1 }).success).toBe(false)
   })
 
   it('leaves smartDetectTypes open: a Protect upgrade must not invalidate the file (SPEC R8)', () => {
-    expect(CellSchema.parse({ smartDetectTypes: ['person', 'vehicle'] }).smartDetectTypes).toEqual([
-      'person',
-      'vehicle',
-    ])
-    expect(CellSchema.parse({ smartDetectTypes: ['somethingNew'] }).smartDetectTypes).toEqual([
-      'somethingNew',
-    ])
-    expect('smartDetectTypes' in CellSchema.parse({})).toBe(false)
-    expect(CellSchema.safeParse({ smartDetectTypes: [''] }).success).toBe(false)
+    expect(
+      CellSchema.parse({ ...AT, smartDetectTypes: ['person', 'vehicle'] }).smartDetectTypes,
+    ).toEqual(['person', 'vehicle'])
+    expect(
+      CellSchema.parse({ ...AT, smartDetectTypes: ['somethingNew'] }).smartDetectTypes,
+    ).toEqual(['somethingNew'])
+    expect('smartDetectTypes' in CellSchema.parse(AT)).toBe(false)
+    expect(CellSchema.safeParse({ ...AT, smartDetectTypes: [''] }).success).toBe(false)
+  })
+
+  it('needs a whole, non-negative position and spans of at least 1 (P3.1)', () => {
+    expect(CellSchema.parse({ col: 3, row: 2, colSpan: 2, rowSpan: 4 })).toMatchObject({
+      col: 3,
+      row: 2,
+      colSpan: 2,
+      rowSpan: 4,
+    })
+    for (const bad of [
+      {},
+      { col: 0 },
+      { row: 0 },
+      { col: -1, row: 0 },
+      { col: 0.5, row: 0 },
+      { ...AT, colSpan: 0 },
+      { ...AT, rowSpan: 1.5 },
+    ]) {
+      expect(CellSchema.safeParse(bad).success).toBe(false)
+    }
   })
 
   it('strips unknown cell keys', () => {
-    expect(CellSchema.parse({ cameraIds: [], zoom: 2 })).not.toHaveProperty('zoom')
+    expect(CellSchema.parse({ ...AT, cameraIds: [], zoom: 2 })).not.toHaveProperty('zoom')
   })
 })

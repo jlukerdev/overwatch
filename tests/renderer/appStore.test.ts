@@ -126,6 +126,9 @@ function fakeBridge(overrides: Partial<ViewProtectApi> = {}): FakeBridge {
     // P2.2: on the bridge, so the store's `ViewProtectApi` is complete. The player asks for streams
     // itself (P2.3), so no store test drives these yet.
     ensureStream: unimplemented('ensureStream'),
+    // P3.1: driven by viewsStore.test.ts.
+    setViews: unimplemented('setViews'),
+    setLastView: unimplemented('setLastView'),
     onConnection: (listener) => subscribeTo(connectionListeners, listener),
     onCameras: (listener) => subscribeTo(cameraListeners, listener),
     onCameraState: (listener) => subscribeTo(stateListeners, listener),

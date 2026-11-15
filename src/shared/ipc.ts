@@ -26,6 +26,7 @@ import {
   CameraSchema,
   CameraStateChangeSchema,
   SettingsSchema,
+  ViewSchema,
   type Camera,
   type CameraStateChange,
 } from './models'
@@ -424,6 +425,62 @@ export const EnsureStreamInputSchema = z.object({
 })
 export type EnsureStreamInput = z.infer<typeof EnsureStreamInputSchema>
 
+/**
+ * VIEW-3/6: the whole View list plus the active View, as the renderer's View store computed them.
+ *
+ * The whole list rather than one View per call, because the operations the user performs on Views
+ * — reorder, delete, duplicate — are list operations, and sending the list makes every save the
+ * same atomic "this is the new truth" write that `config.json` gets anyway. A wall is at most a few
+ * dozen small objects, so the cost is nothing next to the file write.
+ *
+ * Every View goes through `ViewSchema`, so the tiling rule (SPEC §6) is enforced here at the
+ * boundary and not only on the next load — where a violation would cost every View (VIEW-6). On top
+ * of the schema, two rules that only make sense for the list as a whole:
+ *  - **ids are unique**: the switcher, `lastViewId` and the React keys all address a View by id;
+ *  - **`lastViewId` names one of `views`** (or is `null`). The persisted file tolerates a dangling id
+ *    (SettingsSchema), but the renderer computes both halves of this payload together, so a mismatch
+ *    here is a bug on its side, not a state to persist.
+ */
+export const SetViewsInputSchema = z
+  .object({
+    views: z.array(ViewSchema),
+    lastViewId: z.string().min(1).nullable(),
+  })
+  .check((ctx) => {
+    const { views, lastViewId } = ctx.value
+    const seen = new Map<string, number>()
+    views.forEach((view, index) => {
+      const first = seen.get(view.id)
+      if (first === undefined) {
+        seen.set(view.id, index)
+        return
+      }
+      ctx.issues.push({
+        code: 'custom',
+        input: view.id,
+        path: ['views', index, 'id'],
+        message: `duplicate View id (views[${String(first)}] has the same id)`,
+      })
+    })
+    if (lastViewId !== null && !seen.has(lastViewId)) {
+      ctx.issues.push({
+        code: 'custom',
+        input: lastViewId,
+        path: ['lastViewId'],
+        message: 'must be the id of one of the Views sent, or null',
+      })
+    }
+  })
+export type SetViewsInput = z.infer<typeof SetViewsInputSchema>
+
+/**
+ * VIEW-4/6: switch the active View. Its own channel so that switching — the thing the user does
+ * most, from the keyboard — sends one id instead of every View. `null` means "no View", which is
+ * only meaningful while there are none.
+ */
+export const SetLastViewInputSchema = z.object({ viewId: z.string().min(1).nullable() })
+export type SetLastViewInput = z.infer<typeof SetLastViewInputSchema>
+
 // -------------------------------------------------------------------------------------------------
 // The channel table
 //
@@ -484,6 +541,14 @@ export const IPC = {
    * which is also why there is no release call — see the Phase 2 note under IPC_EVENTS.
    */
   ensureStream: call('vp:streams/ensure', EnsureStreamInputSchema, StreamHandleSchema),
+  /**
+   * VIEW-3/6: replace the View list and the active View, and persist both to `config.json`. Every
+   * View editor and list action ends here (P3.1); the renderer folds the answer back rather than
+   * keeping its own copy (rule 3).
+   */
+  setViews: call('vp:views/set', SetViewsInputSchema, AppStateSchema),
+  /** VIEW-4/6: make a View the active one and remember it across restarts. Must name a stored View. */
+  setLastView: call('vp:views/active', SetLastViewInputSchema, AppStateSchema),
 } as const
 
 /**
@@ -561,6 +626,10 @@ export interface ViewProtectApi {
   snapshot(input: SnapshotInput): Promise<IpcResult<SnapshotResult>>
   /** QUAL-8: on demand, per camera/quality pair, and again after a `streamRuntime` event. */
   ensureStream(input: EnsureStreamInput): Promise<IpcResult<StreamHandle>>
+  /** VIEW-3/6: the whole View list and the active View, persisted. */
+  setViews(input: SetViewsInput): Promise<IpcResult<AppState>>
+  /** VIEW-4/6: switch the active View. */
+  setLastView(input: SetLastViewInput): Promise<IpcResult<AppState>>
 
   onConnection(listener: (status: ConnectionStatus) => void): Unsubscribe
   onCameras(listener: (cameras: Camera[]) => void): Unsubscribe
@@ -570,6 +639,6 @@ export interface ViewProtectApi {
 
 // Imported for the signatures above; re-exported so the renderer can take the whole contract plus
 // the domain types it carries from one module.
-export type { Camera, CameraStateChange, Settings } from './models'
+export type { Camera, CameraStateChange, Cell, Settings, View } from './models'
 export type { StreamHandle, StreamRuntime } from './streams'
 export type { Quality, StreamQuality } from './quality'

@@ -38,6 +38,7 @@ import {
 import { SettingsSchema, type ConsoleConfig, type Settings } from '@shared/models'
 import type { z } from 'zod'
 import type { Config } from '../config/schema'
+import type { ConfigStore } from '../config/store'
 import { accessEndpoint, protectEndpoint, type ConsoleEndpoint } from '../console/endpoints'
 import type { ConnectionManager } from '../connection'
 import type { Secrets, SecretsStore } from '../secrets/secrets'
@@ -77,8 +78,13 @@ export interface IpcHandlerServices {
    * anything being rebuilt (CON-1).
    */
   readonly credentials: Secrets
-  /** Read per call: the manager replaces it when the console block is saved. */
-  readonly current: Config
+  /**
+   * Read per call: the manager replaces it when the console block is saved, and the View handlers
+   * replace it when the View list is (VIEW-6). Writable for that reason.
+   */
+  current: Config
+  /** Where the View handlers persist to. The same store the manager saves the console block with. */
+  readonly config: Pick<ConfigStore, 'update'>
   readonly pins: Pick<PinRegistry, 'checkEndpoint' | 'pinnedFingerprint' | 'acceptPin' | 'repin'>
 }
 
@@ -403,6 +409,25 @@ export function createIpcRouter(deps: IpcRouterDeps): ReadonlyMap<string, IpcHan
 
   on(IPC.snapshot, async (input, ready) => ipcOk(await ready.manager.snapshot(input)))
 
+  on(IPC.setViews, async (input, ready) => {
+    // `input` has already passed `ViewSchema` for every View (tiling included), unique ids and a
+    // `lastViewId` that names one of them (SetViewsInputSchema).
+    await saveViews(ready, { views: input.views, lastViewId: input.lastViewId })
+    return state(ready)
+  })
+
+  on(IPC.setLastView, async (input, ready) => {
+    const { viewId } = input
+    if (viewId !== null && !ready.services.current.views.some((view) => view.id === viewId)) {
+      // A switch to a View that is not stored is a stale id on the renderer's side (the View was
+      // deleted in between). Refused rather than stored: a dangling `lastViewId` is tolerated on
+      // load (VIEW-6), but there is no reason to *write* one.
+      return ipcFail('not-found', 'That View no longer exists.')
+    }
+    await saveViews(ready, { lastViewId: viewId })
+    return state(ready)
+  })
+
   on(IPC.ensureStream, async (input) => {
     const registry = deps.getRegistry()
     if (registry === null) {
@@ -430,6 +455,31 @@ export function createIpcRouter(deps: IpcRouterDeps): ReadonlyMap<string, IpcHan
   })
 
   return router
+}
+
+/**
+ * VIEW-6: persists View fields (the list and the active View, or just the active View), then makes
+ * them the live config.
+ *
+ * Both halves touch only the fields in `patch`. On disk, `config.update` applies them to the latest
+ * stored config inside the store's write queue, so a console or pin write queued ahead of this one
+ * is kept rather than overwritten with the console block as it was when this call started. In
+ * memory, only those fields are taken from the result and merged onto `services.current` **as it
+ * is after the write**: the whole result would be wrong, because the pin store puts an accepted pin
+ * into `current` before its own write is queued, so `current` can be ahead of anything this write
+ * returned.
+ */
+async function saveViews(
+  ready: Ready,
+  patch: Partial<Pick<Config, 'views' | 'lastViewId'>>,
+): Promise<void> {
+  const { services } = ready
+  const saved = await services.config.update((latest) => ({ ...latest, ...patch }))
+  services.current = {
+    ...services.current,
+    ...('views' in patch ? { views: saved.views } : {}),
+    ...('lastViewId' in patch ? { lastViewId: saved.lastViewId } : {}),
+  }
 }
 
 /**

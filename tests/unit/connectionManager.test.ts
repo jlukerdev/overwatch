@@ -15,7 +15,7 @@
 import { CameraSchema, ConsoleConfigSchema, type Camera } from '@shared/models'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { createConnectionManager, type ConnectionServices } from '../../src/main/connection'
-import { ConfigSchema, type Config } from '../../src/main/config/schema'
+import { ConfigSchema, CONFIG_SCHEMA_VERSION, type Config } from '../../src/main/config/schema'
 import { accessEndpoint, protectEndpoint } from '../../src/main/console/endpoints'
 import { createRateLimiter } from '../../src/main/net/rateLimiter'
 import { ProtectApiError } from '../../src/main/protect/errors'
@@ -111,7 +111,10 @@ function setup(options: SetupOptions = {}) {
     certFingerprint: options.certFingerprint ?? null,
     accessCertFingerprint: options.accessCertFingerprint ?? null,
   })
-  let current: Config = ConfigSchema.parse({ schemaVersion: 1, console: consoleConfig })
+  let current: Config = ConfigSchema.parse({
+    schemaVersion: CONFIG_SCHEMA_VERSION,
+    console: consoleConfig,
+  })
   const pinned = new Set(options.pinned ?? [])
   let inventory: Camera[] = [...(options.cameras ?? [camera('cam-1'), camera('cam-2')])]
 
@@ -137,10 +140,16 @@ function setup(options: SetupOptions = {}) {
     invalidate: vi.fn(),
     closeAll: vi.fn(() => Promise.resolve()),
   }
-  const save = vi.fn((next: Config) => Promise.resolve(ConfigSchema.parse(next)))
+  // The config store over an in-memory "disk": `update` applies the mutator to what was last
+  // written and validates, as the real one does inside its write queue.
+  let stored: Config = current
+  const update = vi.fn((mutate: (latest: Config) => Config) => {
+    stored = ConfigSchema.parse(mutate(structuredClone(stored)))
+    return Promise.resolve(stored)
+  })
 
   const services: ConnectionServices = {
-    config: { save },
+    config: { update },
     get current() {
       return current
     },
@@ -180,7 +189,11 @@ function setup(options: SetupOptions = {}) {
     protect,
     access,
     pins,
-    save,
+    update,
+    /** What the fake store last wrote. */
+    get disk() {
+      return stored
+    },
     feeds,
     emitted,
     logged,
@@ -295,7 +308,7 @@ describe('status derivation (CON-5)', () => {
   it('follows the live config rather than a snapshot taken at construction', () => {
     expect(h.manager.status().protect.hostPort).toBe('192.0.2.10:443')
     h.services.current = ConfigSchema.parse({
-      schemaVersion: 1,
+      schemaVersion: CONFIG_SCHEMA_VERSION,
       console: { host: 'udm.local' },
     })
     expect(h.manager.status().protect.hostPort).toBe('udm.local:443')
@@ -747,7 +760,8 @@ describe('applyConsoleChange (CON-1/3, DOOR-0)', () => {
 
   it('persists the change and makes it the live config', async () => {
     await h.manager.applyConsoleChange(nextConsole(h, { host: 'udm.local' }))
-    expect(h.save).toHaveBeenCalledTimes(1)
+    expect(h.update).toHaveBeenCalledTimes(1)
+    expect(h.disk.console.host).toBe('udm.local')
     expect(h.services.current.console.host).toBe('udm.local')
     expect(h.manager.status().protect.hostPort).toBe('udm.local:443')
   })

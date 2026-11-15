@@ -81,7 +81,7 @@ VIEW-5, CELL-1, NFR-2…5, NFR-7
 | P2.1 | `streams/go2rtcManager.ts`: spawn on a free loopback port, health check, restart on crash, clean shutdown |
 | P2.2 | `streams/registry.ts`: on-demand `ensureStream(cameraId, quality)` → GET/POST RTSPS for that quality only, register `<cameraId>_<quality>` in go2rtc, refresh on camera changes (QUAL-8). `src/shared/quality.ts`: `Quality` type + `resolveQuality()` with unit tests |
 | P2.3 | `player/` React `<LivePlayer cameraId quality muted>` (quality is a prop, never a constant) with a seamless swap when `quality` changes (QUAL-6): MSE, reconnect, stall detection, offline placeholder |
-| P2.4 | Temporary hard-coded 3×3 + 4×3 grid that fills and reflows with the window |
+| P2.4 | Temporary hard-coded 3×3 + 4×3 grid that fills and reflows with the window (replaced in P3.2 by the letterboxed View layout, VIEW-5/7) |
 | P2.5 | Perf harness: 10 streams for 30 min **at each of low, medium and high**. Record CPU, GPU, RAM and latency on both OSes into `docs/perf-results.md`, so the quality defaults are based on measurements |
 
 **Carried from P2.3 into P2.4 — fixed in P2.4** (two defects found by `/code-review` on the P2.3 branch, deferred by the user on 2026-11-14 because they are best fixed once the player runs in a real grid, where the timings are observable rather than guessed):
@@ -94,19 +94,19 @@ VIEW-5, CELL-1, NFR-2…5, NFR-7
 ---
 
 ## Phase 3 — Views, fill mode & zoom
-VIEW-1…6, FILL-1…3, ZOOM-1…3, CELL-3/4, QUAL-1…7
+VIEW-1…7, FILL-1…3, ZOOM-1…3, CELL-3/4, QUAL-1…7
 
 | # | Task |
 |---|---|
-| P3.1 | View model + store (Zustand), persisted through IPC to config |
-| P3.2 | View switcher (sidebar), keyboard 1–9, remember the last View |
-| P3.3 | View editor: name, layout preset/custom, assign cameras per cell (picker + drag/drop), fit mode |
+| P3.1 | View model + store (Zustand), persisted through IPC to config: spanning cells, per-View `aspect` and `gap`, schemaVersion 2 migration, pure layout geometry (`src/shared/viewLayout.ts`) |
+| P3.2 | View switcher (sidebar), keyboard 1–9, remember the last View. Renders the active View with the letterboxed layout (VIEW-5/7), replacing the P2.4 temp grid. The P2.5 harness, which today clicks the smallest temp-grid preset with room for `min(cameras, 10)` cameras, picks a View instead |
+| P3.3 | View editor: name, layout preset/custom, assign cameras per cell (picker + drag/drop), merge/split cells, aspect, gap, fit mode |
 | P3.4 | Cell overlay (name, controls, auto-hide) |
 | P3.5 | Fill mode with low→high seamless swap, Esc/back |
 | P3.6 | Zoom/pan component (wheel, pinch, drag, 100% reset) |
 | P3.7 | Quality selection: settings defaults, View `gridQuality`/`fillQuality` in the editor, per-cell picker in the overlay, fill-mode picker with "save as default" (QUAL-1…7) |
 
-**Gate G3:** build three Views from scratch, restart the app, and they come back. Changing a cell between Low/Med/High swaps without a black frame and persists. Fill/zoom/back works smoothly at 60 fps UI.
+**Gate G3:** build three Views from scratch, restart the app, and they come back. Changing a cell between Low/Med/High swaps without a black frame and persists. Fill/zoom/back works smoothly at 60 fps UI. A View with a 2×2 cell and an 8 px gap keeps 16:9 unit cells, centred, when the window is resized to very wide and very tall.
 
 ---
 
@@ -163,7 +163,7 @@ Things that can only be checked where the real Access hardware is. Run these bef
 ---
 
 ## MVP backlog (after prototype review)
-Code signing + notarization · import Protect Live Views · Cloud Connector remote control/unlock · badge-in camera pop-up · auto-update (electron-updater) · two-way talk · multi-monitor / kiosk / launch at login · spanning cells · view import/export · door-link auto-suggest · PTZ · smart-detect type filters for auto-switch (person/vehicle only).
+Code signing + notarization · import Protect Live Views · Cloud Connector remote control/unlock · badge-in camera pop-up · auto-update (electron-updater) · two-way talk · multi-monitor / kiosk / launch at login · view import/export · door-link auto-suggest · PTZ · smart-detect type filters for auto-switch (person/vehicle only).
 
 ## Working agreements for agents
 - **One task per branch and PR** (`view-protect/<task-id>-<slug>`). Each task goes through: subagent implementation → `/code-review` → fixes (decisions needing the user go to the user) → commit, push, PR → user merges → next task. The full workflow is in `/CLAUDE.md`. Commits reference task and requirement IDs.

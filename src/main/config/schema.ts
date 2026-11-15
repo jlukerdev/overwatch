@@ -12,8 +12,14 @@
 import { SettingsSchema } from '@shared/models'
 import { z } from 'zod'
 
-/** Version this build writes and understands. Bump it together with a step in migrations.ts. */
-export const CONFIG_SCHEMA_VERSION = 1
+/**
+ * Version this build writes and understands. Bump it together with a step in migrations.ts.
+ *
+ *  - **1** (P1.1): uniform grids, `cells` row-major with `cells.length === cols * rows`.
+ *  - **2** (P3.1): cells carry their own placement (`col`, `row`, `colSpan`, `rowSpan`) and may
+ *    span several slots; Views gain `aspect` and `gap` (VIEW-1, VIEW-5).
+ */
+export const CONFIG_SCHEMA_VERSION = 2
 
 /**
  * The whole file (SPEC §6).

@@ -11,6 +11,7 @@
 //    harness and gate G2. Phase 3 (P3.x, VIEW-1/2) replaces them with real, persisted Views; delete
 //    this half then rather than growing it.
 import type { Camera } from '@shared/ipc'
+import { MAX_GRID_DIMENSION } from '@shared/models'
 import { resolveGridQuality, type QualityDefaults, type StreamQuality } from '@shared/quality'
 import { cameraDisplayName, sortCameras } from '../../state/camerasStore'
 
@@ -23,8 +24,9 @@ export interface GridSize {
   readonly rows: number
 }
 
-/** VIEW-1: custom sizes go up to 4×4. */
-export const MAX_GRID_DIMENSION = 4
+// VIEW-1: custom sizes go up to 4×4. One definition, the persisted model's, re-exported here for
+// the temp grid's callers.
+export { MAX_GRID_DIMENSION }
 
 /** Whether a size is one VIEW-1 allows: whole numbers from 1 to {@link MAX_GRID_DIMENSION}. */
 export function isValidGridSize(size: GridSize): boolean {

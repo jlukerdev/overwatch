@@ -68,7 +68,7 @@ import type { PinRegistry } from './tls/pinning'
  * value (see `startServices`).
  */
 export interface ConnectionServices {
-  readonly config: Pick<ConfigStore, 'save'>
+  readonly config: Pick<ConfigStore, 'update'>
   current: Config
   /** CON-2: read to answer "is a credential stored", never to send a value anywhere. */
   readonly credentials: Secrets
@@ -562,17 +562,24 @@ export function createConnectionManager(options: ConnectionManagerOptions): Conn
       log('console changed: cleared the Access certificate pin (CON-3, the endpoint moved)')
     }
 
-    const saved = await services.config.save({
-      ...services.current,
-      console: {
-        ...next,
-        certFingerprint: keepProtectPin ? next.certFingerprint : null,
-        accessCertFingerprint: keepAccessPin ? next.accessCertFingerprint : null,
-      },
+    // This change owns the three Settings fields, plus clearing a pin whose endpoint moved. A kept
+    // pin is left to the pin store, which writes its own field: copying `next`'s value here could
+    // undo a pin accepted while this call was waiting. Applied with `config.update`, so a View or
+    // pin write queued ahead of this one is not overwritten with a stale copy (VIEW-6, CON-3).
+    const own = (base: ConsoleConfig): ConsoleConfig => ({
+      ...base,
+      host: next.host,
+      accessEnabled: next.accessEnabled,
+      accessBaseUrl: next.accessBaseUrl,
+      ...(keepProtectPin ? {} : { certFingerprint: null }),
+      ...(keepAccessPin ? {} : { accessCertFingerprint: null }),
     })
-    // The clients and the pin store read `current` per call, so this is all it takes for the new
-    // address to be the one in use.
-    services.current = saved
+    await services.config.update((latest) => ({ ...latest, console: own(latest.console) }))
+    // The same fields onto `current` as it is now, not the whole result: a View write that
+    // finished during the await is in `current` already, and so is a pin accepted meanwhile (the
+    // pin store sets it in memory before queuing its write). The clients and the pin store read
+    // `current` per call, so this is all it takes for the new address to be the one in use.
+    services.current = { ...services.current, console: own(services.current.console) }
     state.protect = { phase: 'idle', error: null, version: null, updatedAt: now() }
     state.access = { phase: 'idle', error: null, version: null, updatedAt: now() }
     if (!keepProtectPin) {

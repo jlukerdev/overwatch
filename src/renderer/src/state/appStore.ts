@@ -22,6 +22,7 @@ import {
   type SecretInput,
   type SecretKeyInput,
   type SecretsStored,
+  type SetViewsInput,
   type Settings,
   type SnapshotInput,
   type SnapshotResult,
@@ -63,6 +64,13 @@ export interface AppStoreState {
   disconnect: () => Promise<IpcResult<AppState>>
   refreshCameras: () => Promise<IpcResult<Camera[]>>
   snapshot: (input: SnapshotInput) => Promise<IpcResult<SnapshotResult>>
+  /**
+   * VIEW-3/6: persist a new View list and active View. Called by the View store (viewsStore.ts),
+   * which computes the list; this only sends it and folds the answer, like every other mutation.
+   */
+  setViews: (input: SetViewsInput) => Promise<IpcResult<AppState>>
+  /** VIEW-4/6: switch the active View. */
+  setLastView: (viewId: string | null) => Promise<IpcResult<AppState>>
 }
 
 const NO_SECRETS: SecretsStored = { protectApiKey: false, accessToken: false }
@@ -172,6 +180,8 @@ export const useAppStore = create<AppStoreState>()((set, get) => {
     },
 
     snapshot: async (input) => bridge().snapshot(input),
+    setViews: async (input) => fold(await bridge().setViews(input)),
+    setLastView: async (viewId) => fold(await bridge().setLastView({ viewId })),
   }
 })
 

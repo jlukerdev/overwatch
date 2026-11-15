@@ -260,7 +260,6 @@ export function GridView({ view, cameras, streams }: GridViewProps): JSX.Element
                   autoHideMs={autoHideMs}
                   filled={filled}
                   fillPick={filled ? pickedQuality : null}
-                  viewFillQuality={view.fillQuality}
                   onCellClick={onCellClick}
                   onBack={onBack}
                   onQualityChange={onQualityChange}
@@ -306,7 +305,6 @@ function SlotContent({
   autoHideMs,
   filled,
   fillPick,
-  viewFillQuality,
   onCellClick,
   onBack,
   onQualityChange,
@@ -318,7 +316,6 @@ function SlotContent({
   readonly filled: boolean
   /** QUAL-5's session pick, when this slot is the filled one and has one. */
   readonly fillPick: Quality | null
-  readonly viewFillQuality: Quality | null
   readonly onCellClick: (slotKey: string, filled: boolean, event: FillClickEvent) => void
   readonly onBack: () => void
   readonly onQualityChange: (slotKey: string, quality: Quality | null) => void
@@ -343,7 +340,7 @@ function SlotContent({
           onBack={onBack}
           cellQuality={slot.qualityChoice?.override ?? null}
           inheritedQuality={slot.qualityChoice?.inherited ?? null}
-          canSaveFillQuality={filled && canSaveFillQuality(fillQuality, viewFillQuality)}
+          canSaveFillQuality={filled && canSaveFillQuality(fillQuality, slot.fillQuality)}
           onQualityChange={onQualityChange}
           onFillQualityPick={onFillQualityPick}
           onSaveFillQuality={onSaveFillQuality}

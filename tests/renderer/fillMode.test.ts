@@ -272,12 +272,11 @@ describe('fill quality session pick (QUAL-5)', () => {
     expect(effectiveFillQuality(PACKAGE_CHANNEL, low)).toBe(PACKAGE_CHANNEL)
   })
 
-  it('offers "Save for this View" only when the shown quality is not already the View’s', () => {
+  it('offers "Save for this View" only once a pick changed what the View fills at', () => {
+    // shown (the pick, or the chain) vs. the chain's own answer
     expect(canSaveFillQuality(medium, high)).toBe(true)
     expect(canSaveFillQuality(high, high)).toBe(false)
-    // Inheriting: saving pins the View to what is on screen.
-    expect(canSaveFillQuality(high, null)).toBe(true)
-    expect(canSaveFillQuality(PACKAGE_CHANNEL, null)).toBe(false)
+    expect(canSaveFillQuality(PACKAGE_CHANNEL, PACKAGE_CHANNEL)).toBe(false)
   })
 
   it('drops the pick a "Save for this View" saved once it lands', () => {

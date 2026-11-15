@@ -7,8 +7,8 @@
 //    A change is saved at once by the grid (`setCellQuality`); the cell's `quality` prop then
 //    changes and the player swaps seamlessly (QUAL-6).
 //  - **`FillQualityPicker`, while filled** (QUAL-5): the qualities, selected on what is playing, and
-//    beside the select (not in it — an action is not a quality) a "Save for this View" button,
-//    disabled when the View already has that fill quality. A pick lasts until fill ends (fillMode.ts,
+//    to the left of the select (not in it — an action is not a quality) a "Save for this View"
+//    button, shown only once a pick has changed what plays (`canSaveFillQuality`). A pick lasts until fill ends (fillMode.ts,
 //    "session pick").
 //
 // Thin on purpose: the option values, names and the edit are features/quality/qualityChoice.ts, the
@@ -105,7 +105,7 @@ export function CellQualityPicker({
 export interface FillQualityPickerProps {
   /** What the filled cell plays now (the pick, or QUAL-5's chain). */
   readonly shown: StreamQuality
-  /** "Save for this View" would change something (`canSaveFillQuality`). */
+  /** Show "Save for this View": a pick changed what plays (`canSaveFillQuality`). */
   readonly canSave: boolean
   readonly onPick: (quality: Quality) => void
   readonly onSave: () => void
@@ -120,6 +120,16 @@ export function FillQualityPicker({
   const blur = usePointerPickBlur()
   return (
     <>
+      {canSave ? (
+        <button
+          type="button"
+          className="cellOverlay__back"
+          title="Use this quality whenever a cell of this View fills"
+          onClick={onSave}
+        >
+          Save for this View
+        </button>
+      ) : null}
       <select
         className="cellOverlay__select"
         aria-label="Fill quality"
@@ -136,19 +146,6 @@ export function FillQualityPicker({
       >
         <QualityOptions />
       </select>
-      <button
-        type="button"
-        className="cellOverlay__back"
-        title={
-          canSave
-            ? 'Use this quality whenever a cell of this View fills'
-            : 'This View already fills at this quality'
-        }
-        disabled={!canSave}
-        onClick={onSave}
-      >
-        Save for this View
-      </button>
     </>
   )
 }

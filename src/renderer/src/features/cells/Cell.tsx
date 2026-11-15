@@ -64,7 +64,7 @@ export interface CellProps {
    * `null` means no picker at all: a package-channel cell (CAM-4).
    */
   readonly inheritedQuality: Quality | null
-  /** QUAL-5: while filled, "Save for this View" would change something (`canSaveFillQuality`). */
+  /** QUAL-5: while filled, show "Save for this View" (a pick changed what plays, `canSaveFillQuality`). */
   readonly canSaveFillQuality: boolean
   /** QUAL-4: a new override for this cell (`null` clears it). Stable, like `onClickEvent`. */
   readonly onQualityChange: (slotKey: string, quality: Quality | null) => void

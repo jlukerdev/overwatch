@@ -147,12 +147,15 @@ export function pickAfterFillSave(
 }
 
 /**
- * Whether "Save for this View" would change anything: the quality shown is a quality (not the
- * package channel) and not already the View's own `fillQuality`. A View that inherits (`null`) can
- * always save, which pins it to what is on screen whatever the app default does later.
+ * Whether "Save for this View" is shown: only once the picker has changed what plays, i.e. the
+ * quality shown (the session pick) differs from what this View fills at when nothing is picked
+ * (`stored`: QUAL-5's chain, `view.fillQuality ?? streams.defaultFillQuality`). The user's call on
+ * review: the button appears when the option changes, and not otherwise — so a View that inherits
+ * the app default is not offered a save of the quality it already plays. Never on the package
+ * channel, which is a source, not a quality.
  */
-export function canSaveFillQuality(shown: StreamQuality, viewFillQuality: Quality | null): boolean {
-  return shown !== PACKAGE_CHANNEL && shown !== viewFillQuality
+export function canSaveFillQuality(shown: StreamQuality, stored: StreamQuality): boolean {
+  return shown !== PACKAGE_CHANNEL && shown !== stored
 }
 
 // -------------------------------------------------------------------------------------------------

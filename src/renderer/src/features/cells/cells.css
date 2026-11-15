@@ -120,14 +120,8 @@
   cursor: pointer;
 }
 
-.cellOverlay__back:hover:not(:disabled) {
+.cellOverlay__back:hover {
   border-color: var(--accent);
-}
-
-/* QUAL-5's "Save for this View" when the View already fills at the quality shown. */
-.cellOverlay__back:disabled {
-  color: var(--muted);
-  cursor: default;
 }
 
 .cellOverlay__back:focus-visible {

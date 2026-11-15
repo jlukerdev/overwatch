@@ -9,15 +9,26 @@
 // `fillClickStep`'s call, not this file's. A click on a control never arrives here (CellOverlay stops
 // it at its slot), so a control press is never a cell click.
 //
+// **Zoom (P3.6; ZOOM-1/2/3), filled only.** `useZoomPan(filled)` (features/zoom/ZoomPan.tsx) listens
+// on this cell's element while it is filled, and transforms `<ZoomPanLayer>`, which wraps the player
+// and nothing else, so the overlay is never scaled. The layer is rendered whether filled or not: the
+// player must never be re-parented, which would remount it and break FILL-2's "same player". While
+// zoomed the overlay's slot also gets the "100%" control (ZOOM-2); it is not there at 1×, where it
+// would do nothing. A drag's trailing click is stopped by the hook before `onClick` below sees it, so
+// panning never arms fill's double-click exit, and modifier + double-click — the reset — is one
+// `fillClickStep` ignores. The control's tooltip names the modifiers that work on this platform: on
+// macOS Ctrl+click is a context click, so it offers ⌘/⌥/⇧ there.
+//
 // The cell owns no size: `<GridView>` positions a box for it from the View's layout (VIEW-5/7) and
 // the cell fills that box. The player then fits the camera inside it by the View's `fit` (contain or
 // cover, player.css), which is how a camera whose shape differs from the View's `aspect` — or a
 // spanned cell a few px off it because of the gap (VIEW-7) — is never distorted.
-import { memo, type JSX, type MouseEvent } from 'react'
+import { memo, useMemo, type JSX, type MouseEvent } from 'react'
 import type { Fit } from '@shared/models'
 import type { StreamQuality } from '@shared/quality'
 import { LivePlayer } from '../../player/LivePlayer'
 import type { FillClickEvent } from '../fill/fillMode'
+import { useZoomPan, ZoomPanLayer } from '../zoom/ZoomPan'
 import { CellOverlay } from './CellOverlay'
 
 export interface CellProps {
@@ -42,6 +53,16 @@ export interface CellProps {
   readonly onBack: () => void
 }
 
+/**
+ * ZOOM-2's 100% tooltip. macOS turns Ctrl+click into a context click, so Ctrl + double-click never
+ * reaches the cell there; `isZoomResetDblClick` still accepts it, but the tooltip offers only the
+ * modifiers that work. `userAgent` rather than the deprecated `navigator.platform`: Electron's says
+ * "Macintosh" on macOS.
+ */
+const ZOOM_RESET_TITLE = navigator.userAgent.includes('Mac')
+  ? 'Reset zoom to 100% (or ⌘/⌥/⇧ + double-click)'
+  : 'Reset zoom to 100% (or Ctrl/Alt/Shift + double-click)'
+
 /** The parts of a mouse event `fillClickStep` reads. */
 function toFillClick(event: MouseEvent, type: FillClickEvent['type']): FillClickEvent {
   return {
@@ -59,9 +80,12 @@ function toFillClick(event: MouseEvent, type: FillClickEvent['type']): FillClick
  * Memoised: the slot list is rebuilt on every camera-state push (any camera's `state` changes the
  * inventory array), and without this every cell — and every `LivePlayer` — would re-render with it.
  * The props are primitives, so the default shallow compare is exact; a player still re-renders for
- * its own camera through its own store selector; the callbacks are the grid's stable ones. The overlay's hover state is the overlay's own, so
- * showing and hiding the controls re-renders the overlay and never the player. Its position is not a prop: the grid moves the box
- * around the cell, so a window resize does not re-render the cell either.
+ * its own camera through its own store selector; the callbacks are the grid's stable ones. The
+ * overlay's hover state is the overlay's own, so showing and hiding the controls re-renders the
+ * overlay and never the player. Its position is not a prop: the grid moves the box around the cell,
+ * so a window resize does not re-render the cell either. Zoom's one piece of React state, `zoomed`,
+ * re-renders the cell when it flips (for the 100% control), and the player element is memoised on
+ * its own props so that flip never re-renders the player.
  */
 export const Cell = memo(function Cell({
   slotKey,
@@ -74,11 +98,20 @@ export const Cell = memo(function Cell({
   onClickEvent,
   onBack,
 }: CellProps): JSX.Element {
+  const zoom = useZoomPan(filled)
+  // The same element object across renders that change nothing of the player's own, so a flip of
+  // `zoom.zoomed` (or of `filled` alone) re-renders the overlay and never the player.
+  const player = useMemo(
+    () => <LivePlayer cameraId={cameraId} quality={quality} muted fit={fit} />,
+    [cameraId, quality, fit],
+  )
   return (
     // A mouse target only: the cell is not focusable, and fill is left from the keyboard by `Esc`
-    // or the back control. `gridCell--fillable` is the pointer cursor (cells.css).
+    // or the back control. `gridCell--fillable` is the pointer cursor (cells.css); `gridCell--filled`
+    // keeps touch gestures for the zoom (zoom.css). The zoom's cursor classes are the hook's.
     <div
-      className={filled ? 'gridCell' : 'gridCell gridCell--fillable'}
+      ref={zoom.cellRef}
+      className={filled ? 'gridCell gridCell--filled' : 'gridCell gridCell--fillable'}
       onClick={(event) => {
         onClickEvent(slotKey, filled, toFillClick(event, 'click'))
       }}
@@ -86,18 +119,31 @@ export const Cell = memo(function Cell({
         onClickEvent(slotKey, filled, toFillClick(event, 'dblclick'))
       }}
     >
-      <LivePlayer cameraId={cameraId} quality={quality} muted fit={fit} />
+      <ZoomPanLayer layerRef={zoom.layerRef}>{player}</ZoomPanLayer>
       <CellOverlay name={name} quality={quality} autoHideMs={overlayAutoHideMs}>
         {filled ? (
-          <button
-            type="button"
-            className="cellOverlay__back"
-            aria-label="Back to grid"
-            title="Back to grid (Esc)"
-            onClick={onBack}
-          >
-            ← Grid
-          </button>
+          <>
+            {zoom.zoomed ? (
+              <button
+                type="button"
+                className="cellOverlay__back"
+                aria-label="Reset zoom to 100%"
+                title={ZOOM_RESET_TITLE}
+                onClick={zoom.resetZoom}
+              >
+                100%
+              </button>
+            ) : null}
+            <button
+              type="button"
+              className="cellOverlay__back"
+              aria-label="Back to grid"
+              title="Back to grid (Esc)"
+              onClick={onBack}
+            >
+              ← Grid
+            </button>
+          </>
         ) : undefined}
       </CellOverlay>
     </div>

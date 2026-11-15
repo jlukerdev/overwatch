@@ -95,7 +95,7 @@ IDs are referenced in `DEV_PLAN.md` and in commit messages.
   - **Setup requirement (P0.3 §5):** `motion` events only arrive for cameras whose **motion detection is enabled in Protect** — it was off on all 9 development cameras, which is why the first runs saw no `motion` at all. It is independent of smart detection: with both on, one walk-by produced both `motion` and `smartDetectZone` events. The Integration API exposes no motion-detection flag on the camera object, so the app cannot detect this or warn about it. The default trigger set (`motion`, `smartDetect`, `ring`) covers cameras with either setting on; document the per-camera Protect setting as user setup.
   - This matches Protect's own Live View slot model (`cycleMode: motion | time`, `cycleInterval`), with one difference: View Protect lets a cell use **both** at once (rotate on a timer and break in on motion).
 - **CELL-3** The overlay shows the camera name, a motion indicator, a mute toggle (only if the camera has a mic), an unlock button (only if Access is enabled and a door is linked), and for multi-camera cells the position (e.g. `2/4`) with manual next/previous buttons.
-  - The camera name sits top-left and is **always visible**. Everything else is in a controls strip, top-right, that auto-hides (CELL-4) and always carries the effective quality badge (QUAL-7). The controls arrive task by task: the back control while filled in P3.5 (FILL-1), the quality picker in P3.7 (QUAL-4), the position, next/previous and motion indicator in P4.3, mute in P5.1 and unlock in P5.3. A click on a control is only that control's; a click anywhere else on the cell, the name and badge included, is a click on the cell (FILL-1).
+  - The camera name sits top-left and is **always visible**. Everything else is in a controls strip, top-right, that auto-hides (CELL-4) and always carries the effective quality badge (QUAL-7). The controls arrive task by task: the back control while filled in P3.5 (FILL-1), the "100%" zoom reset while filled and zoomed in P3.6 (ZOOM-2), the quality picker in P3.7 (QUAL-4), the position, next/previous and motion indicator in P4.3, mute in P5.1 and unlock in P5.3. A click on a control is only that control's; a click anywhere else on the cell, the name and badge included, is a click on the cell (FILL-1).
 - **CELL-4** Overlay controls show on hover and auto-hide after 3 s of no mouse movement.
   - The delay is `ui.overlayAutoHideSec` (§6, default 3); every movement restarts it, and leaving the cell hides the controls at once. The cursor hides with them while it rests over the cell and comes back on the next movement. Keyboard focus inside the strip shows it and keeps it shown, so the controls can be reached by Tab; focus from a mouse click does not.
 
@@ -125,9 +125,18 @@ Protect offers `high`, `medium` and `low` RTSPS streams for every camera, plus `
   - Trivially true until multi-camera cells arrive in Phase 4: a cell shows only its first camera (CELL-2). Phase 4's scheduler (`cellScheduler`) must hold a filled cell's current camera.
 
 ### Zoom (ZOOM)
-- **ZOOM-1** Digital zoom works in filled mode, and optionally in cells: mouse wheel or pinch zooms at the cursor (1×–8×), and drag pans.
+- **ZOOM-1** Digital zoom works in filled mode: mouse wheel or pinch zooms at the cursor (1×–8×), and drag pans.
+  - **Fill only.** Grid cells never zoom or pan: a wheel over the grid does nothing, and a click there still fills (FILL-1). "Optionally in cells" is settled as not built, by the user's choice on 2026-11-15.
+  - The wheel and a trackpad pinch zoom about the point under the cursor, which stays put, between 1× and 8×. Chromium delivers a trackpad pinch as a Ctrl+wheel, so a Ctrl+wheel zooms the camera too, a little faster per event than a plain wheel, and never zooms the app's page. On a touch screen two fingers pinch about their midpoint, and moving them pans.
+  - A drag pans only while zoomed in; at 1× there is nothing to pan. The pan is clamped to the cell: the zoomed picture always covers the whole filled area, so it can never be dragged past an edge. Resizing the window keeps the zoom level and re-clamps the pan.
+  - A drag is not a click: a press that moves more than a few px never counts as a click on the cell, so panning never starts fill's double-click return (FILL-1). Pressing a control in the overlay never pans.
+  - The cursor shows "grab" while zoomed and "grabbing" while dragging; it still hides when idle (CELL-4).
 - **ZOOM-2** A "100%" control and double-click with a modifier reset the zoom. Zoom resets when you leave filled mode.
+  - The "100%" control sits in the overlay's strip next to "← Grid" (CELL-3) and is shown only while filled **and** zoomed in, where it does something.
+  - The double-click is a primary-button double-click with Ctrl, Cmd, Alt or Shift held; it never leaves fill (FILL-1). On macOS Ctrl+click is a context click, so Ctrl + double-click does not reset there; the "100%" control's tooltip names the modifiers that work on the platform (⌘/⌥/⇧ on macOS, Ctrl/Alt/Shift elsewhere).
+  - Every way out of fill resets the zoom: `Esc`, the back control, a plain double-click, a View switch, or the filled cell going away. Filling the camera again starts at 1×.
 - **ZOOM-3** Zoom is a client-side CSS transform. It never changes camera settings.
+  - The transform is on the player only: the overlay (name, badge, controls) stays the same size and in place while the picture zooms. The stream and its quality are untouched, and the player is the same one before, during and after zooming (FILL-2).
 
 ### Audio (AUD)
 - **AUD-1** Every cell starts muted. The audio control only shows when `featureFlags.hasMic && isMicEnabled`.

@@ -25,7 +25,8 @@
 //  - **A plain primary click on a camera cell fills it** (FILL-1). Clicks on a control never get here
 //    (CellOverlay stops them at its slot); empty and missing cells have no `<Cell>` and so no handler.
 //    A click with a modifier is left alone, for the same reason the View shortcuts refuse them: they
-//    belong to the OS, and ZOOM-2 (P3.6) takes modifier + double-click for itself.
+//    belong to the OS, and ZOOM-2 takes modifier + double-click for itself (the zoom reset,
+//    features/zoom/ZoomPan.tsx).
 //  - **A plain double-click leaves, but a double-click on a grid cell does not bounce.** The browser
 //    sends `click` (detail 1), `click` (detail 2), `dblclick` for one double-click. On a grid cell the
 //    first click fills, and a naive "double-click exits" would unfill it a moment later. So a
@@ -36,12 +37,14 @@
 //    only a `detail` of 0 or 1 fills: the third click of a triple-click that just left fill is not a
 //    new request to fill. (0 is a click with no pointer count, e.g. synthesised; the cell is not
 //    focusable, so in practice it is always 1.)
-//  - **Modifier + double-click is ZOOM-2's** (zoom reset, P3.6), so it never leaves fill.
+//  - **Modifier + double-click is ZOOM-2's** (the zoom reset, P3.6), so it never leaves fill. A
+//    drag that pans the zoomed picture never gets here as a click at all: the zoom swallows its
+//    trailing `click` (and the `dblclick` of a pair it started), so panning never arms the exit.
 //  - **`Esc` leaves** ({@link isFillExitKey}), with the View shortcuts' manners: not on auto-repeat,
 //    not with a modifier, not while typing, not if someone already handled it.
 //  - **Fit in fill is `contain`** ({@link FILL_FIT}), whatever the View's `fit`: fill is for seeing the
 //    whole camera, and the View's `cover` crops to make a wall of cells tidy. Detail is what zoom is
-//    for (ZOOM-1, P3.6).
+//    for (ZOOM-1, P3.6): it works in fill only, at 1×–8× (features/zoom/).
 //  - **FILL-3 pins trivially for now.** A cell shows `cameraIds[0]` until Phase 4 (gridLayout.ts), so
 //    a filled cell already never rotates. TODO(Phase 4, CELL-2): when `cellScheduler` drives the
 //    shown camera, a filled cell must hold its current camera — feed the scheduler a "pinned" input
@@ -129,7 +132,7 @@ export function fillClickStep(
     // Only the first click of a pair arms; the second keeps whatever the first decided.
     return { armed: event.detail === 1 ? true : armed, action: null }
   }
-  // `dblclick`. With a modifier it is ZOOM-2's reset (P3.6), and keeps the arming for nothing.
+  // `dblclick`. With a modifier it is ZOOM-2's reset (useZoomPan does it), and disarms.
   if (hasModifier(event)) return { armed: false, action: null }
   return armed ? { armed: false, action: 'unfill' } : { armed: false, action: null }
 }

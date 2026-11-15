@@ -92,6 +92,8 @@ interface SetupOptions {
   readonly settingsView?: (settings: Settings) => Settings
   /** The perf harness's View-write block. */
   readonly viewWritesBlocked?: () => string | null
+  /** The perf harness's QUAL-1 defaults write block. */
+  readonly streamsWritesBlocked?: () => string | null
 }
 
 function setup(options: SetupOptions = {}) {
@@ -170,6 +172,10 @@ function setup(options: SetupOptions = {}) {
         capturedAt: 7,
       }),
     ),
+    // QUAL-7: booleans, which is all the real manager hands back (it drops the URLs itself).
+    streamQualities: vi.fn(() =>
+      Promise.resolve({ high: true, medium: false, low: true, package: false }),
+    ),
     applyConsoleChange: vi.fn((next: Config['console']) => {
       current = { ...current, console: next }
       return Promise.resolve()
@@ -202,6 +208,9 @@ function setup(options: SetupOptions = {}) {
     ...(options.viewWritesBlocked === undefined
       ? {}
       : { viewWritesBlocked: options.viewWritesBlocked }),
+    ...(options.streamsWritesBlocked === undefined
+      ? {}
+      : { streamsWritesBlocked: options.streamsWritesBlocked }),
   })
 
   return {
@@ -342,6 +351,21 @@ describe('request validation (CLAUDE.md)', () => {
       payload: { viewId: '' },
       why: 'an empty View id',
     },
+    {
+      channel: IPC.setStreams.channel,
+      payload: { defaultGridQuality: 'package', defaultFillQuality: 'high' },
+      why: 'the package channel as a default (it is a source, not a quality)',
+    },
+    {
+      channel: IPC.setStreams.channel,
+      payload: { defaultGridQuality: 'low' },
+      why: 'one default missing, which must not be filled in for the renderer',
+    },
+    {
+      channel: IPC.cameraStreamQualities.channel,
+      payload: { cameraId: '' },
+      why: 'no camera id',
+    },
   ]
 
   for (const { channel, payload, why } of cases) {
@@ -386,6 +410,10 @@ function payloadFor(channel: string): unknown {
       return { endpoint: 'protect', fingerprint256: FP_A }
     case IPC.snapshot.channel:
       return { cameraId: 'cam-1', highQuality: false }
+    case IPC.cameraStreamQualities.channel:
+      return { cameraId: 'cam-1' }
+    case IPC.setStreams.channel:
+      return { defaultGridQuality: 'low', defaultFillQuality: 'high' }
     case IPC.ensureStream.channel:
       return { cameraId: 'cam-1', quality: 'low' }
     case IPC.setViews.channel:
@@ -897,6 +925,91 @@ describe('viewWritesBlocked (P3.2 perf harness)', () => {
     const result = await p.call(IPC.setViews, { views: [testView('v1')], lastViewId: 'v1' })
     expect(result.ok).toBe(true)
     expect(p.config.update).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('setStreams (QUAL-1)', () => {
+  it('saves both defaults through the config store and answers with the new state', async () => {
+    const result = await h.call<AppState>(IPC.setStreams, {
+      defaultGridQuality: 'medium',
+      defaultFillQuality: 'low',
+    })
+    expect(h.config.update).toHaveBeenCalledTimes(1)
+    expect(h.disk).toMatchObject({
+      streams: { defaultGridQuality: 'medium', defaultFillQuality: 'low' },
+      // The rest of the config goes along untouched.
+      console: { host: '192.0.2.10', certFingerprint: FP_A },
+    })
+    expect(result.ok && result.value.settings.streams).toEqual({
+      defaultGridQuality: 'medium',
+      defaultFillQuality: 'low',
+    })
+    expect(h.services.current.streams.defaultGridQuality).toBe('medium')
+  })
+
+  it('does not undo a console change that lands while the save is in flight', async () => {
+    let release = (): void => undefined
+    h.config.update.mockImplementationOnce(
+      (mutate: (latest: Config) => Config) =>
+        new Promise<Config>((resolve) => {
+          release = () => {
+            resolve(ConfigSchema.parse(mutate(h.disk)))
+          }
+        }),
+    )
+    const pending = h.call<AppState>(IPC.setStreams, {
+      defaultGridQuality: 'high',
+      defaultFillQuality: 'high',
+    })
+    await Promise.resolve()
+    h.services.current = { ...h.services.current, console: { ...h.console, host: 'udm.local' } }
+    release()
+    expect((await pending).ok).toBe(true)
+    expect(h.services.current.console.host).toBe('udm.local')
+    expect(h.services.current.streams.defaultGridQuality).toBe('high')
+  })
+
+  it('is refused while the perf harness blocks it, writing nothing', async () => {
+    const p = setup({ streamsWritesBlocked: () => 'blocked for the perf run' })
+    const result = await p.call(IPC.setStreams, {
+      defaultGridQuality: 'high',
+      defaultFillQuality: 'high',
+    })
+    expect(failure(result)).toMatchObject({
+      kind: 'bad-request',
+      message: 'blocked for the perf run',
+    })
+    expect(p.config.update).not.toHaveBeenCalled()
+  })
+
+  it('is not blocked by the View-write block, which is about Views only', async () => {
+    const p = setup({ viewWritesBlocked: () => 'Views blocked' })
+    const result = await p.call(IPC.setStreams, {
+      defaultGridQuality: 'low',
+      defaultFillQuality: 'high',
+    })
+    expect(result.ok).toBe(true)
+  })
+})
+
+describe('cameraStreamQualities (QUAL-7)', () => {
+  it("passes the manager's booleans through", async () => {
+    const result = await h.call(IPC.cameraStreamQualities, { cameraId: 'cam-1' })
+    expect(h.manager.streamQualities).toHaveBeenCalledWith('cam-1')
+    expect(result).toEqual({
+      ok: true,
+      value: { high: true, medium: false, low: true, package: false },
+    })
+  })
+
+  it('reports a failure as a value, with the kind the client decided on', async () => {
+    h.manager.streamQualities.mockRejectedValueOnce(
+      new ProtectApiError('GET /v1/cameras/{id}/rtsps-stream failed with HTTP 429.', {
+        kind: 'rate-limit',
+      }),
+    )
+    const result = await h.call(IPC.cameraStreamQualities, { cameraId: 'cam-1' })
+    expect(failure(result).kind).toBe('rate-limit')
   })
 })
 

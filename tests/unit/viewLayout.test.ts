@@ -409,6 +409,28 @@ describe('layoutGrid (VIEW-5)', () => {
     expect(rect.width / rect.height).not.toBeCloseTo(16 / 9, 2)
   })
 
+  // Gate G3: "a View with a 2×2 cell and an 8 px gap keeps 16:9 unit cells, centred, when the
+  // window is resized to very wide and very tall". The "1 + 5" shape: 3×3 with a 2×2 top-left.
+  it.each([
+    ['very wide', 4000, 600],
+    ['very tall', 600, 4000],
+    ['ordinary', 1600, 1000],
+  ])('G3: 3×3 with a 2×2 cell and an 8 px gap stays 16:9 and centred (%s)', (_, width, height) => {
+    const layout = layoutGrid({ width, height, cols: 3, rows: 3, aspect, gap: 8 })
+    expect(layout.unitWidth / layout.unitHeight).toBeCloseTo(16 / 9, 10)
+    // Centred: equal bars on both sides of each axis, and one axis has none at all.
+    expect(width - (layout.x + layout.width)).toBeCloseTo(layout.x, 10)
+    expect(height - (layout.y + layout.height)).toBeCloseTo(layout.y, 10)
+    expect(Math.min(layout.x, layout.y)).toBeCloseTo(0, 10)
+    // The 2×2 cell covers two unit cells and the gap between them, each way.
+    const big = cellRect(layout, { col: 0, row: 0, colSpan: 2, rowSpan: 2 })
+    expect(big.width).toBeCloseTo(2 * layout.unitWidth + 8, 10)
+    expect(big.height).toBeCloseTo(2 * layout.unitHeight + 8, 10)
+    const unit = cellRect(layout, { col: 2, row: 2, colSpan: 1, rowSpan: 1 })
+    // …and the gap to its neighbour is exactly the View's gap.
+    expect(unit.x - (big.x + big.width)).toBeCloseTo(8, 10)
+  })
+
   it('honours a non-16:9 aspect', () => {
     const layout = layoutGrid({
       width: 1000,

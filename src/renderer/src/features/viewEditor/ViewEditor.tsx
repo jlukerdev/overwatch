@@ -1,6 +1,6 @@
-// The View editor (P3.3; VIEW-1, VIEW-2, VIEW-3, VIEW-5, VIEW-7): create, rename, duplicate,
-// delete and reorder Views, change a View's layout, aspect, gap and fit, and assign cameras to its
-// cells by drag-and-drop or a picker. The Live screen shows it in place of the switcher and grid
+// The View editor (P3.3; VIEW-1, VIEW-2, VIEW-3, VIEW-5, VIEW-7; P3.7, QUAL-2/3/5): create, rename,
+// duplicate, delete and reorder Views, change a View's layout, aspect, gap, fit and grid / fill
+// quality, assign cameras to its cells by drag-and-drop or a picker, and set a cell's quality. The Live screen shows it in place of the switcher and grid
 // while editing (`LiveScreen`), so the `1`–`9` shortcuts are off while it is up.
 //
 // **Editing model.** The editor edits a *draft* copy of one View in React state; every change to
@@ -25,6 +25,7 @@
 import { useEffect, useId, useMemo, useRef, useState, type JSX } from 'react'
 import type { AppState, Camera } from '@shared/ipc'
 import type { View } from '@shared/models'
+import { resolveGridQuality } from '@shared/quality'
 import { mergeCells, splitCell } from '@shared/viewLayout'
 import { useAppStore } from '../../state/appStore'
 import { setUnsaved } from '../../state/unsavedGuard'
@@ -34,6 +35,7 @@ import {
   viewsActions,
   type ViewResult,
 } from '../../state/viewsStore'
+import { setCellQuality } from '../quality/qualityChoice'
 import { CameraPalette } from './CameraPalette'
 import { CellInspector } from './CellInspector'
 import { EditorCanvas } from './EditorCanvas'
@@ -238,6 +240,8 @@ function DraftEditor({
   const draft = synced.draft
   const dirty = useMemo(() => isDraftDirty(saved, draft), [saved, draft])
   const choices = useMemo(() => cameraChoices(cameras), [cameras])
+  // QUAL-1's defaults, for the inspector's "View default (X)". `undefined` before settings load.
+  const streams = useAppStore((s) => s.settings?.streams)
 
   // Tell the app shell, so leaving Live or closing the window asks first (unsavedGuard).
   useEffect(() => {
@@ -545,6 +549,15 @@ function DraftEditor({
           }}
           onMove={(position, delta) => {
             edit(moveCellCamera(draft, inspectedIndex, position, delta))
+          }}
+          viewDefaultQuality={
+            streams === undefined
+              ? draft.gridQuality
+              : resolveGridQuality({ cell: { quality: null }, view: draft, streams })
+          }
+          onQualityChange={(quality) => {
+            if (inspected !== null)
+              edit(setCellQuality(draft, inspected.col, inspected.row, quality))
           }}
         />
         <CameraPalette choices={choices} />

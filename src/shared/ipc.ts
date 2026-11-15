@@ -30,7 +30,7 @@ import {
   type Camera,
   type CameraStateChange,
 } from './models'
-import { StreamQualitySchema } from './quality'
+import { QualitySchema, StreamQualitySchema } from './quality'
 import {
   StreamHandleSchema,
   StreamRuntimeSchema,
@@ -329,6 +329,20 @@ export const SnapshotResultSchema = z.discriminatedUnion('state', [
 ])
 export type SnapshotResult = z.infer<typeof SnapshotResultSchema>
 
+/**
+ * QUAL-7, second half: which RTSPS qualities a camera already has on the console, for the camera
+ * list. **Booleans only** (rule 1): main reads `GET /v1/cameras/{id}/rtsps-stream`, whose values are
+ * the RTSPS URLs themselves — and the 16-character alias in each one *is* the credential for that
+ * camera's stream — so the URLs stay in main and only "is there one" crosses.
+ *
+ * A `z.record` over the `StreamQuality` enum, which zod treats as exhaustive: every key must be
+ * present, so a reply cannot leave the renderer guessing whether a missing key means "absent" or
+ * "not reported", and a quality added to `STREAM_QUALITIES` is a contract change rather than a key
+ * nobody reads. `package` is `false` on every camera without a package channel (CAM-4).
+ */
+export const RtspsAvailabilitySchema = z.record(StreamQualitySchema, z.boolean())
+export type RtspsAvailability = z.infer<typeof RtspsAvailabilitySchema>
+
 // -------------------------------------------------------------------------------------------------
 // Requests
 
@@ -409,6 +423,10 @@ export const SnapshotInputSchema = z.object({
 })
 export type SnapshotInput = z.infer<typeof SnapshotInputSchema>
 
+/** QUAL-7: one camera's existing RTSPS qualities. A read: main GETs and never POSTs for it. */
+export const CameraIdInputSchema = z.object({ cameraId: z.string().min(1) })
+export type CameraIdInput = z.infer<typeof CameraIdInputSchema>
+
 /**
  * One camera at one quality, for `ensureStream` (QUAL-8). `quality` is a `StreamQuality` so a
  * doorbell's package channel is addressable (CAM-4); the quality picker can still only produce a
@@ -481,6 +499,24 @@ export type SetViewsInput = z.infer<typeof SetViewsInputSchema>
 export const SetLastViewInputSchema = z.object({ viewId: z.string().min(1).nullable() })
 export type SetLastViewInput = z.infer<typeof SetLastViewInputSchema>
 
+/**
+ * QUAL-1: the two app-wide quality defaults, as a pair. The same shape as `StreamsConfig`
+ * (./models) — main stores the parsed input *as* the `streams` block, so a field added to one and
+ * not the other is a type error there — so the request can hold nothing
+ * `config.json` could not, and both values are a `Quality`, never the package channel
+ * (src/shared/quality.ts). Both together rather than one per call, because the Settings card shows
+ * both and the pair is one small object: the card sends the one it changed and the other as shown.
+ *
+ * Written out rather than reused from `StreamsConfigSchema`, because that one **defaults** a missing
+ * field (`low`/`high`, for an older config file). Here a missing field is a bug on the renderer's
+ * side, and defaulting it would silently reset the user's other choice.
+ */
+export const SetStreamsInputSchema = z.object({
+  defaultGridQuality: QualitySchema,
+  defaultFillQuality: QualitySchema,
+})
+export type SetStreamsInput = z.infer<typeof SetStreamsInputSchema>
+
 // -------------------------------------------------------------------------------------------------
 // The channel table
 //
@@ -549,6 +585,15 @@ export const IPC = {
   setViews: call('vp:views/set', SetViewsInputSchema, AppStateSchema),
   /** VIEW-4/6: make a View the active one and remember it across restarts. Must name a stored View. */
   setLastView: call('vp:views/active', SetLastViewInputSchema, AppStateSchema),
+  /** QUAL-1: persist the app-wide grid and fill quality defaults. */
+  setStreams: call('vp:streams/defaults', SetStreamsInputSchema, AppStateSchema),
+  /**
+   * QUAL-7: which RTSPS qualities exist on the console for one camera, as booleans — never the
+   * URLs (rule 1). A plain `GET rtsps-stream` through the shared rate limiter; it creates nothing
+   * (QUAL-8's POST belongs to `ensureStream` alone). The camera list asks with its thumbnails: on
+   * demand, a few at a time, again on Refresh, never on a timer.
+   */
+  cameraStreamQualities: call('vp:cameras/rtsps', CameraIdInputSchema, RtspsAvailabilitySchema),
 } as const
 
 /**
@@ -630,6 +675,10 @@ export interface ViewProtectApi {
   setViews(input: SetViewsInput): Promise<IpcResult<AppState>>
   /** VIEW-4/6: switch the active View. */
   setLastView(input: SetLastViewInput): Promise<IpcResult<AppState>>
+  /** QUAL-1: the app-wide grid and fill quality defaults, persisted. */
+  setStreams(input: SetStreamsInput): Promise<IpcResult<AppState>>
+  /** QUAL-7: which RTSPS qualities exist for a camera. Booleans only. */
+  cameraStreamQualities(input: CameraIdInput): Promise<IpcResult<RtspsAvailability>>
 
   onConnection(listener: (status: ConnectionStatus) => void): Unsubscribe
   onCameras(listener: (cameras: Camera[]) => void): Unsubscribe

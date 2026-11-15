@@ -8,6 +8,7 @@
 // file whose violation would be a security bug rather than a bug.
 import {
   AppStateSchema,
+  CameraIdInputSchema,
   ConsoleInputSchema,
   AcceptCertInputSchema,
   EndpointInputSchema,
@@ -22,13 +23,15 @@ import {
   ipcResultSchema,
   SECRET_KEYS,
   SecretInputSchema,
+  RtspsAvailabilitySchema,
   SetLastViewInputSchema,
+  SetStreamsInputSchema,
   SetViewsInputSchema,
   SnapshotInputSchema,
   SnapshotResultSchema,
   type AppState,
 } from '@shared/ipc'
-import { STREAM_QUALITIES } from '@shared/quality'
+import { QUALITIES, STREAM_QUALITIES } from '@shared/quality'
 import { streamHandle } from '@shared/streams'
 import { describe, expect, it } from 'vitest'
 import { z } from 'zod'
@@ -276,6 +279,27 @@ describe('request schemas', () => {
     expect(SetLastViewInputSchema.safeParse({}).success).toBe(false)
   })
 
+  it('takes both QUAL-1 defaults as qualities, and never defaults a missing one', () => {
+    for (const quality of QUALITIES) {
+      const input = { defaultGridQuality: quality, defaultFillQuality: quality }
+      expect(SetStreamsInputSchema.parse(input)).toEqual(input)
+    }
+    for (const bad of [
+      // The package channel is a source, not a quality anyone can pick (src/shared/quality.ts).
+      { defaultGridQuality: 'package', defaultFillQuality: 'high' },
+      // The persisted schema would fill this in; the request must not, or it resets the other one.
+      { defaultGridQuality: 'low' },
+      {},
+    ]) {
+      expect(SetStreamsInputSchema.safeParse(bad).success, JSON.stringify(bad)).toBe(false)
+    }
+  })
+
+  it('takes a camera id for cameraStreamQualities (QUAL-7)', () => {
+    expect(CameraIdInputSchema.parse({ cameraId: 'cam-1' })).toEqual({ cameraId: 'cam-1' })
+    expect(CameraIdInputSchema.safeParse({ cameraId: '' }).success).toBe(false)
+  })
+
   it('accepts undefined for the calls that take no payload', () => {
     for (const spec of [IPC.getState, IPC.testConnection, IPC.connect, IPC.listCameras]) {
       expect(spec.request.safeParse(undefined).success).toBe(true)
@@ -351,6 +375,23 @@ describe('the stream contract (CON-2, NFR-9)', () => {
       expect(forbidden.test(key), key).toBe(false)
       expect(forbidden.test(String(value)), `${key}=${String(value)}`).toBe(false)
     }
+  })
+
+  it('answers cameraStreamQualities with one boolean per stream quality, never a URL (QUAL-7)', () => {
+    const all = { high: true, medium: false, low: true, package: false }
+    expect(RtspsAvailabilitySchema.parse(all)).toEqual(all)
+    expect(IPC.cameraStreamQualities.value).toBe(RtspsAvailabilitySchema)
+    // Exhaustive: a missing quality is a shape error, not "absent".
+    expect(RtspsAvailabilitySchema.safeParse({ high: true, medium: true, low: true }).success).toBe(
+      false,
+    )
+    // And the values are booleans only: the URL that main read must not fit here.
+    expect(
+      RtspsAvailabilitySchema.safeParse({
+        ...all,
+        high: 'rtsps://192.0.2.10:7441/AAAAAAAAAAAAAAAA?enableSrtp',
+      }).success,
+    ).toBe(false)
   })
 
   it('has no release call: the player’s closed socket is the release (ARCHITECTURE §2 rule 3)', () => {

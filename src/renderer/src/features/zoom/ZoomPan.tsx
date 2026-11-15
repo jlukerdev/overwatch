@@ -24,7 +24,7 @@
 // React's (React listens at the root), so the overlay slot's `stopPropagation` does not reach them:
 // a press, wheel, click or double-click on a control (`.cellOverlay__slot`) is skipped here by
 // checking its target, which keeps pressing a button from ever panning and leaves the wheel to a
-// control that scrolls (P3.7's picker). Everywhere else `wheel` is `{ passive: false }` and always
+// control that scrolls (the picker). Everywhere else `wheel` is `{ passive: false }` and always
 // `preventDefault`ed while filled, so Chromium's own Ctrl+wheel / pinch page zoom never fires over
 // the filled camera.
 //
@@ -41,7 +41,7 @@
 // `onClick`, so a pan never arms — or fires — fill's double-click exit. The same listener handles
 // ZOOM-2's modifier + double-click (fillClickStep already ignores it). It never swallows a click on
 // a control: a touch drag or pinch ends with no click to clear the swallow it sets, and the next tap
-// on "100%" or "← Grid" must still work. A press on a control is still fed to the guard as a press,
+// on "100%" or the back-to-grid control must still work. A press on a control is still fed to the guard as a press,
 // so that leftover swallow is forgotten before any later click on the picture.
 //
 // **Hot path.** Wheel ticks and pointer moves arrive many times a frame. The zoom state lives in a
@@ -192,7 +192,7 @@ export function useZoomPan(enabled: boolean): ZoomPan {
     if (!enabled || cell === null) return undefined
 
     const onWheel = (event: WheelEvent): void => {
-      // A control's own wheel (P3.7's picker may scroll), as a press there is never a pan (header).
+      // A control's own wheel (the quality picker's), as a press there is never a pan (header).
       if (isOnControl(event.target)) return
       // Always, even at a limit: Chromium's page zoom must never fire over the filled camera.
       event.preventDefault()

@@ -11,9 +11,30 @@
 //
 // Requirements served: CAM-1 (name/model/state/audio/thumbnail), CAM-2 and CAM-3 (the list reacts
 // to `state` from the devices feed, not to whether a snapshot loaded — gate G1 times that at 10 s),
-// SPEC R9 (the 10 req/s budget, hence the bounded thumbnail concurrency).
+// SPEC R9 (the 10 req/s budget, hence the bounded thumbnail concurrency), and QUAL-7's second half
+// (which RTSPS qualities exist on the console).
+//
+// **The RTSPS qualities ride along with the thumbnails** (P3.7). They are a per-camera fact about
+// the console that is just as stale or fresh as a snapshot, so they share its whole lifecycle in
+// one reducer rather than a second one that would have to repeat it: asked for in the same batch
+// (same `requestId`), skipped for offline cameras, dropped when a camera goes offline or leaves,
+// cleared by Refresh, and never polled. They are asked for *after* the batch's thumbnails, in a
+// second pass with the same `THUMBNAIL_CONCURRENCY` ({@link streamsQueryPlan}), so the pictures the
+// user is waiting for fill at full speed, and only for cameras whose snapshot did not fail with a
+// list-level error ({@link wantsStreamsQuery}): a bad key, an unpinned console or a rate limit would
+// fail the GET just the same, so it is not sent and the row says "streams unknown" straight away.
+// What differs from a thumbnail is the failure: not knowing which streams exist is not worth an
+// error, so it is a quiet "streams unknown" on the row and never the list-level `error`.
 import { isCameraOnline } from '@shared/models'
-import type { Camera, EndpointStatus, IpcError, IpcResult, SnapshotResult } from '@shared/ipc'
+import { QUALITIES, PACKAGE_CHANNEL, qualityBadgeLabel, type StreamQuality } from '@shared/quality'
+import type {
+  Camera,
+  EndpointStatus,
+  IpcError,
+  IpcResult,
+  RtspsAvailability,
+  SnapshotResult,
+} from '@shared/ipc'
 
 // -------------------------------------------------------------------------------------------------
 // How one camera reads (CAM-1, CAM-3)
@@ -82,8 +103,20 @@ export type ThumbnailEntry =
   /** A real failure — a bad key, an unpinned console. Settings' business (see `error` below). */
   | { readonly status: 'failed'; readonly error: IpcError }
 
+/**
+ * One camera's RTSPS qualities (QUAL-7). Booleans from main, never a URL (CON-2). `loading` carries
+ * the batch's `requestId` for the same reason a thumbnail's does.
+ */
+export type StreamQualitiesEntry =
+  | { readonly status: 'loading'; readonly requestId: number }
+  | { readonly status: 'known'; readonly available: RtspsAvailability }
+  /** The call failed, for whatever reason. A quiet note on the row, not an error (see header). */
+  | { readonly status: 'unknown' }
+
 export interface ThumbnailsState {
   readonly entries: Readonly<Record<string, ThumbnailEntry>>
+  /** QUAL-7, keyed like `entries` and always asked for in the same batch. */
+  readonly streams: Readonly<Record<string, StreamQualitiesEntry>>
   /**
    * The last failure that was *not* about a camera. Held at list level because that is where the
    * user can be sent to Settings to fix it; a per-row message for fifteen rows with the same bad
@@ -92,7 +125,7 @@ export interface ThumbnailsState {
   readonly error: IpcError | null
 }
 
-export const EMPTY_THUMBNAILS: ThumbnailsState = { entries: {}, error: null }
+export const EMPTY_THUMBNAILS: ThumbnailsState = { entries: {}, streams: {}, error: null }
 
 export type ThumbnailsAction =
   /** The inventory changed (CAM-2): forget what no longer applies. */
@@ -114,6 +147,13 @@ export type ThumbnailsAction =
       readonly cameraId: string
       readonly result: IpcResult<SnapshotResult>
     }
+  /** Whatever `cameraStreamQualities()` answered (QUAL-7). Same batch rule as `result`. */
+  | {
+      readonly type: 'streams'
+      readonly requestId: number
+      readonly cameraId: string
+      readonly result: IpcResult<RtspsAvailability>
+    }
   /** The Refresh button: drop everything and fetch again. */
   | { readonly type: 'refresh' }
 
@@ -127,13 +167,17 @@ export function thumbnailsReducer(
 
     case 'request': {
       const entries = { ...state.entries }
+      const streams = { ...state.streams }
       let changed = false
       for (const cameraId of action.cameraIds) {
         if (cameraId in entries) continue
-        entries[cameraId] = { status: 'loading', requestId: action.requestId }
+        const loading = { status: 'loading', requestId: action.requestId } as const
+        entries[cameraId] = loading
+        // Together with the thumbnail, so the two can never be asked for by different batches.
+        streams[cameraId] = loading
         changed = true
       }
-      return changed ? { ...state, entries } : state
+      return changed ? { ...state, entries, streams } : state
     }
 
     case 'result': {
@@ -144,15 +188,65 @@ export function thumbnailsReducer(
       // batch has already asked about again.
       const entry = state.entries[action.cameraId]
       if (entry?.status !== 'loading' || entry.requestId !== action.requestId) return state
+      // A list-level failure means the RTSPS GET is not sent either (header): its slot, if this
+      // batch is still waiting on it, is "unknown" now rather than "loading" for ever.
+      const streamsEntry = state.streams[action.cameraId]
+      const skipStreams =
+        !wantsStreamsQuery(action.result) &&
+        streamsEntry?.status === 'loading' &&
+        streamsEntry.requestId === action.requestId
       return {
+        ...state,
         entries: { ...state.entries, [action.cameraId]: toEntry(action.result) },
+        streams: skipStreams
+          ? { ...state.streams, [action.cameraId]: { status: 'unknown' } }
+          : state.streams,
         error: action.result.ok ? state.error : action.result.error,
       }
+    }
+
+    case 'streams': {
+      // The same three stale cases as `result`, against the streams slot.
+      const entry = state.streams[action.cameraId]
+      if (entry?.status !== 'loading' || entry.requestId !== action.requestId) return state
+      const next: StreamQualitiesEntry = action.result.ok
+        ? { status: 'known', available: action.result.value }
+        : { status: 'unknown' }
+      // `error` is left alone on purpose: a failure here is "streams unknown" on the row, and a
+      // bad key or a missing pin is already reported by the thumbnail beside it.
+      return { ...state, streams: { ...state.streams, [action.cameraId]: next } }
     }
 
     case 'refresh':
       return EMPTY_THUMBNAILS
   }
+}
+
+/**
+ * Whether a camera's RTSPS qualities are worth asking for after its snapshot answered `result`. A
+ * failed call is what this module treats as *not about the camera* (`toEntry`'s `failed`, the
+ * list-level `error`): a bad key, an unpinned console, a rate limit — the GET would fail the same
+ * way, so it is not sent. A camera-specific answer, the CAM-3 "no image available" included, says
+ * the console is reachable, so the question is still worth a request.
+ */
+export function wantsStreamsQuery(result: IpcResult<SnapshotResult>): boolean {
+  return result.ok
+}
+
+/**
+ * The second pass of a batch (header): of `cameraIds`, in their order, the ones whose snapshot has
+ * answered and {@link wantsStreamsQuery}. A camera with no answer recorded is left out too — the
+ * pass runs after every snapshot of the batch has settled, so that can only be a bug, and a GET
+ * for it would be a guess.
+ */
+export function streamsQueryPlan(
+  cameraIds: readonly string[],
+  snapshots: ReadonlyMap<string, IpcResult<SnapshotResult>>,
+): string[] {
+  return cameraIds.filter((cameraId) => {
+    const result = snapshots.get(cameraId)
+    return result !== undefined && wantsStreamsQuery(result)
+  })
 }
 
 function toEntry(result: IpcResult<SnapshotResult>): ThumbnailEntry {
@@ -177,13 +271,74 @@ function toEntry(result: IpcResult<SnapshotResult>): ThumbnailEntry {
  */
 function syncEntries(state: ThumbnailsState, cameras: readonly Camera[]): ThumbnailsState {
   const keep = new Set(cameras.filter((c) => isCameraOnline(c.state)).map((c) => c.id))
-  const entries: Record<string, ThumbnailEntry> = {}
+  const entries = keepOnly(state.entries, keep)
+  // The streams slot goes with the thumbnail: when the camera is back, both are asked for again.
+  const streams = keepOnly(state.streams, keep)
+  return entries === state.entries && streams === state.streams
+    ? state
+    : { ...state, entries, streams }
+}
+
+/** `record` without the keys not in `keep`; the same object back when nothing was dropped. */
+function keepOnly<T>(
+  record: Readonly<Record<string, T>>,
+  keep: ReadonlySet<string>,
+): Readonly<Record<string, T>> {
+  const out: Record<string, T> = {}
   let changed = false
-  for (const [cameraId, entry] of Object.entries(state.entries)) {
-    if (keep.has(cameraId)) entries[cameraId] = entry
+  for (const [key, value] of Object.entries(record)) {
+    if (keep.has(key)) out[key] = value
     else changed = true
   }
-  return changed ? { ...state, entries } : state
+  return changed ? out : record
+}
+
+// -------------------------------------------------------------------------------------------------
+// How a camera's RTSPS qualities read (QUAL-7)
+
+/** One quality on the row: its badge text and whether the console has a stream for it. */
+export interface RtspsBadge {
+  readonly quality: StreamQuality
+  readonly label: string
+  readonly present: boolean
+}
+
+export type RtspsSummary =
+  /** Asked, not answered yet. */
+  | { readonly kind: 'loading' }
+  /** The call failed. "streams unknown", quietly. */
+  | { readonly kind: 'unknown' }
+  /** No quality exists yet: QUAL-8 creates one the first time a cell needs it. */
+  | { readonly kind: 'none' }
+  /** Every quality the camera can have, best first, each marked present or absent. */
+  | { readonly kind: 'known'; readonly badges: readonly RtspsBadge[] }
+
+/**
+ * What the camera row shows for its RTSPS qualities, or `null` for nothing at all — a camera that
+ * was never asked about, which is an offline one (its thumbnail slot shows the CAM-3 placeholder,
+ * and a "streams unknown" next to "Offline" would only repeat it).
+ *
+ * The qualities come from {@link QUALITIES} and the labels from `qualityBadgeLabel`, so nothing is
+ * hard-coded (QUAL preamble). The package channel is listed only for a camera that has one (CAM-4)
+ * or when the console reports one anyway, so an ordinary camera does not show a permanently dimmed
+ * `PKG`.
+ */
+export function rtspsSummary(
+  camera: Pick<Camera, 'hasPackageCamera'>,
+  entry: StreamQualitiesEntry | undefined,
+): RtspsSummary | null {
+  if (entry === undefined) return null
+  if (entry.status === 'loading') return { kind: 'loading' }
+  if (entry.status === 'unknown') return { kind: 'unknown' }
+  const { available } = entry
+  const qualities: StreamQuality[] = [...QUALITIES]
+  if (camera.hasPackageCamera || available[PACKAGE_CHANNEL]) qualities.push(PACKAGE_CHANNEL)
+  const badges = qualities.map((quality) => ({
+    quality,
+    label: qualityBadgeLabel(quality),
+    present: available[quality],
+  }))
+  return badges.some((badge) => badge.present) ? { kind: 'known', badges } : { kind: 'none' }
 }
 
 /**

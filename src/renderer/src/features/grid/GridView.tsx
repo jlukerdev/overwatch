@@ -27,22 +27,40 @@
 // `aria-hidden`, so Tab and assistive tech cannot reach controls nobody can see. Which slot is
 // filled, and which clicks and keys enter and leave, are the pure rules in features/fill/fillMode.ts;
 // this file keeps the state, listens for `Esc` while filled, and draws the answer.
-import { useCallback, useEffect, useMemo, useRef, useState, type JSX } from 'react'
+//
+// **Quality pickers live here too** (P3.7; QUAL-4/5/6). A cell's picker in the grid saves the cell's
+// override straight away (`viewsActions.updateView` + `setCellQuality`); the store's answer changes
+// the slot's `quality`, and the player's seamless swap does the rest (QUAL-6). The fill picker's pick
+// is *session* state here (`fillPick`), applied above QUAL-5's chain and dropped on every way out of
+// fill, or when another slot fills (`activeFillPick`, fillMode.ts); "Save for this View" writes the
+// shown quality to `view.fillQuality` and drops the pick once the store has it, so the picture does
+// not swap back and forth on the way. A save that fails is only logged: the picker snaps back to the
+// stored value on its own, because it always shows the store's (or the session's) state. A cell
+// pick that would not change the stored View sends nothing; a save that lands drops only the pick
+// it saved, never a newer one made meanwhile.
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type JSX } from 'react'
 import type { Camera } from '@shared/ipc'
 import type { View } from '@shared/models'
-import type { QualityDefaults } from '@shared/quality'
+import { isQuality, type Quality, type QualityDefaults, type StreamQuality } from '@shared/quality'
 import { cellRect, layoutGrid, type Rect } from '@shared/viewLayout'
 import { useAppStore } from '../../state/appStore'
+import { viewsActions, type ViewResult } from '../../state/viewsStore'
 import { Cell } from '../cells/Cell'
 import { overlayAutoHideMs } from '../cells/overlayVisibility'
 import {
+  activeFillPick,
+  canSaveFillQuality,
+  effectiveFillQuality,
   FILL_FIT,
   fillClickStep,
   filledSlotKey,
   isFillExitKey,
+  pickAfterFillSave,
   type FillClickEvent,
+  type FillQualityPick,
   type FillState,
 } from '../fill/fillMode'
+import { setCellQuality } from '../quality/qualityChoice'
 import { keyEventTarget } from '../viewSwitcher/viewShortcut'
 import { buildViewSlots, type GridSlot } from './gridLayout'
 import './grid.css'
@@ -101,6 +119,23 @@ export function GridView({ view, cameras, streams }: GridViewProps): JSX.Element
   if (fill !== null && filledKey === null) setFill(null)
   const isFilled = filledKey !== null
 
+  // QUAL-5's session pick (header). Counts only for the slot filled now; one that no longer counts
+  // is dropped in render like the fill state, so filling that cell again starts from the stored
+  // quality.
+  const [fillPick, setFillPick] = useState<FillQualityPick>(null)
+  const pickedQuality = activeFillPick(fillPick, view.id, filledKey)
+  if (fillPick !== null && pickedQuality === null) setFillPick(null)
+
+  // The latest slots, for the stable quality callbacks below (a camera push rebuilds `slots`, and
+  // depending on it would re-render every memoised `<Cell>`).
+  const slotsRef = useRef(slots)
+  // The stored View, for the same callbacks: `onQualityChange` checks a pick against it (below).
+  const viewRef = useRef(view)
+  useLayoutEffect(() => {
+    slotsRef.current = slots
+    viewRef.current = view
+  }, [slots, view])
+
   // `fillClickStep`'s "armed" flag (fillMode.ts, "does not bounce"). Only event handlers touch it.
   const armedRef = useRef(false)
   // Disarmed on every way out of fill — Esc, the back control, a View switch, the slot going away —
@@ -125,6 +160,48 @@ export function GridView({ view, cameras, streams }: GridViewProps): JSX.Element
   const onBack = useCallback((): void => {
     setFill(null)
   }, [])
+
+  // QUAL-4: a cell's picker in the grid. Saved at once, addressed by the cell's top-left slot. A
+  // pick that changes nothing in the stored View (the same override, or the cell gone) sends
+  // nothing: checked here against the View this grid shows, because `updateView` hands its
+  // updater a copy and so cannot tell a no-op from an edit (`setCellQuality`).
+  const onQualityChange = useCallback(
+    (slotKey: string, quality: Quality | null): void => {
+      const slot = slotsRef.current.find((candidate) => candidate.key === slotKey)
+      if (slot === undefined) return
+      const { col, row } = slot.placement
+      const stored = viewRef.current
+      if (stored.id === view.id && setCellQuality(stored, col, row, quality) === stored) return
+      logFailure(viewsActions.updateView(view.id, (v) => setCellQuality(v, col, row, quality)))
+    },
+    [view.id],
+  )
+
+  // QUAL-5: a pick in fill, for this fill only.
+  const onFillQualityPick = useCallback(
+    (slotKey: string, quality: Quality): void => {
+      setFillPick({ viewId: view.id, slotKey, quality })
+    },
+    // The setter is stable; listed because the compiler infers it (it is also called in render).
+    [view.id, setFillPick],
+  )
+
+  // QUAL-5's "Save for this View": the shown quality becomes `view.fillQuality`; the pick, now equal
+  // to it, is dropped once the store has it — that pick only, so one made while the save was in
+  // flight survives (`pickAfterFillSave`, header).
+  const onSaveFillQuality = useCallback(
+    (slotKey: string, quality: StreamQuality): void => {
+      if (!isQuality(quality)) return
+      const saving = viewsActions.updateView(view.id, (v) => ({ ...v, fillQuality: quality }))
+      logFailure(saving)
+      void saving.then((result) => {
+        if (!result.ok) return
+        const saved = { viewId: view.id, slotKey, quality }
+        setFillPick((current) => pickAfterFillSave(current, saved))
+      })
+    },
+    [view.id, setFillPick],
+  )
 
   // FILL-1's `Esc`: listening only while something is filled, so the key is free otherwise.
   useEffect(() => {
@@ -182,8 +259,12 @@ export function GridView({ view, cameras, streams }: GridViewProps): JSX.Element
                   slot={slot}
                   autoHideMs={autoHideMs}
                   filled={filled}
+                  fillPick={filled ? pickedQuality : null}
                   onCellClick={onCellClick}
                   onBack={onBack}
+                  onQualityChange={onQualityChange}
+                  onFillQualityPick={onFillQualityPick}
+                  onSaveFillQuality={onSaveFillQuality}
                 />
               </div>
             )
@@ -191,6 +272,13 @@ export function GridView({ view, cameras, streams }: GridViewProps): JSX.Element
         : null}
     </div>
   )
+}
+
+/** A quality save that failed is only logged (header); the picker already shows the stored value. */
+function logFailure(saving: ViewResult): void {
+  void saving.then((result) => {
+    if (!result.ok) console.warn('[GridView] quality not saved:', result.error.message)
+  })
 }
 
 /** A slot kept mounted through a zero layout: no size, not painted, not in the a11y tree. */
@@ -216,31 +304,49 @@ function SlotContent({
   slot,
   autoHideMs,
   filled,
+  fillPick,
   onCellClick,
   onBack,
+  onQualityChange,
+  onFillQualityPick,
+  onSaveFillQuality,
 }: {
   readonly slot: GridSlot
   readonly autoHideMs: number
   readonly filled: boolean
+  /** QUAL-5's session pick, when this slot is the filled one and has one. */
+  readonly fillPick: Quality | null
   readonly onCellClick: (slotKey: string, filled: boolean, event: FillClickEvent) => void
   readonly onBack: () => void
+  readonly onQualityChange: (slotKey: string, quality: Quality | null) => void
+  readonly onFillQualityPick: (slotKey: string, quality: Quality) => void
+  readonly onSaveFillQuality: (slotKey: string, quality: StreamQuality) => void
 }): JSX.Element {
   switch (slot.kind) {
-    case 'camera':
-      // Filled: the fill stream and fit. A change of `quality` is the player's seamless swap (FILL-2).
+    case 'camera': {
+      // Filled: the fill stream (the session pick over QUAL-5's chain) and fit. A change of
+      // `quality` is the player's seamless swap (FILL-2, QUAL-6); the badge shows it (QUAL-7).
+      const fillQuality = effectiveFillQuality(slot.fillQuality, fillPick)
       return (
         <Cell
           slotKey={slot.key}
           cameraId={slot.cameraId}
           name={slot.name}
-          quality={filled ? slot.fillQuality : slot.quality}
+          quality={filled ? fillQuality : slot.quality}
           fit={filled ? FILL_FIT : slot.fit}
           overlayAutoHideMs={autoHideMs}
           filled={filled}
           onClickEvent={onCellClick}
           onBack={onBack}
+          cellQuality={slot.qualityChoice?.override ?? null}
+          inheritedQuality={slot.qualityChoice?.inherited ?? null}
+          canSaveFillQuality={filled && canSaveFillQuality(fillQuality, slot.fillQuality)}
+          onQualityChange={onQualityChange}
+          onFillQualityPick={onFillQualityPick}
+          onSaveFillQuality={onSaveFillQuality}
         />
       )
+    }
     case 'missing':
       // No player: the camera is gone from the console, or has no package camera to play
       // (gridLayout.ts header). Still `gridCell--empty`, because nothing streams here. Not fillable:

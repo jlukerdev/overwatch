@@ -25,6 +25,7 @@ import {
   type ConnectionStatus,
   type IpcResult,
   type PinCheck,
+  type RtspsAvailability,
   type SnapshotResult,
   type StreamHandle,
   type StreamRuntime,
@@ -123,6 +124,9 @@ const impl: ViewProtectApi = {
   ensureStream: (input): Promise<IpcResult<StreamHandle>> => call(IPC.ensureStream, input),
   setViews: (input): Promise<IpcResult<AppState>> => call(IPC.setViews, input),
   setLastView: (input): Promise<IpcResult<AppState>> => call(IPC.setLastView, input),
+  setStreams: (input): Promise<IpcResult<AppState>> => call(IPC.setStreams, input),
+  cameraStreamQualities: (input): Promise<IpcResult<RtspsAvailability>> =>
+    call(IPC.cameraStreamQualities, input),
 
   onConnection: (listener: (status: ConnectionStatus) => void): Unsubscribe =>
     subscribe(IPC_EVENTS.connection, listener),

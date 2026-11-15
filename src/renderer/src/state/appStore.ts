@@ -19,9 +19,11 @@ import {
   type IpcError,
   type IpcResult,
   type PinCheck,
+  type RtspsAvailability,
   type SecretInput,
   type SecretKeyInput,
   type SecretsStored,
+  type SetStreamsInput,
   type SetViewsInput,
   type Settings,
   type SnapshotInput,
@@ -64,6 +66,13 @@ export interface AppStoreState {
   disconnect: () => Promise<IpcResult<AppState>>
   refreshCameras: () => Promise<IpcResult<Camera[]>>
   snapshot: (input: SnapshotInput) => Promise<IpcResult<SnapshotResult>>
+  /**
+   * QUAL-7: which RTSPS qualities exist for one camera, as booleans. Not folded into the store: like
+   * a thumbnail it belongs to the camera list's own cache (camerasStore.ts), not to `AppState`.
+   */
+  cameraStreamQualities: (cameraId: string) => Promise<IpcResult<RtspsAvailability>>
+  /** QUAL-1: persist the app-wide grid and fill quality defaults. */
+  setStreams: (input: SetStreamsInput) => Promise<IpcResult<AppState>>
   /**
    * VIEW-3/6: persist a new View list and active View. Called by the View store (viewsStore.ts),
    * which computes the list; this only sends it and folds the answer, like every other mutation.
@@ -180,6 +189,8 @@ export const useAppStore = create<AppStoreState>()((set, get) => {
     },
 
     snapshot: async (input) => bridge().snapshot(input),
+    cameraStreamQualities: async (cameraId) => bridge().cameraStreamQualities({ cameraId }),
+    setStreams: async (input) => fold(await bridge().setStreams(input)),
     setViews: async (input) => fold(await bridge().setViews(input)),
     setLastView: async (viewId) => fold(await bridge().setLastView({ viewId })),
   }

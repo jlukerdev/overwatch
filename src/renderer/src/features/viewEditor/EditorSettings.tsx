@@ -1,6 +1,6 @@
-// The View editor's settings row (P3.3; VIEW-1, VIEW-5, VIEW-7): layout preset, grid size, the
-// 1×1 cell's aspect, the gap between cells and how a camera fits its cell. Each control turns into
-// one edit of the draft:
+// The View editor's settings row (P3.3; VIEW-1, VIEW-5, VIEW-7; P3.7, QUAL-2/5): layout preset, grid
+// size, the 1×1 cell's aspect, the gap between cells, how a camera fits its cell, and the View's
+// grid and fill qualities. Each control turns into one edit of the draft:
 //
 //  - Layout → `applyPreset` (cameras carried over in reading order). "Custom" is shown, and
 //    selected, only while the layout matches no preset (`matchingPresetId`); it is not choosable.
@@ -13,11 +13,21 @@
 //    to the stored View, which resets the mode.
 //  - Gap → a 0–MAX_GRID_GAP range plus a number input for an exact value.
 //  - Fit → contain / cover.
+//  - Grid quality / Fill quality (P3.7; QUAL-2, QUAL-5) → `gridQuality` / `fillQuality`. The first
+//    option inherits (`null`) and names what that gives now, from `settings.streams` (QUAL-1):
+//    "App default (LOW)". Saved with the rest of the draft, like every setting here.
 //
 // Layout changes report how many camera cells they dropped, so the editor can say so.
 import { useId, useState, type JSX } from 'react'
 import { FitSchema, MAX_GRID_DIMENSION, MAX_GRID_GAP, type View } from '@shared/models'
 import { LAYOUT_PRESETS, resizeGrid } from '@shared/viewLayout'
+import { useAppStore } from '../../state/appStore'
+import {
+  inheritOptionLabel,
+  parseQualityOption,
+  qualityOptionValue,
+} from '../quality/qualityChoice'
+import { QualityOptions } from '../quality/QualityOptions'
 import { BoundedNumberInput } from './BoundedNumberInput'
 import {
   applyPreset,
@@ -34,7 +44,7 @@ const GRID_SIZES = Array.from({ length: MAX_GRID_DIMENSION }, (_, i) => i + 1)
 
 export interface EditorSettingsProps {
   readonly draft: View
-  /** A setting that leaves the cells alone (aspect, gap, fit). */
+  /** A setting that leaves the cells alone (aspect, gap, fit, the two qualities). */
   readonly onEdit: (next: View) => void
   /** A change of layout: the selection no longer means anything, and `lost` camera cells went. */
   readonly onLayout: (next: View, lost: number) => void
@@ -54,6 +64,8 @@ export function EditorSettings({
   const presetId = matchingPresetId(draft)
   const aspectLabel = aspectChoiceLabel(draft.aspect)
   const showCustomAspect = customAspect || aspectLabel === null
+  // QUAL-1's defaults, for the inherit options' labels. `undefined` before settings load.
+  const streams = useAppStore((s) => s.settings?.streams)
 
   const resize = (cols: number, rows: number): void => {
     const result = resizeGrid(draft, cols, rows)
@@ -219,6 +231,36 @@ export function EditorSettings({
         >
           <option value="contain">Contain (whole picture)</option>
           <option value="cover">Cover (fill the cell)</option>
+        </select>
+      </label>
+
+      <label className="viewEditor__setting">
+        <span className="field__label">Grid quality</span>
+        <select
+          className="field__input"
+          value={qualityOptionValue(draft.gridQuality)}
+          onChange={(event) => {
+            onEdit({ ...draft, gridQuality: parseQualityOption(event.target.value) })
+          }}
+        >
+          <QualityOptions
+            inheritLabel={inheritOptionLabel('App default', streams?.defaultGridQuality)}
+          />
+        </select>
+      </label>
+
+      <label className="viewEditor__setting">
+        <span className="field__label">Fill quality</span>
+        <select
+          className="field__input"
+          value={qualityOptionValue(draft.fillQuality)}
+          onChange={(event) => {
+            onEdit({ ...draft, fillQuality: parseQualityOption(event.target.value) })
+          }}
+        >
+          <QualityOptions
+            inheritLabel={inheritOptionLabel('App default', streams?.defaultFillQuality)}
+          />
         </select>
       </label>
     </div>

@@ -12,11 +12,19 @@
 //
 // Secrets are write-only (CON-2, NFR-9): the two password fields start empty, are never seeded, and
 // each has its own Save — `setConsole` carries no credential at all.
+//
+// The Streams card (QUAL-1, P3.7) is the exception to "nothing saves as you type": a select has no
+// half-typed state, so each one saves on change and shows its own failure. The card runs one save
+// at a time (both selects are disabled while it is in flight) and builds each payload from the
+// store's defaults at the moment of the change, so a quick Grid-then-Fill change cannot have the
+// second save write back the Grid value the first one replaced.
 import { useState, type JSX } from 'react'
 import type { AccessProbe, IpcError, IpcSecretKey, ProtectProbe, Settings } from '@shared/ipc'
 import { useAppStore } from '../../state/appStore'
 import { CertificateCard } from './CertificateCard'
+import { QualityOptions } from '../quality/QualityOptions'
 import {
+  streamsInputFrom,
   consoleDraftFrom,
   consoleInputFrom,
   consoleSignature,
@@ -24,6 +32,7 @@ import {
   isConsoleDirty,
   type ConsoleDraft,
   type ConsoleFieldErrors,
+  type StreamsField,
 } from './settingsForm'
 import './settings.css'
 
@@ -47,6 +56,7 @@ export function SettingsPage(): JSX.Element {
       <ConsoleCard settings={settings} keystoreAvailable={keystoreAvailable} />
       <CertificateSection accessEnabled={settings.console.accessEnabled} />
       <ConnectionCard accessEnabled={settings.console.accessEnabled} />
+      <StreamsCard streams={settings.streams} />
     </div>
   )
 }
@@ -488,4 +498,108 @@ function describeAccessProbe(probe: AccessProbe): string {
   if (probe.state === 'error') return probe.error.message
   const count = String(probe.doorCount)
   return probe.doorCount === 1 ? 'Reachable — 1 door' : `Reachable — ${count} doors`
+}
+
+// -------------------------------------------------------------------------------------------------
+// QUAL-1: the app-wide grid and fill quality defaults
+
+function StreamsCard({ streams }: { streams: Settings['streams'] }): JSX.Element {
+  const setStreams = useAppStore((s) => s.setStreams)
+  // One save at a time for the whole card (header): while one is in flight both selects are
+  // disabled, so a second change cannot start from the defaults the first one is replacing.
+  const [saving, setSaving] = useState(false)
+  /** The last failed save, shown under the select that made it. */
+  const [saveError, setSaveError] = useState<{ field: StreamsField; error: IpcError } | null>(null)
+
+  const save = async (field: StreamsField, value: string): Promise<void> => {
+    // The store's defaults as they are now, not the `streams` this render was given: an answer
+    // that landed since is already in the store, and the other default must go out as stored.
+    const stored = useAppStore.getState().settings?.streams ?? streams
+    const input = streamsInputFrom(stored, field, value)
+    if (input === null) return
+    setSaving(true)
+    setSaveError(null)
+    const result = await setStreams(input)
+    setSaving(false)
+    if (!result.ok) setSaveError({ field, error: result.error })
+  }
+
+  const select = (field: StreamsField, label: string, hint: string): JSX.Element => (
+    <QualitySelect
+      value={streams[field]}
+      field={field}
+      label={label}
+      hint={hint}
+      disabled={saving}
+      error={saveError?.field === field ? saveError.error : null}
+      onChange={(value) => {
+        void save(field, value)
+      }}
+    />
+  )
+
+  return (
+    <section className="card">
+      <h2 className="card__title">Streams</h2>
+      <p className="card__hint">
+        The quality each camera plays at unless a View or a cell says otherwise. Changes save at
+        once.
+      </p>
+      {select(
+        'defaultGridQuality',
+        'Grid quality',
+        'What every cell plays unless its View or the cell itself overrides it.',
+      )}
+      {select(
+        'defaultFillQuality',
+        'Fill quality',
+        'Used when a cell fills the grid, unless the View overrides it.',
+      )}
+    </section>
+  )
+}
+
+/**
+ * One QUAL-1 default. Controlled by the stored value, not by a draft: the select shows what main
+ * holds, so a failed save snaps back to the stored quality and says why underneath. The saving
+ * itself is the card's (`StreamsCard`), which serialises the two selects.
+ */
+function QualitySelect({
+  value,
+  field,
+  label,
+  hint,
+  disabled,
+  error,
+  onChange,
+}: {
+  value: Settings['streams'][StreamsField]
+  field: StreamsField
+  label: string
+  hint: string
+  disabled: boolean
+  error: IpcError | null
+  onChange: (value: string) => void
+}): JSX.Element {
+  const id = `streams-${field}`
+  return (
+    <div className="field">
+      <label className="field__label" htmlFor={id}>
+        {label}
+      </label>
+      <select
+        id={id}
+        className="field__input settings__select"
+        value={value}
+        disabled={disabled}
+        onChange={(event) => {
+          onChange(event.target.value)
+        }}
+      >
+        <QualityOptions />
+      </select>
+      <p className="field__hint">{hint}</p>
+      {error === null ? null : <p className="field__error">{error.message}</p>}
+    </div>
+  )
 }

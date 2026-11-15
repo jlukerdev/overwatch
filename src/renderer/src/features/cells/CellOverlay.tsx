@@ -3,9 +3,12 @@
 // movement, taking the idle cursor with it.
 //
 // What is in the strip, and when the rest arrives. Today: the effective quality badge (QUAL-7, e.g.
-// `MED`); while filled, fill's back control (P3.5, FILL-1); and while filled *and* zoomed, the zoom's
-// "100%" reset (P3.6, ZOOM-2) — both passed in by `<Cell>`. `children` is the slot for those
-// buttons, top right next to the badge; later tasks add the quality picker (P3.7, QUAL-4), the
+// `MED`); the quality picker (P3.7) — the cell's own in the grid (QUAL-4), the fill picker while
+// filled (QUAL-5), none on a package-channel cell; and while filled *and* zoomed, the zoom's "100%"
+// reset (P3.6, ZOOM-2) — all passed in by `<Cell>`. `children` is the slot for those controls, top
+// right next to the badge. Fill's back control (P3.5, FILL-1), a 2×2 grid icon, is the one control
+// apart from them: `centerControls`, top centre, so it is not mis-clicked for the quality picker. It
+// fades with the strip and keeps its presses the same way. Later tasks add the
 // position and next / previous plus the motion badge (P4.3, CELL-2/3), mute (P5.1, AUD) and unlock
 // (P5.3, DOOR). No placeholder buttons until then, and no control shown while it would do nothing
 // (the 100% control at 1×): a control that does nothing is a control someone presses.
@@ -48,7 +51,14 @@
 // pin the strip open after the pointer has gone. A control focused by a click becomes focus-visible
 // once a key is pressed on it, so a keydown inside re-checks. A blur caused by the whole window
 // losing focus is not focus leaving the overlay: focus comes back to the same control with the
-// window, so it is ignored.
+// window, so it is ignored. A select is held by *any* focus (`focusHoldsControls`): its native
+// dropdown takes the pointer while open, so no movement would keep the strip up under it. A pick from
+// a select (a `change` in the slot) counts as movement, so the strip — and the badge showing the new
+// quality — stays up for a full delay after the dropdown closes rather than vanishing at once. A
+// select focused by the *mouse* lets go when the pointer leaves the cell: it is blurred there
+// (`releasesOnPointerLeave`), so a dropdown closed with no pick does not pin the strip for ever.
+// (Its `Esc` blur is the picker's, QualityPicker.) The keydown re-check only counts a control that
+// still has the focus, so a key that blurred its select does not hold the strip again.
 import {
   useCallback,
   useEffect,
@@ -62,10 +72,12 @@ import {
 } from 'react'
 import { qualityBadgeLabel, type StreamQuality } from '@shared/quality'
 import {
+  focusHoldsControls,
   INITIAL_OVERLAY_VISIBILITY,
   isControlsShown,
   isCursorHidden,
   reduceOverlayVisibility,
+  releasesOnPointerLeave,
   type OverlayVisibilityEvent,
   type OverlayVisibilityState,
 } from './overlayVisibility'
@@ -79,6 +91,12 @@ export interface CellOverlayProps {
   readonly autoHideMs: number
   /** Controls for the strip, top right (see the header for which task adds which). */
   readonly children?: ReactNode
+  /**
+   * Controls shown top centre, apart from the strip — fill's back-to-grid control, kept away from
+   * the quality picker so the two are not mis-clicked for each other. Same rules as `children`:
+   * shown and hidden with the strip, and their presses never reach the cell.
+   */
+  readonly centerControls?: ReactNode
 }
 
 /** Set on the cell element while the idle cursor is hidden (cells.css). */
@@ -94,11 +112,34 @@ function isKeyboardFocus(element: EventTarget | null): boolean {
   return element instanceof Element && element.matches(':focus-visible')
 }
 
+/** Focus that holds the strip: keyboard focus, or any on a select (`focusHoldsControls`). */
+function holdsFocus(element: EventTarget | null): boolean {
+  return (
+    element instanceof Element &&
+    focusHoldsControls({ tagName: element.tagName, focusVisible: isKeyboardFocus(element) })
+  )
+}
+
+/**
+ * The focused control inside `root`, as `releasesOnPointerLeave` reads it, or `null` when the focus
+ * is elsewhere.
+ */
+function focusedControlIn(root: HTMLElement | null): HTMLElement | null {
+  const focused = document.activeElement
+  return root !== null && focused instanceof HTMLElement && root.contains(focused) ? focused : null
+}
+
+/** Whether `(x, y)` is strictly inside `rect` (a real leave reports a point on or past its edge). */
+function isInside(rect: DOMRect, x: number, y: number): boolean {
+  return x > rect.left && x < rect.right && y > rect.top && y < rect.bottom
+}
+
 export function CellOverlay({
   name,
   quality,
   autoHideMs,
   children,
+  centerControls,
 }: CellOverlayProps): JSX.Element {
   const rootRef = useRef<HTMLDivElement | null>(null)
   /** The `.gridCell` around the overlay, once mounted. */
@@ -172,8 +213,21 @@ export function CellOverlay({
     const onMove = (): void => {
       dispatch({ type: 'pointerMove', now: performance.now() })
     }
-    const onLeave = (): void => {
+    const onLeave = (event: PointerEvent): void => {
       dispatch({ type: 'pointerLeave' })
+      // A mouse-focused select lets go (header): blurred, which `onBlur` turns into a `focusOut`.
+      const focused = focusedControlIn(rootRef.current)
+      if (focused === null) return
+      const release = releasesOnPointerLeave(
+        { tagName: focused.tagName, focusVisible: isKeyboardFocus(focused) },
+        {
+          toElement: event.relatedTarget instanceof Element,
+          insideCell: isInside(cell.getBoundingClientRect(), event.clientX, event.clientY),
+        },
+      )
+      if (!release) return
+      focused.blur()
+      dispatch({ type: 'focusOut' })
     }
     cell.addEventListener('pointerenter', onEnter)
     cell.addEventListener('pointermove', onMove)
@@ -198,8 +252,9 @@ export function CellOverlay({
 
   const onFocus = useCallback(
     (event: FocusEvent<HTMLDivElement>): void => {
-      // A mouse-focused control does not hold the strip (header); it also ends any keyboard hold.
-      dispatch({ type: isKeyboardFocus(event.target) ? 'focusIn' : 'focusOut' })
+      // A mouse-focused control does not hold the strip (header), unless it is a select; it also
+      // ends any keyboard hold.
+      dispatch({ type: holdsFocus(event.target) ? 'focusIn' : 'focusOut' })
     },
     [dispatch],
   )
@@ -216,10 +271,20 @@ export function CellOverlay({
     [dispatch],
   )
 
+  // A pick in a select is activity over the cell (header, "Keyboard").
+  const onControlChange = useCallback((): void => {
+    dispatch({ type: 'pointerMove', now: performance.now() })
+  }, [dispatch])
+
   const onKeyDown = useCallback(
     (event: KeyboardEvent<HTMLDivElement>): void => {
-      // A click-focused control turns focus-visible once a key is pressed on it (header).
-      if (!stateRef.current.focusWithin && isKeyboardFocus(event.target)) {
+      // A click-focused control turns focus-visible once a key is pressed on it (header). Only one
+      // that still has the focus: the picker blurs a mouse-focused select on `Esc` before this runs.
+      if (
+        !stateRef.current.focusWithin &&
+        event.target === document.activeElement &&
+        holdsFocus(event.target)
+      ) {
         dispatch({ type: 'focusIn' })
       }
     },
@@ -246,15 +311,31 @@ export function CellOverlay({
               onPointerUp={stopAtControls}
               onClick={stopAtControls}
               onDoubleClick={stopAtControls}
+              onChange={onControlChange}
             >
               {children}
             </div>
           ) : null}
-          <span className="cellOverlay__badge" title="Stream quality">
+          {/* `data-quality` gives each quality its own colour (cells.css). */}
+          <span className="cellOverlay__badge" title="Stream quality" data-quality={quality}>
             {qualityBadgeLabel(quality)}
           </span>
         </div>
       </div>
+      {centerControls !== undefined ? (
+        <div className="cellOverlay__center">
+          {/* `cellOverlay__slot` too, so ZoomPan skips presses here and the pointer rules apply. */}
+          <div
+            className="cellOverlay__slot"
+            onPointerDown={stopAtControls}
+            onPointerUp={stopAtControls}
+            onClick={stopAtControls}
+            onDoubleClick={stopAtControls}
+          >
+            {centerControls}
+          </div>
+        </div>
+      ) : null}
     </div>
   )
 }

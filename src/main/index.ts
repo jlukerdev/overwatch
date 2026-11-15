@@ -636,6 +636,10 @@ if (!app.requestSingleInstanceLock()) {
                 // from it would store that list over the user's Views. Refuse them for the run.
                 viewWritesBlocked: () =>
                   perfView === null ? null : 'Views cannot be changed during a perf run.',
+                // QUAL-1: the renderer is shown the run's grid quality as the default from the start,
+                // so a Settings save would persist it as the user's own. Refused for the whole run.
+                streamsWritesBlocked: () =>
+                  'Stream quality defaults cannot be changed during a perf run.',
               }),
         }),
       )

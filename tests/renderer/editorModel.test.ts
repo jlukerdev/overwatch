@@ -40,6 +40,7 @@ import {
   swapCellContents,
   validateDraft,
 } from '../../src/renderer/src/features/viewEditor/editorModel'
+import { setCellQuality } from '../../src/renderer/src/features/quality/qualityChoice'
 import { buildViewSlots } from '../../src/renderer/src/features/grid/gridLayout'
 
 function preset(id: string): LayoutPreset {
@@ -607,6 +608,11 @@ describe('isDraftDirty', () => {
     expect(isDraftDirty(v, { ...v, gap: 2 })).toBe(true)
     expect(isDraftDirty(v, { ...v, aspect: { w: 4, h: 3 } })).toBe(true)
     expect(isDraftDirty(v, { ...v, fit: 'cover' })).toBe(true)
+    // P3.7 (QUAL-2/3/5): the editor's quality selects.
+    expect(isDraftDirty(v, { ...v, gridQuality: 'medium' })).toBe(true)
+    expect(isDraftDirty(v, { ...v, fillQuality: 'medium' })).toBe(true)
+    expect(isDraftDirty(v, setCellQuality(v, 0, 0, 'high'))).toBe(true)
+    expect(isDraftDirty(v, setCellQuality(setCellQuality(v, 0, 0, 'high'), 0, 0, null))).toBe(false)
     expect(isDraftDirty(v, addCellCamera(v, 0, 'a'))).toBe(true)
     expect(isDraftDirty(v, applyPreset(v, preset('3x3')).view)).toBe(true)
     const withA = addCellCamera(v, 0, 'a')

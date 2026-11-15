@@ -113,6 +113,7 @@ async function setup() {
       metaInfo: vi.fn(),
       cameras: () => Promise.resolve([]),
       snapshot: vi.fn(),
+      rtspsStreams: vi.fn(),
     }),
     access: () => ({ doors: () => Promise.resolve([]) }),
   }

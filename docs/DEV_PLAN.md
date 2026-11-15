@@ -108,6 +108,24 @@ VIEW-1…7, FILL-1…3, ZOOM-1…3, CELL-3/4, QUAL-1…7
 
 **Gate G3:** build three Views from scratch, restart the app, and they come back. Changing a cell between Low/Med/High swaps without a black frame and persists. Fill/zoom/back works smoothly at 60 fps UI. A View with a 2×2 cell and an 8 px gap keeps 16:9 unit cells, centred, when the window is resized to very wide and very tall.
 
+**G3 outcome: PENDING the console checks.** The geometry half runs on every build; the rest needs the real console and a screen, which the build machine cannot reach (the G1 split). P3.7's PR carries the steps; this block is updated with the results before it merges.
+
+| G3 item | Result |
+|---|---|
+| Three Views built from scratch come back after a restart | *Pending (console).* Covered in code by the P3.1 config round-trip and `configWriters` tests |
+| A cell changed between Low/Med/High swaps without a black frame, and the choice persists | *Pending (console).* The swap is the player's two-layer handover (QUAL-6, `playerMachine` tests); the pick saves through `setViews` |
+| Fill / zoom / back is smooth at 60 fps UI | *Pending (console)*: DevTools Performance → frames while filling, zooming, panning and going back |
+| 2×2 cell + 8 px gap keeps 16:9 unit cells, centred, very wide and very tall | **Pass (unit)**: `viewLayout.test.ts` "G3: 3×3 with a 2×2 cell and an 8 px gap…" (very wide 4000×600, very tall 600×4000, ordinary). *Pending (screen)*: a visual check by resizing the window |
+
+**How to run the console checks** (a throwaway profile, so the real Views are untouched):
+
+1. `npm run build`, then `npx electron . --user-data-dir=/tmp/vp-g3` (Windows: `--user-data-dir=%TEMP%\vp-g3`). Set up the console as in G1 steps 2–4 and **Connect**.
+2. **Three Views.** On Live, "Create a View" (View 1). In the switcher, "New View" twice; in each, pick a different layout (e.g. "1 + 5" with an 8 px gap, and 4×3), drag cameras in, set a name, **Save**. Quit the app (Cmd+Q / close) and start it with the same command: all three Views are listed in order with their cameras and layout, and the app opens on the last View shown.
+3. **Cell quality.** Hover a cell, open its quality picker and choose High, then Medium, then Low. Each change: the picture never goes black or shows "Connecting…"; the badge changes when the new stream shows. Restart: the cell still plays (and its picker shows) the last choice. "View default (…)" clears it.
+4. **Fill / zoom / back at 60 fps.** Open DevTools (View → Toggle Developer Tools, or Cmd+Opt+I / Ctrl+Shift+I) → Performance → record. Click a cell to fill, wheel-zoom in, drag to pan, press 100%, then Esc. Stop: the frames track stays at ~16.7 ms with no long red frames during the transitions. In fill, also try the fill quality picker and "Save for this View"; after Esc and re-fill, the saved quality is used.
+5. **Letterbox.** On the "1 + 5" View with the 8 px gap, drag the window very wide, then very tall: unit cells stay 16:9, the grid stays centred with even bars, and the gaps stay 8 px.
+
+
 ---
 
 ## Phase 4 — Multi-camera cells

@@ -129,6 +129,32 @@
   outline-offset: 1px;
 }
 
+/*
+ * QUAL-4/5's quality picker (P3.7): a native select dressed as the chips around it (the dropdown
+ * itself follows the app's `color-scheme: dark`, styles.css).
+ */
+.cellOverlay__select {
+  max-width: 11rem;
+  padding: 0.1rem 0.3rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: rgb(0 0 0 / 55%);
+  color: var(--fg);
+  font: inherit;
+  font-size: 0.75rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.cellOverlay__select:hover {
+  border-color: var(--accent);
+}
+
+.cellOverlay__select:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .cellOverlay__controls {
     transition: none;

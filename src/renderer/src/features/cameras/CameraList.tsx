@@ -15,11 +15,15 @@
 //     second and a half of budget and delay the live devices feed behind them, which is the path
 //     gate G1 times. Hence `THUMBNAIL_CONCURRENCY` and a manual Refresh button rather than a timer:
 //     nothing in Phase 1 needs a polling thumbnail, and P2.3 replaces these with live streams.
+//     The same batch then asks which RTSPS qualities exist on the console (QUAL-7, P3.7) in a
+//     second pass once its thumbnails have settled, at the same concurrency, and only for cameras
+//     whose snapshot did not fail at list level (`streamsQueryPlan`), so the thumbnails fill at full
+//     speed and a bad key or a missing pin costs no second request per camera.
 //  2. **Online state never comes from a snapshot.** It comes from `camera.state`, which the devices
 //     feed pushes into `appStore` (CAM-2). A camera that goes offline shows a placeholder within
 //     the 10 seconds G1 allows even though its last thumbnail loaded perfectly.
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState, type JSX } from 'react'
-import type { ConnectionPhase, IpcError, IpcResult } from '@shared/ipc'
+import type { ConnectionPhase, IpcError, IpcResult, SnapshotResult } from '@shared/ipc'
 import { useAppStore } from '../../state/appStore'
 import type { SetupGap } from '../../state/camerasStore'
 import {
@@ -28,8 +32,10 @@ import {
   cameraListShowsSetupBanner,
   cameraPresentation,
   EMPTY_THUMBNAILS,
+  rtspsSummary,
   runWithConcurrency,
   setupGaps,
+  streamsQueryPlan,
   SETUP_GAP_LABELS,
   sortCameras,
   THUMBNAIL_CONCURRENCY,
@@ -49,6 +55,7 @@ export function CameraList({ onOpenSettings }: CameraListProps): JSX.Element {
   const cameras = useAppStore((s) => s.cameras)
   const connection = useAppStore((s) => s.connection)
   const snapshot = useAppStore((s) => s.snapshot)
+  const cameraStreamQualities = useAppStore((s) => s.cameraStreamQualities)
   const connect = useAppStore((s) => s.connect)
   const refreshCameras = useAppStore((s) => s.refreshCameras)
 
@@ -83,16 +90,30 @@ export function CameraList({ onOpenSettings }: CameraListProps): JSX.Element {
     requestIdRef.current += 1
     const requestId = requestIdRef.current
     dispatch({ type: 'request', requestId, cameraIds: plan })
-    void runWithConcurrency(plan, THUMBNAIL_CONCURRENCY, async (cameraId) => {
-      // `highQuality` stays false: a full-HD snapshot is a 400 on any camera without
-      // `supportsFullHdSnapshot` and sends no smaller image instead (SPEC §5.1), and 1.1 MB is
-      // the wrong size for a grid thumbnail even where it is allowed.
-      const result = await snapshot({ cameraId, highQuality: false })
-      // No unmount guard: the reducer is gone with the component, the dispatch is a no-op, and no
-      // object URL exists yet — those are created by the <img>, which cleans up after itself.
-      dispatch({ type: 'result', requestId, cameraId, result })
-    })
-  }, [plan, snapshot])
+    const runBatch = async (): Promise<void> => {
+      const snapshots = new Map<string, IpcResult<SnapshotResult>>()
+      await runWithConcurrency(plan, THUMBNAIL_CONCURRENCY, async (cameraId) => {
+        // `highQuality` stays false: a full-HD snapshot is a 400 on any camera without
+        // `supportsFullHdSnapshot` and sends no smaller image instead (SPEC §5.1), and 1.1 MB is
+        // the wrong size for a grid thumbnail even where it is allowed.
+        const result = await snapshot({ cameraId, highQuality: false })
+        snapshots.set(cameraId, result)
+        // No unmount guard: the reducer is gone with the component, the dispatch is a no-op, and
+        // no object URL exists yet — those are created by the <img>, which cleans up after itself.
+        // A list-level failure also settles the camera's streams slot as "unknown" (the reducer).
+        dispatch({ type: 'result', requestId, cameraId, result })
+      })
+      // QUAL-7: a second pass after the thumbnails, not beside them (header), at the same cap, so
+      // THUMBNAIL_CONCURRENCY still bounds what this list spends of the R9 budget. A GET only:
+      // looking at the list never creates a stream on the console (QUAL-8).
+      const wanted = streamsQueryPlan(plan, snapshots)
+      await runWithConcurrency(wanted, THUMBNAIL_CONCURRENCY, async (cameraId) => {
+        const qualities = await cameraStreamQualities(cameraId)
+        dispatch({ type: 'streams', requestId, cameraId, result: qualities })
+      })
+    }
+    void runBatch()
+  }, [plan, snapshot, cameraStreamQualities])
 
   const runAction = useCallback(async (action: () => Promise<IpcResult<unknown>>) => {
     setBusy(true)
@@ -179,6 +200,7 @@ export function CameraList({ onOpenSettings }: CameraListProps): JSX.Element {
                 name={name}
                 presentation={presentation}
                 entry={thumbnails.entries[camera.id]}
+                rtsps={rtspsSummary(camera, thumbnails.streams[camera.id])}
                 thumbnail={
                   <CameraThumbnail
                     name={name}

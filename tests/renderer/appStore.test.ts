@@ -129,6 +129,9 @@ function fakeBridge(overrides: Partial<ViewProtectApi> = {}): FakeBridge {
     // P3.1: driven by viewsStore.test.ts.
     setViews: unimplemented('setViews'),
     setLastView: unimplemented('setLastView'),
+    // P3.7 (QUAL-1/7).
+    setStreams: unimplemented('setStreams'),
+    cameraStreamQualities: unimplemented('cameraStreamQualities'),
     onConnection: (listener) => subscribeTo(connectionListeners, listener),
     onCameras: (listener) => subscribeTo(cameraListeners, listener),
     onCameraState: (listener) => subscribeTo(stateListeners, listener),
@@ -375,5 +378,37 @@ describe('mutating actions', () => {
     await useAppStore.getState().refreshCameras()
 
     expect(useAppStore.getState().cameras.map((c) => c.id)).toEqual(['cam-7'])
+  })
+
+  it('folds the saved QUAL-1 defaults in', async () => {
+    const streams = { defaultGridQuality: 'medium', defaultFillQuality: 'low' } as const
+    const setStreams = vi.fn<ViewProtectApi['setStreams']>(() =>
+      Promise.resolve<IpcResult<AppState>>({
+        ok: true,
+        value: appState({ settings: { ...appState().settings, streams } }),
+      }),
+    )
+    fakeBridge({ setStreams })
+
+    const result = await useAppStore.getState().setStreams(streams)
+
+    expect(result.ok).toBe(true)
+    expect(setStreams).toHaveBeenCalledWith(streams)
+    expect(useAppStore.getState().settings?.streams).toEqual(streams)
+  })
+
+  it('asks for one camera’s RTSPS qualities and keeps them out of the store (QUAL-7)', async () => {
+    const available = { high: true, medium: false, low: true, package: false }
+    const cameraStreamQualities = vi.fn<ViewProtectApi['cameraStreamQualities']>(() =>
+      Promise.resolve({ ok: true, value: available }),
+    )
+    fakeBridge({ cameraStreamQualities })
+    const before = useAppStore.getState()
+
+    const result = await useAppStore.getState().cameraStreamQualities('cam-1')
+
+    expect(cameraStreamQualities).toHaveBeenCalledWith({ cameraId: 'cam-1' })
+    expect(result).toEqual({ ok: true, value: available })
+    expect(useAppStore.getState()).toBe(before)
   })
 })

@@ -6,9 +6,21 @@
 // made by the editor; this component only says which one. A cell holds several cameras already
 // (VIEW-2), but until multi-camera cells play (Phase 4) the Live grid shows the first, which the
 // note under the list says.
-import type { JSX } from 'react'
+//
+// Below the cameras, the cell's quality override (P3.7; QUAL-3): "View default (X)" — X being what
+// the View and the app defaults give the cell now — then the qualities. It edits the draft's
+// `quality` (`setCellQuality`), saved with the rest; the overlay's picker on the Live screen
+// (QUAL-4) edits the same field directly.
+import { useId, type JSX } from 'react'
 import type { Camera } from '@shared/ipc'
 import type { Cell } from '@shared/models'
+import type { Quality } from '@shared/quality'
+import {
+  inheritOptionLabel,
+  parseQualityOption,
+  qualityOptionValue,
+} from '../quality/qualityChoice'
+import { QualityOptions } from '../quality/QualityOptions'
 import { cameraRefLabel, type CameraChoice } from './editorModel'
 
 export interface CellInspectorProps {
@@ -22,6 +34,13 @@ export interface CellInspectorProps {
   readonly onAdd: (ref: string) => void
   readonly onRemove: (position: number) => void
   readonly onMove: (position: number, delta: -1 | 1) => void
+  /**
+   * What the cell plays with its override cleared (the draft's `gridQuality`, else the app default),
+   * for the "View default (X)" option; `null` before settings load.
+   */
+  readonly viewDefaultQuality: Quality | null
+  /** A new quality override for the cell; `null` clears it. */
+  readonly onQualityChange: (quality: Quality | null) => void
 }
 
 export function CellInspector({
@@ -32,7 +51,10 @@ export function CellInspector({
   onAdd,
   onRemove,
   onMove,
+  viewDefaultQuality,
+  onQualityChange,
 }: CellInspectorProps): JSX.Element {
+  const qualityId = useId()
   if (cell === null) {
     return (
       <section className="viewEditor__panel" aria-label="Cell">
@@ -126,6 +148,19 @@ export function CellInspector({
       <p className="viewEditor__hint">
         Until multi-camera cells (Phase 4), a cell shows its first camera.
       </p>
+      <label className="field__label" htmlFor={qualityId}>
+        Quality
+      </label>
+      <select
+        id={qualityId}
+        className="field__input"
+        value={qualityOptionValue(cell.quality)}
+        onChange={(event) => {
+          onQualityChange(parseQualityOption(event.target.value))
+        }}
+      >
+        <QualityOptions inheritLabel={inheritOptionLabel('View default', viewDefaultQuality)} />
+      </select>
     </section>
   )
 }

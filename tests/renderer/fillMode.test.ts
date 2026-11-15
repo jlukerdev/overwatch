@@ -11,12 +11,20 @@
 //  - `Esc` leaves, with the View shortcuts' manners (no repeat, no modifiers, not while typing, not
 //    if already handled).
 //  - fill fits with `contain`.
+//  - (P3.7, QUAL-5) the fill picker's session pick applies only to the slot filled now in the View
+//    on screen, so every way out of fill and filling another slot drop it; it overrides the chain
+//    but never the package channel; "Save for this View" is offered only when it changes the View.
+import { PACKAGE_CHANNEL, QUALITIES } from '@shared/quality'
 import { describe, expect, it } from 'vitest'
 import {
+  activeFillPick,
+  canSaveFillQuality,
+  effectiveFillQuality,
   FILL_FIT,
   fillClickStep,
   filledSlotKey,
   isFillExitKey,
+  pickAfterFillSave,
   type FillClickEvent,
   type FillClickResult,
   type FillExitKey,
@@ -36,6 +44,7 @@ const SLOTS: GridSlot[] = [
     quality: 'low',
     fillQuality: 'high',
     fit: 'cover',
+    qualityChoice: { override: null, inherited: 'low' },
   },
   {
     kind: 'missing',
@@ -239,5 +248,51 @@ describe('isFillExitKey (FILL-1)', () => {
 describe('FILL_FIT', () => {
   it('shows the whole camera in fill', () => {
     expect(FILL_FIT).toBe('contain')
+  })
+})
+
+describe('fill quality session pick (QUAL-5)', () => {
+  const [high, medium, low] = QUALITIES
+  const pick = { viewId: 'v', slotKey: 'cam:a#0', quality: medium }
+
+  it('applies while its slot is the filled one in the View on screen', () => {
+    expect(activeFillPick(pick, 'v', 'cam:a#0')).toBe(medium)
+  })
+
+  it('does not apply out of fill, in another View, or to another filled slot', () => {
+    expect(activeFillPick(pick, 'v', null)).toBeNull()
+    expect(activeFillPick(pick, 'w', 'cam:a#0')).toBeNull()
+    expect(activeFillPick(pick, 'v', 'cam:b#0')).toBeNull()
+    expect(activeFillPick(null, 'v', 'cam:a#0')).toBeNull()
+  })
+
+  it('overrides the fill chain, but never the package channel', () => {
+    expect(effectiveFillQuality(high, low)).toBe(low)
+    expect(effectiveFillQuality(high, null)).toBe(high)
+    expect(effectiveFillQuality(PACKAGE_CHANNEL, low)).toBe(PACKAGE_CHANNEL)
+  })
+
+  it('offers "Save for this View" only when the shown quality is not already the View’s', () => {
+    expect(canSaveFillQuality(medium, high)).toBe(true)
+    expect(canSaveFillQuality(high, high)).toBe(false)
+    // Inheriting: saving pins the View to what is on screen.
+    expect(canSaveFillQuality(high, null)).toBe(true)
+    expect(canSaveFillQuality(PACKAGE_CHANNEL, null)).toBe(false)
+  })
+
+  it('drops the pick a "Save for this View" saved once it lands', () => {
+    expect(pickAfterFillSave({ ...pick }, pick)).toBeNull()
+    expect(pickAfterFillSave(null, pick)).toBeNull()
+  })
+
+  it('keeps a pick made while the save was in flight', () => {
+    // Another quality picked on the same slot, another slot filled and picked, another View.
+    for (const newer of [
+      { ...pick, quality: low },
+      { ...pick, slotKey: 'cam:b#0' },
+      { ...pick, viewId: 'w' },
+    ]) {
+      expect(pickAfterFillSave(newer, pick)).toBe(newer)
+    }
   })
 })

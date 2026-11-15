@@ -4,15 +4,19 @@
 // What these tests protect: the strip shows on hover and hides `ui.overlayAutoHideSec` after the
 // last movement, every move pushes that out, a timeout that fires early changes nothing, leaving
 // hides at once unless keyboard focus is inside, focus holds the strip open, the cursor hides only
-// while hovered and idle, and an unusable
+// while hovered and idle, (P3.7) any focus on a select holds the strip like keyboard focus, and an
+// unusable
 // `ui.overlayAutoHideSec` falls back to CELL-4's 3 s (sanitised once, in `overlayAutoHideMs`).
 import { describe, expect, it } from 'vitest'
 import {
+  blursOnKey,
   DEFAULT_OVERLAY_AUTO_HIDE_MS,
+  focusHoldsControls,
   INITIAL_OVERLAY_VISIBILITY,
   overlayAutoHideMs,
   overlayView,
   reduceOverlayVisibility,
+  releasesOnPointerLeave,
   isControlsShown,
   isCursorHidden,
   type OverlayView,
@@ -219,5 +223,52 @@ describe('overlayVisibility: the auto-hide delay', () => {
     for (const bad of [undefined, null, 0, -2, Number.NaN, Number.POSITIVE_INFINITY, '3', {}]) {
       expect(overlayAutoHideMs(bad), JSON.stringify(bad)).toBe(DEFAULT_OVERLAY_AUTO_HIDE_MS)
     }
+  })
+})
+
+describe('overlayVisibility: which focus holds the strip (P3.7)', () => {
+  it('holds for keyboard focus on any control', () => {
+    expect(focusHoldsControls({ tagName: 'BUTTON', focusVisible: true })).toBe(true)
+    expect(focusHoldsControls({ tagName: 'SELECT', focusVisible: true })).toBe(true)
+  })
+
+  it('holds for mouse focus on a select, whose open dropdown takes the pointer', () => {
+    expect(focusHoldsControls({ tagName: 'SELECT', focusVisible: false })).toBe(true)
+  })
+
+  it('does not hold for mouse focus on a button', () => {
+    expect(focusHoldsControls({ tagName: 'BUTTON', focusVisible: false })).toBe(false)
+  })
+})
+
+describe('overlayVisibility: a mouse-focused select lets go (P3.7)', () => {
+  const mouseSelect = { tagName: 'SELECT', focusVisible: false }
+  const keyboardSelect = { tagName: 'SELECT', focusVisible: true }
+  const mouseButton = { tagName: 'BUTTON', focusVisible: false }
+  const realLeave = { toElement: true, insideCell: false }
+
+  it('releases a mouse-focused select when the pointer leaves the cell', () => {
+    expect(releasesOnPointerLeave(mouseSelect, realLeave)).toBe(true)
+    // Out of the window: nothing to go to, but the point is outside the cell.
+    expect(releasesOnPointerLeave(mouseSelect, { toElement: false, insideCell: false })).toBe(true)
+    // Onto something drawn over the cell.
+    expect(releasesOnPointerLeave(mouseSelect, { toElement: true, insideCell: true })).toBe(true)
+  })
+
+  it('does not release on the leave the dropdown popup itself may cause', () => {
+    expect(releasesOnPointerLeave(mouseSelect, { toElement: false, insideCell: true })).toBe(false)
+  })
+
+  it('leaves keyboard focus, other controls and no focus alone', () => {
+    expect(releasesOnPointerLeave(keyboardSelect, realLeave)).toBe(false)
+    expect(releasesOnPointerLeave(mouseButton, realLeave)).toBe(false)
+    expect(releasesOnPointerLeave(null, realLeave)).toBe(false)
+  })
+
+  it('blurs a mouse-focused select on Escape only', () => {
+    expect(blursOnKey('Escape', mouseSelect)).toBe(true)
+    expect(blursOnKey('ArrowDown', mouseSelect)).toBe(false)
+    expect(blursOnKey('Escape', keyboardSelect)).toBe(false)
+    expect(blursOnKey('Escape', mouseButton)).toBe(false)
   })
 })

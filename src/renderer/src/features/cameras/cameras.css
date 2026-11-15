@@ -143,3 +143,23 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+/* QUAL-7: which RTSPS qualities exist on the console. A detail, so muted; an absent quality is
+   dimmed and struck through rather than hidden, so the row says what is missing too. */
+.cameraCard__rtsps {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.75rem;
+}
+
+.cameraCard__rtspsQuality {
+  color: var(--fg);
+  font-weight: 600;
+}
+
+.cameraCard__rtspsQuality--absent {
+  color: var(--muted);
+  font-weight: 400;
+  opacity: 0.6;
+  text-decoration: line-through;
+}

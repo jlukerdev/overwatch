@@ -18,7 +18,21 @@
 //    deadline: it holds the strip for as long as it is inside, then leaving focus hides the strip
 //    unless the pointer is still moving over it (its deadline is still pending). Only keyboard focus
 //    counts (the component's call, `:focus-visible`): a mouse click on a button also focuses it, and
-//    that must not pin the strip open after the pointer leaves.
+//    that must not pin the strip open after the pointer leaves. **A select is the exception**
+//    ({@link focusHoldsControls}, P3.7): a click on the quality picker (QUAL-4/5) opens its native
+//    dropdown, the pointer events go to that dropdown rather than the cell, and a strip that hid
+//    meanwhile would take the select — and the badge saying what was picked — away mid-choice. So
+//    any focus on a select holds; the picker gives focus back after a pointer pick (QualityPicker).
+//  - **A mouse-focused select lets go when it is done with.** A dropdown opened with the mouse and
+//    closed with no pick (the same option, `Esc`, a click away) leaves the select focused, and that
+//    focus would hold the strip for ever and keep fill's `Esc` from working (a select is a
+//    text-entry target, fillMode.ts). So a select focused by the pointer, not the keyboard, is
+//    released — and blurred by the component — when the pointer leaves the cell
+//    ({@link releasesOnPointerLeave}), and blurred by an `Esc` that reaches it, which only happens
+//    while its dropdown is closed: an open one takes the key itself ({@link blursOnKey}). The next
+//    `Esc` then leaves fill. A leave with nowhere to go and a point still inside the cell is not the
+//    pointer leaving — it is what the browser may send when the dropdown's own popup takes the
+//    pointer — and releases nothing. Keyboard focus is untouched by both rules.
 //  - **The cursor hides with the controls while hovered.** An idle cursor parked over a wall of
 //    cameras is in the way of the picture; it comes back with the first movement (CELL-4's spirit).
 //    It is never hidden while not hovered — there is no cursor over the cell to hide — nor while the
@@ -85,6 +99,58 @@ export function overlayAutoHideMs(seconds: unknown): number {
   return typeof seconds === 'number' && Number.isFinite(seconds) && seconds > 0
     ? seconds * 1000
     : DEFAULT_OVERLAY_AUTO_HIDE_MS
+}
+
+/** The parts of the focused element {@link focusHoldsControls} reads. */
+export interface FocusedControl {
+  /** `Element.tagName`, upper case for HTML elements. */
+  readonly tagName: string
+  /** It matches `:focus-visible`, i.e. the focus came from the keyboard. */
+  readonly focusVisible: boolean
+}
+
+/**
+ * Whether focus on this control is a `focusIn` (holds the strip) rather than a `focusOut`: keyboard
+ * focus anywhere, and any focus on a select, whose open dropdown takes the pointer (header).
+ */
+export function focusHoldsControls(control: FocusedControl): boolean {
+  return control.focusVisible || control.tagName === 'SELECT'
+}
+
+/** A select focused by the pointer rather than the keyboard (header, "lets go"). */
+function isPointerFocusedSelect(control: FocusedControl): boolean {
+  return control.tagName === 'SELECT' && !control.focusVisible
+}
+
+/** The parts of the cell's `pointerleave` {@link releasesOnPointerLeave} reads. */
+export interface CellPointerLeave {
+  /** `relatedTarget` is an element: the pointer moved onto something else on the page. */
+  readonly toElement: boolean
+  /** The event's point is still inside the cell's box. */
+  readonly insideCell: boolean
+}
+
+/**
+ * Whether the pointer leaving the cell ends the hold of the focused control — `null` when focus is
+ * not inside the overlay — and the component blurs it: a pointer-focused select, on a real leave
+ * (header). Keyboard focus, and focus on anything else, is left as it is.
+ */
+export function releasesOnPointerLeave(
+  focused: FocusedControl | null,
+  leave: CellPointerLeave,
+): boolean {
+  if (focused === null || !isPointerFocusedSelect(focused)) return false
+  return leave.toElement || !leave.insideCell
+}
+
+/**
+ * Whether a keydown on the focused control gives its focus back: `Escape` on a pointer-focused
+ * select, whose dropdown is closed since the key reached it (header). `focusVisible` here is the
+ * picker's own record of its last input, not `:focus-visible`, which the browser turns on for the
+ * very key being handled.
+ */
+export function blursOnKey(key: string, focused: FocusedControl): boolean {
+  return key === 'Escape' && isPointerFocusedSelect(focused)
 }
 
 /**

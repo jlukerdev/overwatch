@@ -12,7 +12,17 @@
 //    user action, and never shows the one taken before the outage.
 //  - the bounded concurrency that keeps a 15-camera refresh from spending the whole 10 req/s
 //    budget (SPEC R9).
-import type { Camera, EndpointStatus, IpcError, IpcResult, SnapshotResult } from '@shared/ipc'
+//  - QUAL-7's RTSPS qualities riding the thumbnail lifecycle (P3.7): same batch, same stale rules,
+//    dropped and refetched with the thumbnail, a failure that stays quiet, and no GET at all for a
+//    camera whose snapshot failed at list level.
+import type {
+  Camera,
+  EndpointStatus,
+  IpcError,
+  IpcResult,
+  RtspsAvailability,
+  SnapshotResult,
+} from '@shared/ipc'
 import { describe, expect, it } from 'vitest'
 import {
   cameraDisplayName,
@@ -20,12 +30,15 @@ import {
   cameraListShowsSetupBanner,
   cameraPresentation,
   EMPTY_THUMBNAILS,
+  rtspsSummary,
   runWithConcurrency,
   setupGaps,
   sortCameras,
+  streamsQueryPlan,
   THUMBNAIL_CONCURRENCY,
   thumbnailPlan,
   thumbnailsReducer,
+  wantsStreamsQuery,
   type ThumbnailEntry,
   type ThumbnailsState,
 } from '../../src/renderer/src/state/camerasStore'
@@ -430,6 +443,159 @@ describe('thumbnailsReducer', () => {
       result: { ok: false, error: ERROR },
     })
     expect(thumbnailsReducer(failed, { type: 'refresh' })).toEqual(EMPTY_THUMBNAILS)
+  })
+})
+
+describe('RTSPS qualities in the thumbnail cache (QUAL-7)', () => {
+  const AVAILABLE: RtspsAvailability = { high: true, medium: false, low: true, package: false }
+
+  function streamsReply(
+    state: ThumbnailsState,
+    cameraId: string,
+    result: IpcResult<RtspsAvailability>,
+    requestId = REQ,
+  ): ThumbnailsState {
+    return thumbnailsReducer(state, { type: 'streams', requestId, cameraId, result })
+  }
+
+  it('is asked for in the same batch as the thumbnail', () => {
+    expect(loadingState('a').streams.a).toEqual({ status: 'loading', requestId: REQ })
+  })
+
+  it('stores the booleans for a camera it was waiting on', () => {
+    const next = streamsReply(loadingState('a'), 'a', { ok: true, value: AVAILABLE })
+    expect(next.streams.a).toEqual({ status: 'known', available: AVAILABLE })
+    // The thumbnail slot is its own: still waiting for the snapshot.
+    expect(next.entries.a).toEqual({ status: 'loading', requestId: REQ })
+  })
+
+  it('turns a failure into "unknown" and keeps it out of the list-level problem', () => {
+    const next = streamsReply(loadingState('a'), 'a', { ok: false, error: ERROR })
+    expect(next.streams.a).toEqual({ status: 'unknown' })
+    expect(next.error).toBeNull()
+  })
+
+  it('drops a reply from a superseded batch or for a camera it is not waiting on', () => {
+    const second = thumbnailsReducer(thumbnailsReducer(loadingState('a'), { type: 'refresh' }), {
+      type: 'request',
+      requestId: REQ + 1,
+      cameraIds: ['a'],
+    })
+    expect(streamsReply(second, 'a', { ok: true, value: AVAILABLE }, REQ)).toBe(second)
+    expect(streamsReply(second, 'b', { ok: true, value: AVAILABLE }, REQ + 1)).toBe(second)
+    const answered = streamsReply(second, 'a', { ok: true, value: AVAILABLE }, REQ + 1)
+    expect(streamsReply(answered, 'a', { ok: false, error: ERROR }, REQ + 1)).toBe(answered)
+  })
+
+  it('is dropped with the thumbnail when the camera goes offline, and cleared by Refresh', () => {
+    const known = streamsReply(loadingState('a'), 'a', { ok: true, value: AVAILABLE })
+    const offline = camera({ id: 'a', state: 'DISCONNECTED' })
+    expect(thumbnailsReducer(known, { type: 'sync', cameras: [offline] }).streams).toEqual({})
+    expect(thumbnailsReducer(known, { type: 'refresh' })).toEqual(EMPTY_THUMBNAILS)
+  })
+
+  it('is asked for only after a snapshot that did not fail at list level', () => {
+    expect(wantsStreamsQuery(okSnapshot(1))).toBe(true)
+    // CAM-3's "no image" is about the camera; the console answered, so the GET is worth it.
+    expect(wantsStreamsQuery(UNAVAILABLE)).toBe(true)
+    expect(wantsStreamsQuery({ ok: false, error: ERROR })).toBe(false)
+  })
+
+  it('plans the second pass in batch order, skipping failed and unanswered snapshots', () => {
+    const snapshots = new Map<string, IpcResult<SnapshotResult>>([
+      ['c', okSnapshot(3)],
+      ['a', okSnapshot(1)],
+      ['b', { ok: false, error: ERROR }],
+      ['d', UNAVAILABLE],
+    ])
+    expect(streamsQueryPlan(['a', 'b', 'c', 'd', 'e'], snapshots)).toEqual(['a', 'c', 'd'])
+    expect(streamsQueryPlan([], snapshots)).toEqual([])
+  })
+
+  it('settles the streams slot as "unknown" when the snapshot failed at list level', () => {
+    const failed = thumbnailsReducer(loadingState('a', 'b'), {
+      type: 'result',
+      requestId: REQ,
+      cameraId: 'a',
+      result: { ok: false, error: ERROR },
+    })
+    expect(failed.streams.a).toEqual({ status: 'unknown' })
+    // The other camera's slot, and a camera whose snapshot loaded, keep waiting for the GET.
+    expect(failed.streams.b).toEqual({ status: 'loading', requestId: REQ })
+    const loaded = thumbnailsReducer(failed, {
+      type: 'result',
+      requestId: REQ,
+      cameraId: 'b',
+      result: okSnapshot(2),
+    })
+    expect(loaded.streams.b).toEqual({ status: 'loading', requestId: REQ })
+  })
+
+  it('leaves a newer batch’s streams slot alone on a stale failed snapshot', () => {
+    const second = thumbnailsReducer(thumbnailsReducer(loadingState('a'), { type: 'refresh' }), {
+      type: 'request',
+      requestId: REQ + 1,
+      cameraIds: ['a'],
+    })
+    const stale = thumbnailsReducer(second, {
+      type: 'result',
+      requestId: REQ,
+      cameraId: 'a',
+      result: { ok: false, error: ERROR },
+    })
+    expect(stale).toBe(second)
+  })
+
+  it('is left identical by a sync that changes nothing', () => {
+    const known = streamsReply(loadingState('a'), 'a', { ok: true, value: AVAILABLE })
+    expect(thumbnailsReducer(known, { type: 'sync', cameras: [camera({ id: 'a' })] })).toBe(known)
+  })
+})
+
+describe('rtspsSummary (QUAL-7)', () => {
+  const plain = camera({ id: 'a' })
+  const doorbell = camera({ id: 'd', hasPackageCamera: true })
+  const none: RtspsAvailability = { high: false, medium: false, low: false, package: false }
+
+  it('shows nothing for a camera that was never asked about (offline)', () => {
+    expect(rtspsSummary(plain, undefined)).toBeNull()
+  })
+
+  it('says loading, then unknown on a failure', () => {
+    expect(rtspsSummary(plain, { status: 'loading', requestId: REQ })).toEqual({ kind: 'loading' })
+    expect(rtspsSummary(plain, { status: 'unknown' })).toEqual({ kind: 'unknown' })
+  })
+
+  it('lists every quality best first with its badge label, absent ones marked', () => {
+    const summary = rtspsSummary(plain, {
+      status: 'known',
+      available: { ...none, high: true, low: true },
+    })
+    expect(summary).toEqual({
+      kind: 'known',
+      badges: [
+        { quality: 'high', label: 'HIGH', present: true },
+        { quality: 'medium', label: 'MED', present: false },
+        { quality: 'low', label: 'LOW', present: true },
+      ],
+    })
+  })
+
+  it('lists the package channel only for a camera that has one, or when the console reports it', () => {
+    const lowOnly = { status: 'known', available: { ...none, low: true } } as const
+    const quals = (cam: Camera, entry: Parameters<typeof rtspsSummary>[1]) => {
+      const summary = rtspsSummary(cam, entry)
+      return summary?.kind === 'known' ? summary.badges.map((b) => b.quality) : []
+    }
+    expect(quals(plain, lowOnly)).toEqual(['high', 'medium', 'low'])
+    expect(quals(doorbell, lowOnly)).toEqual(['high', 'medium', 'low', 'package'])
+    expect(
+      quals(plain, { status: 'known', available: { ...none, low: true, package: true } }),
+    ).toContain('package')
+  })
+
+  it('says "none yet" when no quality exists', () => {
+    expect(rtspsSummary(doorbell, { status: 'known', available: none })).toEqual({ kind: 'none' })
   })
 })
 

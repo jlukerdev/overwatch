@@ -19,17 +19,23 @@
 // `fillClickStep` ignores. The control's tooltip names the modifiers that work on this platform: on
 // macOS Ctrl+click is a context click, so it offers ⌘/⌥/⇧ there.
 //
+// **Quality (P3.7; QUAL-4/5).** The slot also gets a quality picker (./QualityPicker): the cell's own
+// in the grid, the fill picker while filled, and none for a package-channel cell (`inheritedQuality`
+// is `null`). This file only reports picks upward with the slot's key — saving a cell override,
+// keeping fill's session pick and saving it for the View are `<GridView>`'s.
+//
 // The cell owns no size: `<GridView>` positions a box for it from the View's layout (VIEW-5/7) and
 // the cell fills that box. The player then fits the camera inside it by the View's `fit` (contain or
 // cover, player.css), which is how a camera whose shape differs from the View's `aspect` — or a
 // spanned cell a few px off it because of the gap (VIEW-7) — is never distorted.
 import { memo, useMemo, type JSX, type MouseEvent } from 'react'
 import type { Fit } from '@shared/models'
-import type { StreamQuality } from '@shared/quality'
+import type { Quality, StreamQuality } from '@shared/quality'
 import { LivePlayer } from '../../player/LivePlayer'
 import type { FillClickEvent } from '../fill/fillMode'
 import { useZoomPan, ZoomPanLayer } from '../zoom/ZoomPan'
 import { CellOverlay } from './CellOverlay'
+import { CellQualityPicker, FillQualityPicker } from './QualityPicker'
 
 export interface CellProps {
   /** The grid slot this cell is in (`GridSlot.key`), handed back with each click. */
@@ -51,6 +57,21 @@ export interface CellProps {
   readonly onClickEvent: (slotKey: string, filled: boolean, event: FillClickEvent) => void
   /** FILL-1's back control. Stable, like `onClickEvent`. */
   readonly onBack: () => void
+  /** QUAL-4: the cell's own quality override; `null` inherits. */
+  readonly cellQuality: Quality | null
+  /**
+   * What the cell plays in the grid with its override cleared (the picker's "View default (X)").
+   * `null` means no picker at all: a package-channel cell (CAM-4).
+   */
+  readonly inheritedQuality: Quality | null
+  /** QUAL-5: while filled, "Save for this View" would change something (`canSaveFillQuality`). */
+  readonly canSaveFillQuality: boolean
+  /** QUAL-4: a new override for this cell (`null` clears it). Stable, like `onClickEvent`. */
+  readonly onQualityChange: (slotKey: string, quality: Quality | null) => void
+  /** QUAL-5: a quality picked while filled, for this fill only. Stable. */
+  readonly onFillQualityPick: (slotKey: string, quality: Quality) => void
+  /** QUAL-5: "Save for this View" with the quality shown. Stable. */
+  readonly onSaveFillQuality: (slotKey: string, quality: StreamQuality) => void
 }
 
 /**
@@ -97,6 +118,12 @@ export const Cell = memo(function Cell({
   filled,
   onClickEvent,
   onBack,
+  cellQuality,
+  inheritedQuality,
+  canSaveFillQuality,
+  onQualityChange,
+  onFillQualityPick,
+  onSaveFillQuality,
 }: CellProps): JSX.Element {
   const zoom = useZoomPan(filled)
   // The same element object across renders that change nothing of the player's own, so a flip of
@@ -123,6 +150,18 @@ export const Cell = memo(function Cell({
       <CellOverlay name={name} quality={quality} autoHideMs={overlayAutoHideMs}>
         {filled ? (
           <>
+            {inheritedQuality !== null ? (
+              <FillQualityPicker
+                shown={quality}
+                canSave={canSaveFillQuality}
+                onPick={(picked) => {
+                  onFillQualityPick(slotKey, picked)
+                }}
+                onSave={() => {
+                  onSaveFillQuality(slotKey, quality)
+                }}
+              />
+            ) : null}
             {zoom.zoomed ? (
               <button
                 type="button"
@@ -144,6 +183,14 @@ export const Cell = memo(function Cell({
               ← Grid
             </button>
           </>
+        ) : inheritedQuality !== null ? (
+          <CellQualityPicker
+            override={cellQuality}
+            inherited={inheritedQuality}
+            onChange={(picked) => {
+              onQualityChange(slotKey, picked)
+            }}
+          />
         ) : undefined}
       </CellOverlay>
     </div>

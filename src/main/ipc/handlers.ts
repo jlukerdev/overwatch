@@ -122,6 +122,12 @@ export interface IpcRouterDeps {
    * Refused before anything is written. Absent in normal runs.
    */
   readonly viewWritesBlocked?: () => string | null
+  /**
+   * The same for the QUAL-1 defaults (`setStreams`). During a perf run the renderer is shown the
+   * run's grid quality as `defaultGridQuality` (`settingsView`), so a Settings save would send that
+   * value back and persist the harness's quality as the user's own. Absent in normal runs.
+   */
+  readonly streamsWritesBlocked?: () => string | null
 }
 
 /** Everything a handler body may assume exists, having passed rule 2. */
@@ -415,20 +421,27 @@ export function createIpcRouter(deps: IpcRouterDeps): ReadonlyMap<string, IpcHan
 
   on(IPC.snapshot, async (input, ready) => ipcOk(await ready.manager.snapshot(input)))
 
-  /** The `viewWritesBlocked` refusal, or `null` when View writes may go ahead. */
-  const viewWriteRefusal = (): IpcResult<never> | null => {
-    const reason = deps.viewWritesBlocked?.() ?? null
+  // QUAL-7: booleans only. The manager reduces the GET's URLs to "is there one" before anything
+  // comes back here, so no RTSPS URL is ever in this file's hands (CON-2, NFR-9).
+  on(IPC.cameraStreamQualities, async (input, ready) =>
+    ipcOk(await ready.manager.streamQualities(input.cameraId)),
+  )
+
+  /** A write-block hook's refusal, or `null` when the write may go ahead. */
+  const writeRefusal = (blocked: (() => string | null) | undefined): IpcResult<never> | null => {
+    const reason = blocked?.() ?? null
     // 'bad-request': the request is well formed but not one main will act on in this state, and
     // retrying it unchanged will not help while the block lasts.
     return reason === null ? null : ipcFail('bad-request', reason)
   }
+  const viewWriteRefusal = (): IpcResult<never> | null => writeRefusal(deps.viewWritesBlocked)
 
   on(IPC.setViews, async (input, ready) => {
     const refused = viewWriteRefusal()
     if (refused) return refused
     // `input` has already passed `ViewSchema` for every View (tiling included), unique ids and a
     // `lastViewId` that names one of them (SetViewsInputSchema).
-    await saveViews(ready, { views: input.views, lastViewId: input.lastViewId })
+    await saveFields(ready, { views: input.views, lastViewId: input.lastViewId })
     return state(ready)
   })
 
@@ -442,7 +455,16 @@ export function createIpcRouter(deps: IpcRouterDeps): ReadonlyMap<string, IpcHan
       // load (VIEW-6), but there is no reason to *write* one.
       return ipcFail('not-found', 'That View no longer exists.')
     }
-    await saveViews(ready, { lastViewId: viewId })
+    await saveFields(ready, { lastViewId: viewId })
+    return state(ready)
+  })
+
+  on(IPC.setStreams, async (input, ready) => {
+    const refused = writeRefusal(deps.streamsWritesBlocked)
+    if (refused) return refused
+    // QUAL-1. Both fields are required `Quality` values (SetStreamsInputSchema), so this cannot
+    // store the package channel or default a field the renderer forgot to send.
+    await saveFields(ready, { streams: input })
     return state(ready)
   })
 
@@ -476,8 +498,8 @@ export function createIpcRouter(deps: IpcRouterDeps): ReadonlyMap<string, IpcHan
 }
 
 /**
- * VIEW-6: persists View fields (the list and the active View, or just the active View), then makes
- * them the live config.
+ * VIEW-6, QUAL-1: persists top-level settings fields (the View list, the active View, the stream
+ * quality defaults), then makes them the live config.
  *
  * Both halves touch only the fields in `patch`. On disk, `config.update` applies them to the latest
  * stored config inside the store's write queue, so a console or pin write queued ahead of this one
@@ -487,16 +509,16 @@ export function createIpcRouter(deps: IpcRouterDeps): ReadonlyMap<string, IpcHan
  * into `current` before its own write is queued, so `current` can be ahead of anything this write
  * returned.
  */
-async function saveViews(
-  ready: Ready,
-  patch: Partial<Pick<Config, 'views' | 'lastViewId'>>,
-): Promise<void> {
+type SavedField = 'views' | 'lastViewId' | 'streams'
+
+async function saveFields(ready: Ready, patch: Partial<Pick<Config, SavedField>>): Promise<void> {
   const { services } = ready
   const saved = await services.config.update((latest) => ({ ...latest, ...patch }))
   services.current = {
     ...services.current,
     ...('views' in patch ? { views: saved.views } : {}),
     ...('lastViewId' in patch ? { lastViewId: saved.lastViewId } : {}),
+    ...('streams' in patch ? { streams: saved.streams } : {}),
   }
 }
 

@@ -49,7 +49,23 @@
 //    a filled cell already never rotates. TODO(Phase 4, CELL-2): when `cellScheduler` drives the
 //    shown camera, a filled cell must hold its current camera — feed the scheduler a "pinned" input
 //    while `filledSlotKey` names the cell, and release it on leaving fill.
+//  - **The fill picker's pick lasts as long as that fill** (P3.7; QUAL-5: "applies until you leave
+//    fill mode"). It is a *session pick*, `{ viewId, slotKey, quality }`, held by `<GridView>` and
+//    never persisted, applied above QUAL-5's chain (src/shared/quality.ts): the filled cell plays
+//    `pick ?? slot.fillQuality`. Like the fill state, it is only ever *derived* into effect
+//    ({@link activeFillPick}): it counts only while it names the slot that is filled right now, so
+//    every way out of fill — Esc, back, a plain double-click, a View switch, the slot vanishing —
+//    and filling another slot all drop it without anyone remembering to. `<GridView>` also clears a
+//    pick that no longer counts, so filling the same cell again later starts from the persisted
+//    quality. A package-channel cell (CAM-4) has no picker and ignores any pick: the package channel
+//    is a source, not a quality.
+//  - **"Save for this View" writes only `view.fillQuality`** (the user's call, 2026-11-15): the
+//    app-wide default is Settings' (QUAL-1). It is offered only when it would change something
+//    ({@link canSaveFillQuality}): the quality on screen is not already the View's own.
+//    Once it lands the pick it saved is dropped, the View now giving the same quality — but only
+//    that pick ({@link pickAfterFillSave}): one made while the save was in flight is kept.
 import type { Fit } from '@shared/models'
+import { PACKAGE_CHANNEL, type Quality, type StreamQuality } from '@shared/quality'
 import type { GridSlot } from '../grid/gridLayout'
 import { isTextEntryTarget, type ViewShortcutTarget } from '../viewSwitcher/viewShortcut'
 
@@ -74,6 +90,69 @@ export function filledSlotKey(
   if (state?.viewId !== viewId) return null
   const slot = slots.find((candidate) => candidate.key === state.slotKey)
   return slot?.kind === 'camera' ? slot.key : null
+}
+
+// -------------------------------------------------------------------------------------------------
+// The fill picker's session pick (QUAL-5)
+
+/** A quality picked in fill for one slot of one View; `null` is no pick (header). */
+export type FillQualityPick = {
+  readonly viewId: string
+  readonly slotKey: string
+  readonly quality: Quality
+} | null
+
+/**
+ * The pick that applies now: `pick`'s quality while it names the slot that is filled (`filledKey`,
+ * from {@link filledSlotKey}) in the View on screen, `null` otherwise — out of fill, another View,
+ * another slot filled (header).
+ */
+export function activeFillPick(
+  pick: FillQualityPick,
+  viewId: string,
+  filledKey: string | null,
+): Quality | null {
+  if (pick === null || filledKey === null) return null
+  return pick.viewId === viewId && pick.slotKey === filledKey ? pick.quality : null
+}
+
+/**
+ * What the filled cell plays: the pick over QUAL-5's chain (`slotFillQuality`), except on the
+ * package channel, which no pick changes (header).
+ */
+export function effectiveFillQuality(
+  slotFillQuality: StreamQuality,
+  pick: Quality | null,
+): StreamQuality {
+  return slotFillQuality === PACKAGE_CHANNEL ? slotFillQuality : (pick ?? slotFillQuality)
+}
+
+/**
+ * The session pick once "Save for this View" has landed: dropped if it is still exactly the pick
+ * that was saved (`saved`: the View, the slot and the quality that went out), because the View now
+ * plays it by itself; kept otherwise. A pick made while the save was in flight — another quality,
+ * or another slot after leaving and filling again — is the user's newer choice and survives it
+ * (header). The same object comes back when nothing is dropped, for React's bail-out.
+ */
+export function pickAfterFillSave(
+  current: FillQualityPick,
+  saved: NonNullable<FillQualityPick>,
+): FillQualityPick {
+  if (current === null) return current
+  const same =
+    current.viewId === saved.viewId &&
+    current.slotKey === saved.slotKey &&
+    current.quality === saved.quality
+  return same ? null : current
+}
+
+/**
+ * Whether "Save for this View" would change anything: the quality shown is a quality (not the
+ * package channel) and not already the View's own `fillQuality`. A View that inherits (`null`) can
+ * always save, which pins it to what is on screen whatever the app default does later.
+ */
+export function canSaveFillQuality(shown: StreamQuality, viewFillQuality: Quality | null): boolean {
+  return shown !== PACKAGE_CHANNEL && shown !== viewFillQuality
 }
 
 // -------------------------------------------------------------------------------------------------

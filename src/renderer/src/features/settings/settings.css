@@ -131,3 +131,9 @@
 .settings__keystore .card__title {
   color: var(--error);
 }
+
+/* QUAL-1's two selects: as wide as their longest option, not the whole card. */
+.settings__select {
+  align-self: flex-start;
+  min-width: 10rem;
+}

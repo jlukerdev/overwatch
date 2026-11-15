@@ -14,7 +14,11 @@
 //    user accepted for one console must never be applied to a different machine.
 import { CameraSchema, ConsoleConfigSchema, type Camera } from '@shared/models'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { createConnectionManager, type ConnectionServices } from '../../src/main/connection'
+import {
+  createConnectionManager,
+  rtspsAvailability,
+  type ConnectionServices,
+} from '../../src/main/connection'
 import { ConfigSchema, CONFIG_SCHEMA_VERSION, type Config } from '../../src/main/config/schema'
 import { accessEndpoint, protectEndpoint } from '../../src/main/console/endpoints'
 import { createRateLimiter } from '../../src/main/net/rateLimiter'
@@ -26,6 +30,9 @@ import type {
 } from '../../src/main/protect/subscriptions'
 import { PinRequiredError, hostPortKey } from '../../src/main/tls/pinning'
 import { IPC_EVENTS } from '@shared/ipc'
+
+/** A sanitized, made-up RTSPS URL (no real host or alias). Secret-shaped: it must never get out. */
+const RTSPS_URL = 'rtsps://192.0.2.10:7441/AAAAAAAAAAAAAAAA?enableSrtp'
 
 const FP =
   '7B:12:B7:0C:1A:2B:3C:4D:5E:6F:70:81:92:A3:B4:C5:D6:E7:F8:09:1A:2B:3C:4D:5E:6F:70:81:92:A3:B4:C5'
@@ -126,6 +133,14 @@ function setup(options: SetupOptions = {}) {
     cameras: vi.fn(() => Promise.resolve([...inventory])),
     snapshot: vi.fn(() =>
       Promise.resolve({ bytes: new Uint8Array([1, 2, 3]), contentType: 'image/jpeg' }),
+    ),
+    // Shaped like the real answer, URLs and all, so the QUAL-7 tests can check none get out.
+    rtspsStreams: vi.fn(() =>
+      Promise.resolve({
+        high: RTSPS_URL,
+        medium: null,
+        low: `${RTSPS_URL}-low`,
+      }),
     ),
   }
   const access = { doors: vi.fn(() => Promise.resolve([])) }
@@ -671,6 +686,31 @@ describe('snapshot (CAM-3, R11)', () => {
   it('asks for no highQuality for a camera the inventory does not know yet', async () => {
     await h.manager.snapshot({ cameraId: 'unknown', highQuality: true })
     expect(h.protect.snapshot).toHaveBeenLastCalledWith('unknown', {})
+  })
+})
+
+describe('streamQualities (QUAL-7)', () => {
+  it('answers which qualities exist as booleans, and nothing that carries a URL (CON-2)', async () => {
+    const result = await h.manager.streamQualities('cam-1')
+    expect(result).toEqual({ high: true, medium: false, low: true, package: false })
+    expect(JSON.stringify(result)).not.toContain('rtsps')
+    expect(h.protect.rtspsStreams).toHaveBeenCalledWith('cam-1')
+  })
+
+  it('rejects with the client failure, for the handler to turn into a value', async () => {
+    const error = new ProtectApiError('GET /v1/cameras/{id}/rtsps-stream failed with HTTP 401.', {
+      kind: 'auth',
+    })
+    h.protect.rtspsStreams.mockRejectedValueOnce(error)
+    await expect(h.manager.streamQualities('cam-1')).rejects.toBe(error)
+  })
+})
+
+describe('rtspsAvailability (QUAL-7)', () => {
+  it('counts a URL as present and null, a missing key or junk as absent (R8)', () => {
+    expect(
+      rtspsAvailability({ high: RTSPS_URL, medium: null, package: `${RTSPS_URL}-pkg` }),
+    ).toEqual({ high: true, medium: false, low: false, package: true })
   })
 })
 

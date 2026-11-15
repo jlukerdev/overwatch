@@ -33,12 +33,18 @@
 //    flip a filled cell's `quality` prop without resolving anything itself: `resolveFillQuality`
 //    (View, then settings — fill has no per-cell level) for a camera, and the package channel again
 //    for a package ref, because that is a different source rather than a quality to upgrade.
+//  - **…and what its quality picker needs** (P3.7; QUAL-4): the cell's own override and what the
+//    cell gets with it cleared (`resolveGridQuality` with a `null` cell level — the "View default
+//    (X)" option). The persisted cell is named by `placement`'s top-left slot (`setCellQuality`,
+//    features/quality/qualityChoice.ts). A package ref has no picker (`qualityChoice: null`): the
+//    package channel is a source, not a quality, so there is nothing to pick.
 import type { Camera } from '@shared/ipc'
 import type { Fit, View } from '@shared/models'
 import {
   PACKAGE_CHANNEL,
   resolveFillQuality,
   resolveGridQuality,
+  type Quality,
   type QualityDefaults,
   type StreamQuality,
 } from '@shared/quality'
@@ -95,6 +101,8 @@ export type GridSlot =
       readonly fillQuality: StreamQuality
       /** VIEW-5: how the camera sits in its cell when its shape is not the View's `aspect`. */
       readonly fit: Fit
+      /** QUAL-4's picker for this cell, or `null` for a package ref, which has none (header). */
+      readonly qualityChoice: SlotQualityChoice | null
     }
   | {
       /**
@@ -109,6 +117,14 @@ export type GridSlot =
       readonly label: string
     }
   | { readonly kind: 'empty'; readonly key: string; readonly placement: CellPlacement }
+
+/** What a camera slot's quality picker shows (QUAL-3/4). */
+export interface SlotQualityChoice {
+  /** The cell's own `quality`: `null` when it inherits (the picker's "View default" option). */
+  readonly override: Quality | null
+  /** What the cell plays with its override cleared: `view.gridQuality ?? streams.defaultGridQuality`. */
+  readonly inherited: Quality
+}
 
 /**
  * The key of a camera (or missing-camera) slot: the ref and its occurrence index in the View. The
@@ -179,6 +195,12 @@ export function buildViewSlots(input: {
       quality: ref.packageChannel ? PACKAGE_CHANNEL : resolveGridQuality({ cell, view, streams }),
       fillQuality: ref.packageChannel ? PACKAGE_CHANNEL : resolveFillQuality({ view, streams }),
       fit: view.fit,
+      qualityChoice: ref.packageChannel
+        ? null
+        : {
+            override: cell.quality,
+            inherited: resolveGridQuality({ cell: { quality: null }, view, streams }),
+          },
     }
   })
 }

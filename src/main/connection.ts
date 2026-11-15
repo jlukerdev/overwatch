@@ -31,11 +31,13 @@ import {
   type EndpointStatus,
   type IpcError,
   type ProtectProbe,
+  type RtspsAvailability,
   type SnapshotInput,
   type SnapshotResult,
   type TestConnection,
 } from '@shared/ipc'
 import type { Camera, ConsoleConfig } from '@shared/models'
+import { STREAM_QUALITIES } from '@shared/quality'
 import type { AccessClient } from './access/client'
 import type { Config } from './config/schema'
 import type { ConfigStore } from './config/store'
@@ -50,6 +52,7 @@ import { toIpcError } from './ipc/errors'
 import type { RateLimiter } from './net/rateLimiter'
 import type { ProtectClient } from './protect/client'
 import { ProtectApiError } from './protect/errors'
+import type { RtspsStreams } from './protect/types'
 import {
   createDevicesSubscription,
   type ProtectSubscription,
@@ -75,7 +78,7 @@ export interface ConnectionServices {
   readonly pins: Pick<PinRegistry, 'pinnedFingerprint' | 'agentFor' | 'invalidate' | 'closeAll'>
   /** Shared with the REST client: a WebSocket upgrade spends a request permit too (R9). */
   readonly limiter: RateLimiter
-  protect(): Pick<ProtectClient, 'metaInfo' | 'cameras' | 'snapshot'>
+  protect(): Pick<ProtectClient, 'metaInfo' | 'cameras' | 'snapshot' | 'rtspsStreams'>
   access(): Pick<AccessClient, 'doors'>
 }
 
@@ -111,6 +114,13 @@ export interface ConnectionManager {
   /** CAM-1/3: one thumbnail, with CAM-3's "any failure means offline" rule applied. */
   snapshot(input: SnapshotInput): Promise<SnapshotResult>
   /**
+   * QUAL-7: which RTSPS qualities already exist for one camera, as booleans. A `GET rtsps-stream`
+   * and nothing else — it never POSTs, so looking at the camera list creates no stream on the
+   * console (QUAL-8 creates on demand, from `ensureStream` only). Any failure rejects; the camera
+   * list shows it as "streams unknown" rather than as an error.
+   */
+  streamQualities(cameraId: string): Promise<RtspsAvailability>
+  /**
    * CON-1/2: the Protect API key has just been deleted. Closes the feed and empties the inventory,
    * because nothing may keep running on a credential the user has removed.
    */
@@ -142,6 +152,18 @@ const SNAPSHOT_REPORTED_KINDS: readonly IpcError['kind'][] = [
   'rate-limit',
   'not-configured',
 ]
+
+/**
+ * `GET rtsps-stream`'s answer reduced to "is there one" per quality (QUAL-7). **This is where the
+ * URLs stop**: the values are the RTSPS URLs, whose alias is the stream's credential (CON-2, NFR-9),
+ * so nothing but a boolean per key is copied out. A quality the console did not mention counts as
+ * absent, the same lenient reading the client applies (R8).
+ */
+export function rtspsAvailability(streams: RtspsStreams): RtspsAvailability {
+  const out: Partial<RtspsAvailability> = {}
+  for (const quality of STREAM_QUALITIES) out[quality] = typeof streams[quality] === 'string'
+  return out as RtspsAvailability
+}
 
 /** What is remembered per endpoint between calls. Everything else in `EndpointStatus` is derived. */
 interface EndpointState {
@@ -526,6 +548,12 @@ export function createConnectionManager(options: ConnectionManagerOptions): Conn
     }
   }
 
+  async function streamQualities(cameraId: string): Promise<RtspsAvailability> {
+    // Through the same client, and so the same shared limiter, as `snapshot` (R9): the camera list
+    // asks for this alongside each thumbnail, a few cameras at a time.
+    return rtspsAvailability(await services.protect().rtspsStreams(cameraId))
+  }
+
   /**
    * CON-1/3, DOOR-0. **Security-critical.** A pin is accepted for one `host:port` (P0.4 §4), so
    * when the resolved endpoint moves, the fingerprint stored for it must go with it: keeping it
@@ -599,8 +627,8 @@ export function createConnectionManager(options: ConnectionManagerOptions): Conn
     await services.pins.closeAll()
   }
 
-  // The five that move the subscription go through the queue; `testConnection`, `cameras` and
-  // `snapshot` are plain requests that touch none of that state, so serializing them would only
+  // The five that move the subscription go through the queue; `testConnection`, `cameras`,
+  // `snapshot` and `streamQualities` are plain requests that touch none of that state, so serializing them would only
   // make the UI wait for a reconnect's backoff.
   return {
     status,
@@ -610,6 +638,7 @@ export function createConnectionManager(options: ConnectionManagerOptions): Conn
     testConnection,
     cameras: () => refreshInventory('a camera list request'),
     snapshot,
+    streamQualities,
     credentialCleared: () => serialize(credentialCleared),
     applyConsoleChange: (next) => serialize(() => applyConsoleChange(next)),
     shutdown: () => serialize(shutdown),

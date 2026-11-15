@@ -10,6 +10,8 @@
 //    package channel in fill too.
 //  - keys follow the camera across Views and stay distinct for duplicates in one View, so a View
 //    switch keeps shared players mounted and React never sees two siblings with one key.
+//  - (P3.7, QUAL-4) a camera slot carries its picker's data: the cell's own override and what it
+//    gets with the override cleared (View, then settings); a package ref has no picker.
 //  - a camera the inventory no longer has gets a `missing` slot, not a player; so does a package
 //    ref to a camera without `hasPackageCamera`.
 import type { Camera } from '@shared/ipc'
@@ -205,6 +207,30 @@ describe('buildViewSlots: fill quality (FILL-2, QUAL-5)', () => {
   it('keeps the package channel in fill for a package ref', () => {
     const v = view(1, 1, [`d:${PACKAGE_CHANNEL}`], { fillQuality: 'high' })
     expect(cameraSlot(slots(v)[0]).fillQuality).toBe(PACKAGE_CHANNEL)
+  })
+})
+
+describe('buildViewSlots: quality picker (QUAL-4)', () => {
+  it('carries the cell override and what clearing it gives: the View’s grid quality', () => {
+    const v = view(2, 1, ['a', 'b'], { gridQuality: 'medium' })
+    const cells = v.cells.map((cell, i) => (i === 0 ? { ...cell, quality: 'high' as const } : cell))
+    const result = slots({ ...v, cells })
+    expect(result.map((s) => cameraSlot(s).qualityChoice)).toEqual([
+      { override: 'high', inherited: 'medium' },
+      { override: null, inherited: 'medium' },
+    ])
+  })
+
+  it('falls back to the settings grid default for what clearing gives', () => {
+    expect(cameraSlot(slots(view(1, 1, ['a']))[0]).qualityChoice).toEqual({
+      override: null,
+      inherited: 'low',
+    })
+  })
+
+  it('has no picker for a package ref', () => {
+    const v = view(1, 1, [`d:${PACKAGE_CHANNEL}`])
+    expect(cameraSlot(slots(v)[0]).qualityChoice).toBeNull()
   })
 })
 

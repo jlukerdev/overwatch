@@ -56,7 +56,20 @@ The harness works on Windows with two gaps:
 - **CPU (NFR-4):** about 57 % of one core at `medium` and 60 % at `high`, which is about 7–8 % of this 8-core laptop. The renderer and the GPU process take about 23–26 % each. `high` has short peaks: the total reached 120 % at most, and its p95 was 72 %. That passes NFR-4 easily, on a machine much closer to "mid-range" than the M5 Pro.
 - **Decode (NFR-3):** `D3D11VideoDecoder` with the platform decoder on every player.
 - **Latency proxy (NFR-5):** 1.00 s mean and 1.05 s p95 at both qualities. Dropped frames were under 1 %. One cell missed one sample at `high`.
-- **RAM (G2) is not settled here either, and the GPU process is the concern.** The GPU process averages 578 MB (640 MB max) at `medium` and 1055 MB (1213 MB max) at `high`. The renderer averages 253 MB at `medium` and 294 MB at `high`. Total working set rose at about 615 MB/h at `medium` and 785 MB/h at `high`. On macOS the GPU process stayed flat at about 105–121 MB, so this growth is specific to Windows (most likely D3D11 decode surfaces or textures, not yet confirmed). The summary does not show whether it levels off. The curve is in `samples.jsonl` in each run's output folder on the laptop. On a 16 GB machine, `high` in the grid costs about 0.5 GB more than `medium`. That supports keeping the default grid quality at `low` (QUAL-1).
+- **RAM (G2): the Windows curve levels off too.** In the `high` run, memory every 5 minutes (MB, working set):
+
+  | Process | 0 min | 5 min | 10 min | 15 min | 20 min | 25 min | 30 min |
+  |---|---|---|---|---|---|---|---|
+  | GPU | 513 | 1106 | 1106 | 1106 | 1106 | 1018 | 1203 |
+  | renderer | 199 | 244 | 283 | 309 | 333 | 337 | 351 |
+  | main | 119 | 123 | 125 | 127 | 129 | 128 | 129 |
+  | total | 972 | 1614 | 1655 | 1684 | 1709 | 1625 | 1825 |
+
+  - **GPU process:** it jumps once in the first 5 minutes (513 → 1106 MB), then holds flat for 15 minutes, dips and steps up again. That is a pool being allocated in blocks (most likely D3D11 decode surfaces and textures), not a steady leak. The 615–785 MB/h whole-run slopes are mostly that first jump.
+  - **Renderer:** its growth slows down the way it did on macOS: +45, +39, +26, +24, +4, +14 MB per 5 minutes.
+  - **Main:** flat.
+  - **Cost:** the GPU process is about 1.1 GB at `high` and about 0.6 GB at `medium` on a 16 GB laptop. That supports keeping the grid default at `low` (QUAL-1).
+  - **Not proven:** a 30-minute run can't rule out a slow leak. NFR-4's 8-hour check is gate G6's unattended 8-hour run.
 
 ### Recovery (G2, NFR-7), macOS, 2026-11-15
 

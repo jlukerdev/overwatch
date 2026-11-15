@@ -1,22 +1,38 @@
-// A whole-number input for the View editor's settings row (P3.3): the aspect's custom w:h and the
-// gap. The rule — round, clamp to [min, max], ignore what is not a number — is `parseBoundedInt`
-// (./editorModel); this component only keeps the text being typed.
+// A whole-number input for the View editor (P3.3): the aspect's custom w:h and the gap in the
+// settings row, and the cell inspector's rotate interval and hold (P4.2). The rules are pure, in
+// ./editorModel: while typing, `boundedInputCommit` commits only a whole number already within
+// [min, max], so a half-typed number is never snapped to a bound; on blur, `boundedInputBlurCommit`
+// commits the rounded, clamped number. This component only keeps the text being typed.
 //
-// The text is local state rather than `String(value)` so that a half-typed or empty field is not
-// snapped back on every keystroke. It is reset to the value when the value changes from outside
-// (Discard, the range slider beside it) and on blur, so the field never keeps showing a number the
-// View does not have.
+// The text is local state rather than `String(value)` so that a half-typed, empty or out-of-range
+// field is not snapped back on every keystroke. It is reset to the value when the value changes
+// from outside (Discard, the range slider beside it) and on blur, so the field never keeps showing a
+// number the View does not have.
 import { useState, type JSX } from 'react'
-import { parseBoundedInt } from './editorModel'
+import { boundedInputBlurCommit, boundedInputCommit } from './editorModel'
 
-export interface BoundedNumberInputProps {
+/**
+ * How the input is named: by `label` (its `aria-label`), or by a visible `<label htmlFor={id}>`
+ * beside it. Never both — an `aria-label` would override the visible label.
+ */
+type BoundedNumberInputNaming =
+  | {
+      /** The accessible name, e.g. "Aspect width". */
+      readonly label: string
+      readonly id?: undefined
+    }
+  | {
+      /** For a visible `<label htmlFor>` beside it, which is then the accessible name. */
+      readonly id: string
+      readonly label?: undefined
+    }
+
+export type BoundedNumberInputProps = BoundedNumberInputNaming & {
   readonly value: number
   readonly min: number
   readonly max: number
-  /** Called with the parsed, clamped number, only when it differs from `value`. */
+  /** Called with the committed number, only when it differs from `value`. */
   readonly onChange: (value: number) => void
-  /** The accessible name, e.g. "Aspect width". */
-  readonly label: string
   readonly className?: string
 }
 
@@ -27,6 +43,7 @@ export function BoundedNumberInput({
   onChange,
   label,
   className,
+  id,
 }: BoundedNumberInputProps): JSX.Element {
   const [text, setText] = useState(String(value))
   // The value `text` was last synced to; a different `value` means it changed from outside.
@@ -37,6 +54,7 @@ export function BoundedNumberInput({
   }
   return (
     <input
+      id={id}
       type="number"
       className={`field__input ${className ?? ''}`}
       aria-label={label}
@@ -46,11 +64,13 @@ export function BoundedNumberInput({
       value={text}
       onChange={(event) => {
         setText(event.target.value)
-        const parsed = parseBoundedInt(event.target.value, min, max)
-        if (parsed !== null && parsed !== value) onChange(parsed)
+        const committed = boundedInputCommit(event.target.value, min, max, value)
+        if (committed !== null) onChange(committed)
       }}
       onBlur={() => {
-        setText(String(value))
+        const committed = boundedInputBlurCommit(text, min, max, value)
+        if (committed !== null) onChange(committed)
+        setText(String(committed ?? value))
       }}
     />
   )

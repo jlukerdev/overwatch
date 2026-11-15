@@ -19,9 +19,15 @@ import {
 } from '@shared/viewLayout'
 import {
   ASPECT_CHOICES,
+  KNOWN_SMART_DETECT_TYPES,
   MAX_ASPECT_TERM,
+  MAX_MOTION_HOLD_SEC,
+  MAX_ROTATE_INTERVAL_SEC,
   addCellCamera,
   applyPreset,
+  boundedInputBlurCommit,
+  boundedInputCommit,
+  cellCameraSmartDetectTypes,
   aspectChoiceLabel,
   cameraChoices,
   cameraRefLabel,
@@ -37,7 +43,16 @@ import {
   selectionActions,
   selectionRect,
   setCellCameras,
+  setCellMotionHold,
+  setCellMotionSwitch,
+  setCellMotionTriggers,
+  setCellRotation,
+  setCellSmartDetectTypes,
+  smartDetectFilterChoices,
+  smartDetectTypeLabel,
   swapCellContents,
+  toggleMotionTrigger,
+  toggleSmartDetectType,
   validateDraft,
 } from '../../src/renderer/src/features/viewEditor/editorModel'
 import { setCellQuality } from '../../src/renderer/src/features/quality/qualityChoice'
@@ -502,6 +517,51 @@ describe('parseBoundedInt', () => {
   })
 })
 
+describe('boundedInputCommit (typing)', () => {
+  it('commits a whole number already in range that differs from the value', () => {
+    expect(boundedInputCommit('30', 5, 86_400, 10)).toBe(30)
+    expect(boundedInputCommit(' 7 ', 0, 64, 4)).toBe(7)
+    expect(boundedInputCommit('5', 5, 60, 10)).toBe(5)
+    expect(boundedInputCommit('60', 5, 60, 10)).toBe(60)
+  })
+
+  it('does not commit the first digit of a number below min (the "30" ending as 50 bug)', () => {
+    // With min 5, typing "30": the "3" commits nothing, the "30" commits 30.
+    expect(boundedInputCommit('3', 5, 86_400, 10)).toBeNull()
+    expect(boundedInputCommit('30', 5, 86_400, 10)).toBe(30)
+  })
+
+  it('commits nothing for out-of-range, partial, fractional or unchanged text', () => {
+    for (const text of ['', '-', '.', '1.', '2.5', 'abc', '1e3', '-1', '100', '0']) {
+      expect(boundedInputCommit(text, 1, 64, 8), text).toBeNull()
+    }
+    expect(boundedInputCommit('8', 1, 64, 8)).toBeNull()
+  })
+})
+
+describe('boundedInputBlurCommit', () => {
+  it('commits the rounded, clamped number when it differs from the value', () => {
+    expect(boundedInputBlurCommit('3', 5, 86_400, 10)).toBe(5)
+    expect(boundedInputBlurCommit('99999', 5, 86_400, 10)).toBe(86_400)
+    expect(boundedInputBlurCommit('2.6', 0, 64, 8)).toBe(3)
+    expect(boundedInputBlurCommit('-4', 0, 64, 8)).toBe(0)
+  })
+
+  it('commits nothing for text that does not parse, or that clamps to the value', () => {
+    for (const text of ['', 'abc', '-', '1e3']) {
+      expect(boundedInputBlurCommit(text, 0, 64, 8), text).toBeNull()
+    }
+    expect(boundedInputBlurCommit('8', 0, 64, 8)).toBeNull()
+    expect(boundedInputBlurCommit('2', 5, 60, 5)).toBeNull()
+  })
+
+  it('keeps a stored value above the input max when the text still shows it', () => {
+    expect(boundedInputBlurCommit('100000', 5, 86_400, 100_000)).toBeNull()
+    // Edited, it is clamped like any other text.
+    expect(boundedInputBlurCommit('100001', 5, 86_400, 100_000)).toBe(86_400)
+  })
+})
+
 describe('cameraChoices', () => {
   it('lists cameras in sortCameras order, each package channel right after its camera', () => {
     expect(cameraChoices(INVENTORY)).toEqual([
@@ -568,6 +628,23 @@ describe('validateDraft', () => {
     })
   })
 
+  it('saves the multi-camera settings as edited (CELL-2)', () => {
+    let v = setCellCameras(view(2, 2), 0, ['a', 'b'])
+    v = setCellRotation(v, 0, 12)
+    v = setCellMotionSwitch(v, 0, true)
+    v = setCellMotionTriggers(v, 0, ['smartDetect', 'ring'])
+    v = setCellSmartDetectTypes(v, 0, ['vehicle', 'newThing'])
+    v = setCellMotionHold(v, 0, 5)
+    const result = validateDraft(v)
+    expect(result.ok && result.view.cells[0]).toMatchObject({
+      rotateIntervalSec: 12,
+      motionSwitch: true,
+      motionTriggers: ['smartDetect', 'ring'],
+      smartDetectTypes: ['vehicle', 'newThing'],
+      motionHoldSec: 5,
+    })
+  })
+
   it('normalises cell order', () => {
     const v = view(2, 2)
     const result = validateDraft({ ...v, cells: [...v.cells].reverse() })
@@ -582,6 +659,219 @@ describe('validateDraft', () => {
     const badGap = validateDraft({ ...v, gap: 500 })
     expect(badGap.ok).toBe(false)
     if (!badGap.ok) expect(badGap.reason.length).toBeGreaterThan(0)
+  })
+})
+
+describe('multi-camera settings (CELL-2)', () => {
+  /** A 2×2 View whose first cell has two cameras. */
+  function multi(): View {
+    return setCellCameras(view(2, 2), 0, ['a', 'b'])
+  }
+
+  it('starts from the schema defaults: no rotation, switch off, all triggers, no filter', () => {
+    const cell = multi().cells[0]
+    expect(cell?.rotateIntervalSec).toBeUndefined()
+    expect(cell?.motionSwitch).toBe(false)
+    expect(cell?.motionTriggers).toEqual(['motion', 'smartDetect', 'ring'])
+    expect(cell?.smartDetectTypes).toBeUndefined()
+    expect(cell?.motionHoldSec).toBe(15)
+  })
+
+  describe('setCellRotation', () => {
+    it('sets, clamps and rounds the interval', () => {
+      const v = multi()
+      expect(valid(setCellRotation(v, 0, 10)).cells[0]?.rotateIntervalSec).toBe(10)
+      expect(setCellRotation(v, 0, 2).cells[0]?.rotateIntervalSec).toBe(5)
+      expect(setCellRotation(v, 0, 7.6).cells[0]?.rotateIntervalSec).toBe(8)
+      // Only cell 0 changed.
+      expect(setCellRotation(v, 0, 10).cells.slice(1)).toEqual(v.cells.slice(1))
+    })
+
+    it('removes the field for undefined, so the cell does not rotate', () => {
+      const on = setCellRotation(multi(), 0, 10)
+      const off = valid(setCellRotation(on, 0, undefined))
+      expect(off.cells[0]).not.toHaveProperty('rotateIntervalSec')
+    })
+
+    it('returns the same View on a no-op', () => {
+      const v = multi()
+      expect(setCellRotation(v, 0, undefined)).toBe(v)
+      const on = setCellRotation(v, 0, 10)
+      expect(setCellRotation(on, 0, 10)).toBe(on)
+      expect(setCellRotation(on, 0, Number.NaN)).toBe(on)
+      expect(setCellRotation(on, 9, 20)).toBe(on)
+      expect(setCellRotation(on, -1, 20)).toBe(on)
+    })
+
+    it('clamps only to the schema minimum; the input applies its own max', () => {
+      // A stored interval above the input's max (CellSchema has none) is kept as it is.
+      expect(MAX_ROTATE_INTERVAL_SEC).toBe(86_400)
+      const long = valid(setCellRotation(multi(), 0, 100_000))
+      expect(long.cells[0]?.rotateIntervalSec).toBe(100_000)
+      expect(setCellRotation(long, 0, 100_000)).toBe(long)
+      expect(boundedInputBlurCommit('7200', 5, MAX_ROTATE_INTERVAL_SEC, 10)).toBe(7200)
+      expect(boundedInputBlurCommit('3', 5, MAX_ROTATE_INTERVAL_SEC, 10)).toBe(5)
+    })
+  })
+
+  describe('setCellMotionSwitch', () => {
+    it('turns the switch on and off, same View on a no-op', () => {
+      const v = multi()
+      const on = valid(setCellMotionSwitch(v, 0, true))
+      expect(on.cells[0]?.motionSwitch).toBe(true)
+      expect(setCellMotionSwitch(on, 0, true)).toBe(on)
+      expect(setCellMotionSwitch(on, 0, false).cells[0]?.motionSwitch).toBe(false)
+      expect(setCellMotionSwitch(v, 0, false)).toBe(v)
+      expect(setCellMotionSwitch(v, 7, true)).toBe(v)
+    })
+  })
+
+  describe('setCellMotionTriggers', () => {
+    it('keeps MOTION_TRIGGERS order and drops duplicates and non-triggers', () => {
+      const v = multi()
+      const next = valid(setCellMotionTriggers(v, 0, ['ring', 'motion', 'ring', 'bogus']))
+      expect(next.cells[0]?.motionTriggers).toEqual(['motion', 'ring'])
+    })
+
+    it('allows an empty list', () => {
+      expect(valid(setCellMotionTriggers(multi(), 0, [])).cells[0]?.motionTriggers).toEqual([])
+    })
+
+    it('returns the same View when the set is unchanged, in any order', () => {
+      const v = multi()
+      expect(setCellMotionTriggers(v, 0, ['ring', 'smartDetect', 'motion'])).toBe(v)
+      expect(setCellMotionTriggers(v, 5, ['ring'])).toBe(v)
+    })
+
+    it('toggleMotionTrigger adds or removes one, in canonical order', () => {
+      expect(toggleMotionTrigger(['ring'], 'motion', true)).toEqual(['motion', 'ring'])
+      expect(toggleMotionTrigger(['motion', 'smartDetect', 'ring'], 'smartDetect', false)).toEqual([
+        'motion',
+        'ring',
+      ])
+      expect(toggleMotionTrigger(['motion'], 'motion', true)).toEqual(['motion'])
+      expect(toggleMotionTrigger([], 'ring', false)).toEqual([])
+    })
+  })
+
+  describe('setCellSmartDetectTypes', () => {
+    it('sets the filter, known types in Protect order, deduplicated', () => {
+      const next = valid(setCellSmartDetectTypes(multi(), 0, ['vehicle', 'person', 'vehicle', '']))
+      expect(next.cells[0]?.smartDetectTypes).toEqual(['person', 'vehicle'])
+    })
+
+    it('removes the field for an empty list or undefined (no filter)', () => {
+      const filtered = setCellSmartDetectTypes(multi(), 0, ['person'])
+      expect(valid(setCellSmartDetectTypes(filtered, 0, [])).cells[0]).not.toHaveProperty(
+        'smartDetectTypes',
+      )
+      expect(setCellSmartDetectTypes(filtered, 0, undefined).cells[0]).not.toHaveProperty(
+        'smartDetectTypes',
+      )
+    })
+
+    it('keeps types it does not know, after the known ones', () => {
+      const next = valid(setCellSmartDetectTypes(multi(), 0, ['newThing', 'animal', 'otherThing']))
+      expect(next.cells[0]?.smartDetectTypes).toEqual(['animal', 'newThing', 'otherThing'])
+    })
+
+    it('returns the same View on a no-op', () => {
+      const v = multi()
+      expect(setCellSmartDetectTypes(v, 0, [])).toBe(v)
+      expect(setCellSmartDetectTypes(v, 0, undefined)).toBe(v)
+      const filtered = setCellSmartDetectTypes(v, 0, ['person', 'vehicle'])
+      expect(setCellSmartDetectTypes(filtered, 0, ['vehicle', 'person'])).toBe(filtered)
+      expect(setCellSmartDetectTypes(filtered, 9, ['face'])).toBe(filtered)
+    })
+
+    it('toggleSmartDetectType keeps every other entry, unknown types included', () => {
+      expect(toggleSmartDetectType(undefined, 'person', true)).toEqual(['person'])
+      expect(toggleSmartDetectType(['newThing', 'person'], 'person', false)).toEqual(['newThing'])
+      expect(toggleSmartDetectType(['newThing'], 'face', true)).toEqual(['newThing', 'face'])
+      expect(toggleSmartDetectType(['person'], 'person', true)).toEqual(['person'])
+      // Unchecking a known type on a cell that also has an unknown one keeps the unknown one.
+      const v = setCellSmartDetectTypes(multi(), 0, ['person', 'newThing'])
+      const types = toggleSmartDetectType(v.cells[0]?.smartDetectTypes, 'person', false)
+      expect(setCellSmartDetectTypes(v, 0, types).cells[0]?.smartDetectTypes).toEqual(['newThing'])
+    })
+
+    it('cellCameraSmartDetectTypes reads each camera once per ref, package refs as their camera', () => {
+      const cams = [
+        camera({ id: 'x', smartDetectTypes: ['vehicle', 'person'] }),
+        camera({ id: 'y', hasPackageCamera: true, smartDetectTypes: ['animal', 'newThing'] }),
+      ]
+      expect(cellCameraSmartDetectTypes(['x', 'y:package', 'missing'], cams)).toEqual([
+        'vehicle',
+        'person',
+        'animal',
+        'newThing',
+      ])
+      expect(cellCameraSmartDetectTypes(['missing'], cams)).toEqual([])
+    })
+
+    it("smartDetectFilterChoices offers the cameras' types plus stored ones, known first", () => {
+      expect(
+        smartDetectFilterChoices(['vehicle', 'newThing', 'person', 'vehicle'], undefined),
+      ).toEqual(['person', 'vehicle', 'newThing'])
+      expect(smartDetectFilterChoices(['animal'], ['otherThing', 'face'])).toEqual([
+        'face',
+        'animal',
+        'otherThing',
+      ])
+    })
+
+    it('smartDetectFilterChoices falls back to every known type when no camera reports one', () => {
+      const known = KNOWN_SMART_DETECT_TYPES.map((k) => k.type)
+      expect(smartDetectFilterChoices([], undefined)).toEqual(known)
+      expect(smartDetectFilterChoices([], ['newThing'])).toEqual([...known, 'newThing'])
+    })
+
+    it('labels the known types, and an unknown one by its own name', () => {
+      expect(KNOWN_SMART_DETECT_TYPES.map((k) => k.type)).toEqual([
+        'person',
+        'vehicle',
+        'package',
+        'licensePlate',
+        'face',
+        'animal',
+      ])
+      expect(smartDetectTypeLabel('licensePlate')).toBe('License plate')
+      expect(smartDetectTypeLabel('newThing')).toBe('newThing')
+    })
+  })
+
+  describe('setCellMotionHold', () => {
+    it('sets, clamps and rounds the hold', () => {
+      const v = multi()
+      expect(valid(setCellMotionHold(v, 0, 30)).cells[0]?.motionHoldSec).toBe(30)
+      expect(valid(setCellMotionHold(v, 0, 0)).cells[0]?.motionHoldSec).toBe(0)
+      expect(setCellMotionHold(v, 0, -4).cells[0]?.motionHoldSec).toBe(0)
+      // No upper clamp in the setter: the input caps at MAX_MOTION_HOLD_SEC (one day).
+      expect(MAX_MOTION_HOLD_SEC).toBe(86_400)
+      expect(valid(setCellMotionHold(v, 0, 100_000)).cells[0]?.motionHoldSec).toBe(100_000)
+      expect(setCellMotionHold(v, 0, 2.4).cells[0]?.motionHoldSec).toBe(2)
+    })
+
+    it('returns the same View on a no-op', () => {
+      const v = multi()
+      expect(setCellMotionHold(v, 0, 15)).toBe(v)
+      expect(setCellMotionHold(v, 0, Number.POSITIVE_INFINITY)).toBe(v)
+      expect(setCellMotionHold(v, 4, 30)).toBe(v)
+    })
+  })
+
+  it('moves with the cell on a swap and a preset change', () => {
+    let v = setCellRotation(multi(), 0, 20)
+    v = setCellMotionSwitch(v, 0, true)
+    v = setCellSmartDetectTypes(v, 0, ['person'])
+    const swapped = swapCellContents(v, 0, 3)
+    expect(swapped.cells[3]).toMatchObject({
+      rotateIntervalSec: 20,
+      motionSwitch: true,
+      smartDetectTypes: ['person'],
+    })
+    const relaid = applyPreset(v, preset('3x3')).view
+    expect(relaid.cells[0]).toMatchObject({ rotateIntervalSec: 20, motionSwitch: true })
   })
 })
 
@@ -617,6 +907,15 @@ describe('isDraftDirty', () => {
     expect(isDraftDirty(v, applyPreset(v, preset('3x3')).view)).toBe(true)
     const withA = addCellCamera(v, 0, 'a')
     expect(isDraftDirty(withA, removeCellCamera(withA, 0, 0))).toBe(true)
+    // P4.2 (CELL-2): the inspector's multi-camera settings.
+    expect(isDraftDirty(v, setCellRotation(v, 0, 10))).toBe(true)
+    expect(isDraftDirty(v, setCellRotation(setCellRotation(v, 0, 10), 0, undefined))).toBe(false)
+    expect(isDraftDirty(v, setCellMotionSwitch(v, 0, true))).toBe(true)
+    expect(isDraftDirty(v, setCellMotionTriggers(v, 0, ['ring']))).toBe(true)
+    expect(isDraftDirty(v, setCellSmartDetectTypes(v, 0, ['person']))).toBe(true)
+    const filtered = setCellSmartDetectTypes(v, 0, ['person'])
+    expect(isDraftDirty(v, setCellSmartDetectTypes(filtered, 0, []))).toBe(false)
+    expect(isDraftDirty(v, setCellMotionHold(v, 0, 30))).toBe(true)
   })
 
   it('compares drafts that do not parse as they are', () => {

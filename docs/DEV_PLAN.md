@@ -135,7 +135,7 @@ CELL-2
 | # | Task |
 |---|---|
 | P4.1 | `cellScheduler.ts` pure reducer (rotate, triggers incl. `ring` priority, smart-type filter, hold measured from event `end`, 60 s stale-event timeout) + exhaustive unit tests |
-| P4.2 | Wire Protect events → renderer event bus → scheduler |
+| P4.2 | Wire Protect events → renderer event bus → scheduler + View-editor inspector controls for the CELL-2 cell settings (rotate interval, motion switch, triggers, smart-type filter, hold) |
 | P4.3 | Overlay position indicator, manual next/prev, motion badge |
 | P4.4 | Optional pre-warm of the next rotation camera |
 

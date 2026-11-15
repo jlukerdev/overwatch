@@ -332,6 +332,39 @@
   list-style: none;
 }
 
+/* The inspector's Multi-camera group (CELL-2): one control per line in the narrow side column. */
+.viewEditor__group--stack {
+  flex-direction: column;
+  flex-wrap: nowrap;
+  align-items: stretch;
+  gap: 0.45rem;
+}
+
+.viewEditor__subgroup {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  margin: 0;
+  padding: 0 0 0 0.75rem;
+  border: 0;
+  border-left: 2px solid var(--border);
+}
+
+.viewEditor__subgroup .field__label {
+  padding: 0;
+  font-size: 0.85rem;
+}
+
+/* checkRow: a checkbox and its label (for Rotate, the interval after them). inlineRow: a label
+   and its control on one line, no checkbox (the hold). */
+.viewEditor__checkRow,
+.viewEditor__inlineRow {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.9rem;
+}
+
 .viewEditor__cameraRow {
   display: flex;
   align-items: center;

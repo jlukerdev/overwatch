@@ -58,6 +58,15 @@ The harness works on Windows with two gaps:
 - **Latency proxy (NFR-5):** 1.00 s mean and 1.05 s p95 at both qualities. Dropped frames were under 1 %. One cell missed one sample at `high`.
 - **RAM (G2) is not settled here either, and the GPU process is the concern.** The GPU process averages 578 MB (640 MB max) at `medium` and 1055 MB (1213 MB max) at `high`. The renderer averages 253 MB at `medium` and 294 MB at `high`. Total working set rose at about 615 MB/h at `medium` and 785 MB/h at `high`. On macOS the GPU process stayed flat at about 105–121 MB, so this growth is specific to Windows (most likely D3D11 decode surfaces or textures, not yet confirmed). The summary does not show whether it levels off. The curve is in `samples.jsonl` in each run's output folder on the laptop. On a 16 GB machine, `high` in the grid costs about 0.5 GB more than `medium`. That supports keeping the default grid quality at `low` (QUAL-1).
 
+### Recovery (G2, NFR-7), macOS, 2026-11-15
+
+This was a `low` run (`--label recovery`). The user killed go2rtc with `pkill -x go2rtc` about 17 s into the measuring, and later dropped the network for about 30 s.
+
+- **go2rtc killed:** all 9 cells lost their `<video>` at t = 20 s. The sidecar restarted and the players came back with no one touching the app: 9 of 9 playing again by the t = 45 s sample, and they kept playing until the run ended. Outage: about 25–30 s, set by the restart and the player's reconnect backoff.
+- **Network drop:** the user saw the grid recover by itself. The harness did not record it, because the run ended at 70 s measured with "quit: the app was asked to quit before the end". So this item rests on the user watching it, not on samples.
+
+Recovery is the only thing this run measured. Its CPU, RAM and dropped-frame numbers include the outage and are not part of the results above.
+
 ## Method
 
 ### What runs

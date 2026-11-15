@@ -305,7 +305,7 @@ function EmptyCard({
       <p className="card__hint">
         {connected
           ? 'The console answered with an empty camera list. Adopt a camera in Protect and refresh.'
-          : 'The console is configured and its certificate is accepted. Nothing connects by itself, so the list is empty until you connect.'}
+          : 'The console is configured and its certificate is accepted. The list is empty until you connect; after a connect that works, the app connects by itself at every launch until you disconnect.'}
       </p>
       <div className="row">
         <button

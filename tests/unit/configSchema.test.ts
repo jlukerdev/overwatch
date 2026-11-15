@@ -82,6 +82,8 @@ describe('defaultConfig', () => {
         accessEnabled: false,
         accessBaseUrl: null,
         accessCertFingerprint: null,
+        // CON-4: nothing connects on launch until a connect has worked.
+        connectOnLaunch: false,
       },
       doorLinks: {},
       views: [],
@@ -194,6 +196,17 @@ describe('ConfigSchema', () => {
     ]) {
       expect(ConfigSchema.safeParse({ schemaVersion: 2, console: console_ }).success).toBe(false)
     }
+  })
+
+  it('loads a file written before connectOnLaunch existed as off, with no version bump (CON-4)', () => {
+    // The SPEC §6 example predates the field; no migration adds it, the default does.
+    expect(specExample.console).not.toHaveProperty('connectOnLaunch')
+    expect(ConfigSchema.parse(specExample).console.connectOnLaunch).toBe(false)
+    const on = { ...specExample, console: { ...specExample.console, connectOnLaunch: true } }
+    expect(ConfigSchema.parse(on).console.connectOnLaunch).toBe(true)
+    expect(
+      ConfigSchema.safeParse({ schemaVersion: 2, console: { connectOnLaunch: 'yes' } }).success,
+    ).toBe(false)
   })
 
   it('validates doorLinks as a camera id -> door id map (DOOR-2)', () => {

@@ -188,6 +188,14 @@ export const ConsoleConfigSchema = z
     accessBaseUrl: z.url().nullable().default(null),
     /** Pin for `accessBaseUrl`'s host:port. Added after P0.4 §4; see the note in SPEC §6. */
     accessCertFingerprint: z.string().min(1).nullable().default(null),
+    /**
+     * CON-4's launch exception: `true` once a connect has worked (the devices feed reached `open`),
+     * back to `false` when the user disconnects, clears the Protect key or moves the Protect
+     * endpoint. Main alone writes it (src/main/connection.ts) — it is not in `ConsoleInput`, so a
+     * Settings save cannot set it. Defaulted, so a file written before it existed loads as `false`
+     * with no schemaVersion bump: such a user has simply not connected under this rule yet.
+     */
+    connectOnLaunch: z.boolean().default(false),
   })
   .prefault({})
 export type ConsoleConfig = z.infer<typeof ConsoleConfigSchema>

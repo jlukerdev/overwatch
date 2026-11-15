@@ -164,8 +164,9 @@ describe('1 -> 2: cell placements (P3.1, VIEW-1)', () => {
     expect(single?.cells).toEqual([
       expect.objectContaining({ col: 0, row: 0, cameraIds: ['camE'] }),
     ])
-    // Everything outside the Views is untouched.
-    expect(parsed.console).toEqual(V1_FIXTURE.console)
+    // Everything outside the Views is untouched; a field added since v1 takes its default (CON-4's
+    // `connectOnLaunch`, which needs no migration step of its own).
+    expect(parsed.console).toEqual({ ...V1_FIXTURE.console, connectOnLaunch: false })
     expect(parsed.doorLinks).toEqual(V1_FIXTURE.doorLinks)
     expect(parsed.lastViewId).toBe('view-single')
   })

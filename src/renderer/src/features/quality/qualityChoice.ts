@@ -12,12 +12,10 @@
 //    text the QUAL-7 badge shows — "View default (LOW)" reads as "you will see the LOW badge".
 //  - **`null` is the empty string.** A native select's value is a string, and `''` can never be a
 //    quality, so "inherit" round-trips without a sentinel that could one day collide with one. Any
-//    value that is not a quality reads back as `null`, i.e. inherit: a select can only ever offer
-//    its own options, so that only happens for {@link SAVE_FOR_VIEW_OPTION}, which the fill picker
-//    handles before it gets here.
-//  - **The fill picker's action is an option**, not a button next to it: the strip is a row of
-//    compact chips and the action belongs with the qualities it saves. Its value is a word that
-//    `isQuality` refuses (tested), so it can never be mistaken for a pick.
+//    value that is not a quality reads back as `null`, i.e. inherit.
+//  - **The fill picker's "Save for this View" is a button beside the select**, not an option in it
+//    (the user's call on review): an action is not a quality, and a select whose value can be "an
+//    action" is one a keyboard user can trigger just by arrowing through it.
 //  - **A cell is addressed by its top-left slot.** That is unique in a tiled View, survives the
 //    canonical reordering a save does, and is what a grid slot's `placement` carries — so the
 //    overlay can name the persisted cell without knowing its index.
@@ -26,9 +24,6 @@ import { isQuality, qualityBadgeLabel, QUALITIES, type Quality } from '@shared/q
 
 /** The select value of the "inherit" option (`null`). */
 export const INHERIT_OPTION = ''
-
-/** The fill picker's "Save for this View" action (QUAL-5). Never a quality (header). */
-export const SAVE_FOR_VIEW_OPTION = 'save-for-view'
 
 /** The qualities a picker offers, best first (QUAL-4). */
 export const QUALITY_OPTIONS: readonly Quality[] = QUALITIES

@@ -19,7 +19,6 @@ import {
   QUALITY_OPTIONS,
   qualityName,
   qualityOptionValue,
-  SAVE_FOR_VIEW_OPTION,
   setCellQuality,
 } from '../../src/renderer/src/features/quality/qualityChoice'
 
@@ -54,10 +53,8 @@ describe('quality options', () => {
     expect(qualityOptionValue(null)).toBe(INHERIT_OPTION)
   })
 
-  it('never reads the inherit option or the save action as a quality', () => {
+  it('never reads the inherit option as a quality', () => {
     expect(parseQualityOption(INHERIT_OPTION)).toBeNull()
-    expect(parseQualityOption(SAVE_FOR_VIEW_OPTION)).toBeNull()
-    expect(QUALITY_OPTIONS.map(qualityOptionValue)).not.toContain(SAVE_FOR_VIEW_OPTION)
     expect(QUALITY_OPTIONS.map(qualityOptionValue)).not.toContain(INHERIT_OPTION)
   })
 

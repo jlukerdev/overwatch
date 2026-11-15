@@ -4,7 +4,7 @@
 // order or wording; the values and names themselves are ./qualityChoice, pure and tested.
 //
 // It renders options only, not the `<select>`: each caller keeps its own value, handler, class and
-// any extra option of its own (the fill picker's "Save for this View").
+// any extra option of its own.
 import type { JSX } from 'react'
 import { INHERIT_OPTION, QUALITY_OPTIONS, qualityName } from './qualityChoice'
 

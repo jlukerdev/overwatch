@@ -7,8 +7,9 @@
 //    A change is saved at once by the grid (`setCellQuality`); the cell's `quality` prop then
 //    changes and the player swaps seamlessly (QUAL-6).
 //  - **`FillQualityPicker`, while filled** (QUAL-5): the qualities, selected on what is playing, and
-//    the action "Save for this View", disabled when the View already has that fill quality. A pick
-//    lasts until fill ends (fillMode.ts, "session pick").
+//    beside the select (not in it — an action is not a quality) a "Save for this View" button,
+//    disabled when the View already has that fill quality. A pick lasts until fill ends (fillMode.ts,
+//    "session pick").
 //
 // Thin on purpose: the option values, names and the edit are features/quality/qualityChoice.ts, the
 // fill rules features/fill/fillMode.ts, all pure and tested. Native selects, because the dropdown,
@@ -30,7 +31,6 @@ import {
   inheritOptionLabel,
   parseQualityOption,
   qualityOptionValue,
-  SAVE_FOR_VIEW_OPTION,
 } from '../quality/qualityChoice'
 import { QualityOptions } from '../quality/QualityOptions'
 import { blursOnKey } from './overlayVisibility'
@@ -119,28 +119,36 @@ export function FillQualityPicker({
 }: FillQualityPickerProps): JSX.Element {
   const blur = usePointerPickBlur()
   return (
-    <select
-      className="cellOverlay__select"
-      aria-label="Fill quality"
-      title="Quality while filled (until you return to the grid)"
-      value={shown}
-      onPointerDown={blur.onPointerDown}
-      onKeyDown={blur.onKeyDown}
-      onBlur={blur.onBlur}
-      onChange={(event) => {
-        const value = event.target.value
-        if (value === SAVE_FOR_VIEW_OPTION) onSave()
-        else {
-          const quality = parseQualityOption(value)
+    <>
+      <select
+        className="cellOverlay__select"
+        aria-label="Fill quality"
+        title="Quality while filled (until you return to the grid)"
+        value={shown}
+        onPointerDown={blur.onPointerDown}
+        onKeyDown={blur.onKeyDown}
+        onBlur={blur.onBlur}
+        onChange={(event) => {
+          const quality = parseQualityOption(event.target.value)
           if (quality !== null) onPick(quality)
+          blur.afterPick(event)
+        }}
+      >
+        <QualityOptions />
+      </select>
+      <button
+        type="button"
+        className="cellOverlay__back"
+        title={
+          canSave
+            ? 'Use this quality whenever a cell of this View fills'
+            : 'This View already fills at this quality'
         }
-        blur.afterPick(event)
-      }}
-    >
-      <QualityOptions />
-      <option value={SAVE_FOR_VIEW_OPTION} disabled={!canSave}>
+        disabled={!canSave}
+        onClick={onSave}
+      >
         Save for this View
-      </option>
-    </select>
+      </button>
+    </>
   )
 }

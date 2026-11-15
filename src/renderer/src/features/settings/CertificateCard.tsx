@@ -17,6 +17,7 @@
 import { useState, type JSX } from 'react'
 import type { EndpointName, EndpointStatus, IpcError, PinCheck } from '@shared/ipc'
 import { useAppStore } from '../../state/appStore'
+import { CheckIcon, ShieldIcon } from '../../ui/icons'
 import { describeCert, formatFingerprint } from './settingsForm'
 
 /** Which call is in flight. Each button disables only itself, so the others stay usable. */
@@ -94,6 +95,7 @@ export function CertificateCard({
             void runCheck()
           }}
         >
+          <ShieldIcon />
           {busy === 'check' ? 'Checking…' : 'Check certificate'}
         </button>
       </div>
@@ -163,6 +165,7 @@ function CheckPanel({
             onPin(check.cert.fingerprint256, false)
           }}
         >
+          <CheckIcon />
           {busy === 'pin' ? 'Pinning…' : 'Trust this certificate'}
         </button>
       </div>
@@ -205,6 +208,7 @@ function CheckPanel({
             onPin(check.actual, true)
           }}
         >
+          <ShieldIcon />
           {busy === 'pin' ? 'Re-pinning…' : 'Replace the pinned certificate'}
         </button>
       ) : null}

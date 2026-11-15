@@ -42,6 +42,7 @@ import {
   thumbnailPlan,
   thumbnailsReducer,
 } from '../../state/camerasStore'
+import { GearIcon, PlugIcon, RefreshIcon } from '../../ui/icons'
 import { CameraCard } from './CameraCard'
 import { CameraThumbnail } from './CameraThumbnail'
 import './cameras.css'
@@ -156,9 +157,11 @@ export function CameraList({ onOpenSettings }: CameraListProps): JSX.Element {
         </span>
         <div className="cameras__actions row">
           <button type="button" className="button" onClick={onRefresh} disabled={busy}>
+            <RefreshIcon />
             Refresh
           </button>
           <button type="button" className="button" onClick={onOpenSettings}>
+            <GearIcon />
             Settings
           </button>
         </div>
@@ -239,6 +242,7 @@ function SetupBanner({
           .join('; ')}.`}
       </span>
       <button type="button" className="button" onClick={onOpenSettings}>
+        <GearIcon />
         Open settings
       </button>
     </div>
@@ -270,6 +274,7 @@ function SetupCard({
       </ul>
       <div className="row">
         <button type="button" className="button button--primary" onClick={onOpenSettings}>
+          <GearIcon />
           Open settings
         </button>
       </div>
@@ -309,9 +314,11 @@ function EmptyCard({
           onClick={onConnect}
           disabled={connecting}
         >
+          <PlugIcon />
           {connecting ? 'Connecting…' : 'Connect'}
         </button>
         <button type="button" className="button" onClick={onOpenSettings}>
+          <GearIcon />
           Open settings
         </button>
       </div>
@@ -331,6 +338,7 @@ function Problem({
     <div className="cameras__problem" role="status">
       <span className="cameras__problemText">{error.message}</span>
       <button type="button" className="button" onClick={onOpenSettings}>
+        <GearIcon />
         Open settings
       </button>
     </div>

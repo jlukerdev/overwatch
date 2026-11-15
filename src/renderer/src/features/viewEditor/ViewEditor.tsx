@@ -18,8 +18,16 @@
 //    not what is on screen); Delete asks for confirmation, and moves the editor to the neighbour
 //    (`neighbourAfterDelete`) as it sends the delete, so it never lands on the first View meanwhile.
 //
-// Layout: the list of Views on the left; then the header (name and actions), the settings row, the
-// selection toolbar and the canvas; then the cell inspector and the camera palette on the right.
+// Layout (P3.8: each action sits by what it acts on). On the left, the list of Views (reorder on
+// each row) with a footer pinned under it: New View, and Duplicate / Delete for the View being
+// edited. In the middle: the header (the name, and Close at the far right), the settings in three
+// groups (Grid, Display, Quality), the selection toolbar (a count of the selected cells, Merge,
+// Split, Clear cameras), the canvas, and the save bar under it — the draft's state ("Unsaved
+// changes" / "All changes saved", and the last error beside it) with Discard and Save. The save bar is always
+// rendered so the canvas never jumps. It is also where every failure is reported — a refused
+// Save, a merge or split, and the list footer's New / Duplicate / Delete and the reorder buttons
+// — next to the status, on one line (full text in its tooltip). On the right, the cell inspector
+// and the camera palette.
 // The subcomponents (EditorCanvas, EditorSettings, CellInspector, CameraPalette) only turn events
 // into calls; the decisions are in ./editorModel and ./viewEditorHelpers, pure and tested.
 import { useEffect, useId, useMemo, useRef, useState, type JSX } from 'react'
@@ -35,6 +43,19 @@ import {
   viewsActions,
   type ViewResult,
 } from '../../state/viewsStore'
+import {
+  CheckIcon,
+  ChevronDownIcon,
+  ChevronUpIcon,
+  CopyIcon,
+  EraserIcon,
+  MergeIcon,
+  PlusIcon,
+  SplitIcon,
+  TrashIcon,
+  UndoIcon,
+  XIcon,
+} from '../../ui/icons'
 import { setCellQuality } from '../quality/qualityChoice'
 import { CameraPalette } from './CameraPalette'
 import { CellInspector } from './CellInspector'
@@ -167,9 +188,11 @@ function NoViewsToEdit({
             disabled={pending}
             onClick={create}
           >
+            <PlusIcon />
             New View
           </button>
-          <button type="button" className="button" onClick={onClose}>
+          <button type="button" className="button button--ghost" onClick={onClose}>
+            <XIcon />
             Close
           </button>
         </div>
@@ -360,9 +383,12 @@ function DraftEditor({
     )
   }
 
+  const selectedCount = selectedIndexes.length
+
   return (
     <section className="viewEditor" aria-label="View editor">
       <nav className="viewEditor__list" aria-label="Views to edit">
+        <h3 className="viewEditor__panelTitle viewEditor__listTitle">Views</h3>
         <ol className="viewEditor__listItems">
           {views.map((view, index) => (
             <li key={view.id} className="viewEditor__listRow">
@@ -379,102 +405,103 @@ function DraftEditor({
               </button>
               <button
                 type="button"
-                className="button viewEditor__iconButton"
+                className="button button--icon button--ghost button--sm"
                 aria-label={`Move ${view.name} up`}
+                title={`Move ${view.name} up`}
                 disabled={index === 0 || pending}
                 onClick={() => {
                   run(viewsActions.reorderViews(index, index - 1))
                 }}
               >
-                ▲
+                <ChevronUpIcon />
               </button>
               <button
                 type="button"
-                className="button viewEditor__iconButton"
+                className="button button--icon button--ghost button--sm"
                 aria-label={`Move ${view.name} down`}
+                title={`Move ${view.name} down`}
                 disabled={index === views.length - 1 || pending}
                 onClick={() => {
                   run(viewsActions.reorderViews(index, index + 1))
                 }}
               >
-                ▼
+                <ChevronDownIcon />
               </button>
             </li>
           ))}
         </ol>
-        <button
-          type="button"
-          className="button"
-          disabled={pending}
-          onClick={() => {
-            if (mayLeave()) run(viewsActions.createView(nextViewName(views)), openNewState)
-          }}
-        >
-          New View
-        </button>
-      </nav>
-
-      <div className="viewEditor__main">
-        <header className="viewEditor__header">
-          <label className="field__label" htmlFor={nameId}>
-            Name
-          </label>
-          <input
-            id={nameId}
-            className="field__input viewEditor__name"
-            value={draft.name}
-            onChange={(event) => {
-              edit({ ...draft, name: event.target.value })
+        {/* Pinned under the list: making a View, and the two that act on the one being edited. */}
+        <div className="viewEditor__listFooter">
+          <button
+            type="button"
+            className="button button--primary"
+            disabled={pending}
+            onClick={() => {
+              if (mayLeave()) run(viewsActions.createView(nextViewName(views)), openNewState)
             }}
-          />
-          {dirty ? <span className="field__hint">Unsaved changes</span> : null}
-          <div className="row viewEditor__headerActions">
+          >
+            <PlusIcon />
+            New View
+          </button>
+          <p className="viewEditor__listCaption" title={saved.name}>
+            This View: <span className="viewEditor__listCaptionName">{saved.name}</span>
+          </p>
+          <div className="viewEditor__listFooterRow">
             <button
               type="button"
               className="button"
               disabled={dirty || pending}
-              title={dirty ? 'Save or discard your changes first' : undefined}
+              title={
+                dirty ? 'Save or discard your changes first' : `Make a copy of "${saved.name}"`
+              }
               onClick={() => {
                 run(viewsActions.duplicateView(saved.id), openNewState)
               }}
             >
-              Duplicate
+              <CopyIcon />
+              <span className="viewEditor__listFooterLabel">Duplicate</span>
             </button>
             <button
               type="button"
               className="button button--danger"
               disabled={pending}
+              title={`Delete "${saved.name}"`}
               onClick={remove}
             >
-              Delete
-            </button>
-            <button type="button" className="button" disabled={!dirty} onClick={discard}>
-              Discard
-            </button>
-            <button
-              type="button"
-              className="button button--primary"
-              disabled={!dirty || pending}
-              onClick={save}
-            >
-              Save
-            </button>
-            <button
-              type="button"
-              className="button"
-              onClick={() => {
-                if (mayLeave()) onClose()
-              }}
-            >
-              Close
+              <TrashIcon />
+              <span className="viewEditor__listFooterLabel">Delete</span>
             </button>
           </div>
+        </div>
+      </nav>
+
+      <div className="viewEditor__main">
+        <header className="viewEditor__header">
+          <div className="viewEditor__nameField">
+            <label className="field__label" htmlFor={nameId}>
+              Name
+            </label>
+            <input
+              id={nameId}
+              className="field__input viewEditor__name"
+              value={draft.name}
+              onChange={(event) => {
+                edit({ ...draft, name: event.target.value })
+              }}
+            />
+          </div>
+          <button
+            type="button"
+            className="button button--ghost viewEditor__close"
+            title="Close the editor"
+            onClick={() => {
+              if (mayLeave()) onClose()
+            }}
+          >
+            <XIcon />
+            Close
+          </button>
         </header>
-        {error === null ? null : (
-          <p className="field__error viewEditor__message" role="alert">
-            {error}
-          </p>
-        )}
 
         <EditorSettings
           key={resetCount}
@@ -484,29 +511,42 @@ function DraftEditor({
           onError={setError}
         />
 
-        <div className="row viewEditor__toolbar" role="toolbar" aria-label="Selected cells">
+        <div className="viewEditor__toolbar" role="toolbar" aria-label="Selected cells">
+          <span className="viewEditor__selectionCount">
+            {selectedCount === 0
+              ? 'No cells selected'
+              : selectedCount === 1
+                ? '1 cell selected'
+                : `${String(selectedCount)} cells selected`}
+          </span>
           <button
             type="button"
-            className="button"
+            className="button button--sm"
             disabled={actions?.canMerge !== true}
+            title="Merge the selected cells into one"
             onClick={merge}
           >
+            <MergeIcon />
             Merge
           </button>
           <button
             type="button"
-            className="button"
+            className="button button--sm"
             disabled={actions?.canSplit !== true}
+            title="Split the selected cell back into single cells"
             onClick={split}
           >
+            <SplitIcon />
             Split
           </button>
           <button
             type="button"
-            className="button"
+            className="button button--sm"
             disabled={!selectedIndexes.some((i) => (draft.cells[i]?.cameraIds.length ?? 0) > 0)}
+            title="Remove the cameras from the selected cells"
             onClick={clearCameras}
           >
+            <EraserIcon />
             Clear cameras
           </button>
           {note === null ? null : (
@@ -533,6 +573,47 @@ function DraftEditor({
             }}
           />
         </div>
+
+        {/* Always rendered, so the canvas above does not jump when the first edit is made. */}
+        <footer className="viewEditor__saveBar">
+          <span
+            className={
+              dirty
+                ? 'viewEditor__saveStatus viewEditor__saveStatus--dirty'
+                : 'viewEditor__saveStatus'
+            }
+          >
+            <span className="viewEditor__saveDot" aria-hidden="true" />
+            {dirty ? 'Unsaved changes' : 'All changes saved'}
+          </span>
+          {/* One line, so the bar's height never changes; the whole message is in the tooltip. */}
+          {error === null ? null : (
+            <p className="field__error viewEditor__message" role="alert" title={error}>
+              {error}
+            </p>
+          )}
+          <div className="viewEditor__saveActions">
+            <button
+              type="button"
+              className="button button--ghost"
+              disabled={!dirty}
+              title="Go back to the stored View"
+              onClick={discard}
+            >
+              <UndoIcon />
+              Discard
+            </button>
+            <button
+              type="button"
+              className="button button--primary"
+              disabled={!dirty || pending}
+              onClick={save}
+            >
+              <CheckIcon />
+              Save
+            </button>
+          </div>
+        </footer>
       </div>
 
       <aside className="viewEditor__side">

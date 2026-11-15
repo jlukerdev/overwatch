@@ -150,12 +150,25 @@
 }
 
 /* An icon-only chip, e.g. the 2×2 grid of fill's back control. */
+/* A chip button holding an icon: alone (the back control), or before a label (Save for this View). */
 .cellOverlay__iconButton {
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  gap: 0.3rem;
   padding: 0.2rem 0.35rem;
   line-height: 0;
+}
+
+/* With a label beside the icon, the text needs its normal line height back. */
+.cellOverlay__iconButton--labelled {
+  line-height: normal;
+}
+
+/* The overlay's icons (ui/icons.tsx) at a fixed 14 px, whatever the chip's small font size. */
+.cellOverlay__icon {
+  width: 14px;
+  height: 14px;
 }
 
 /* FILL-1's back control (P3.5), shown only while filled. The badge's chip, as a button. */

@@ -35,12 +35,20 @@
   flex-direction: column;
   flex-shrink: 0;
   width: 12rem;
-  gap: 0.25rem;
-  padding: 0.5rem;
-  /* A long list of Views scrolls here; the grid beside it never does. */
-  overflow-y: auto;
+  min-height: 0;
   border-right: 1px solid var(--border);
   background: var(--bg-raised);
+}
+
+/* A long list of Views scrolls here; the actions below it and the grid beside it never do. */
+.viewSwitcher__list {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 0.25rem;
+  min-height: 0;
+  padding: 0.5rem;
+  overflow-y: auto;
 }
 
 .viewSwitcher__item {
@@ -83,14 +91,18 @@
   white-space: nowrap;
 }
 
-/* New View / Edit View (P3.3), under the list and set off from it. */
+/* New View / Edit View (P3.3), pinned to the bottom of the pane (P3.8), set off from the list. */
 .viewSwitcher__actions {
   display: flex;
+  flex-shrink: 0;
   flex-direction: column;
-  gap: 0.25rem;
-  margin-top: 0.5rem;
-  padding-top: 0.5rem;
+  gap: 0.4rem;
+  padding: 0.6rem 0.5rem;
   border-top: 1px solid var(--border);
+}
+
+.viewSwitcher__actions .button {
+  width: 100%;
 }
 
 .viewSwitcher__empty,

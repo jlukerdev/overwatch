@@ -10,9 +10,15 @@
 // never disagree about which View is showing (both come from `useActiveView` in the Live screen).
 // The key rules are `viewShortcutIndex` (./viewShortcut), pure and tested; the hook below only
 // listens and calls it.
+//
+// Below the list, "New View" and "Edit View" open the View editor (P3.3; VIEW-3): New View first
+// creates `View N` (the next free name, `nextViewName`) and then edits it, Edit View edits the
+// active View. They are plain buttons with **no** `data-view-id`, so the harness selector above
+// still matches View buttons only.
 import { useCallback, useEffect, useRef, useState, type JSX } from 'react'
 import type { View } from '@shared/models'
 import { selectionNeedsStore, useLastViewId, viewsActions } from '../../state/viewsStore'
+import { nextViewName } from '../viewEditor/viewEditorHelpers'
 import { viewShortcutIndex, type ViewShortcutTarget } from './viewShortcut'
 
 /** Views 1–9 have a key; a tenth and later are reachable by click only. */
@@ -22,10 +28,13 @@ export interface ViewSwitcherProps {
   readonly views: readonly View[]
   /** `null` only when there are no Views. */
   readonly activeViewId: string | null
+  /** Opens the View editor on View `id`. */
+  readonly onEditView: (id: string) => void
 }
 
-export function ViewSwitcher({ views, activeViewId }: ViewSwitcherProps): JSX.Element {
+export function ViewSwitcher({ views, activeViewId, onEditView }: ViewSwitcherProps): JSX.Element {
   const [error, setError] = useState<string | null>(null)
+  const [creating, setCreating] = useState(false)
   // The stored id, not `activeViewId`: the latter may be a fallback that was never stored, and
   // choosing it must still be written (`selectionNeedsStore`). Only the skip reads it; which button
   // is marked still comes from `activeViewId`.
@@ -70,6 +79,39 @@ export function ViewSwitcher({ views, activeViewId }: ViewSwitcherProps): JSX.El
           </button>
         )
       })}
+      <div className="viewSwitcher__actions">
+        <button
+          type="button"
+          className="button"
+          disabled={creating}
+          onClick={() => {
+            setCreating(true)
+            void viewsActions.createView(nextViewName(views)).then((result) => {
+              setCreating(false)
+              if (!result.ok) {
+                setError(result.error.message)
+                return
+              }
+              setError(null)
+              // createView makes the new View active, so lastViewId is its id.
+              const id = result.value.settings.lastViewId
+              if (id !== null) onEditView(id)
+            })
+          }}
+        >
+          New View
+        </button>
+        <button
+          type="button"
+          className="button"
+          disabled={activeViewId === null}
+          onClick={() => {
+            if (activeViewId !== null) onEditView(activeViewId)
+          }}
+        >
+          Edit View
+        </button>
+      </div>
       {error === null ? null : (
         <p className="viewSwitcher__error" role="alert">
           {error}

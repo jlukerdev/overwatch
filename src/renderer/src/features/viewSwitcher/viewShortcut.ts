@@ -38,6 +38,26 @@ export interface ViewShortcutTarget {
 /** Elements whose keystrokes are text. `tagName` is upper-case for HTML elements. */
 const TEXT_ENTRY_TAGS = new Set(['INPUT', 'TEXTAREA', 'SELECT'])
 
+/**
+ * Whether keystrokes on this target are text: a text field, a select or a contentEditable. Shared
+ * with fill's `Esc` (features/fill/fillMode.ts), so the two keyboard rules agree on what typing is.
+ */
+export function isTextEntryTarget(target: ViewShortcutTarget | null): boolean {
+  return target !== null && (target.isContentEditable || TEXT_ENTRY_TAGS.has(target.tagName))
+}
+
+/**
+ * A DOM event's target as the two keyboard rules read it (this file's and fill's `Esc`); anything
+ * that is not an HTML element is `null`. One adapter for both listeners (ViewSwitcher, GridView), so
+ * they cannot drift apart on what a target is. Touches the DOM only when called, so this module still
+ * loads in the node test environment.
+ */
+export function keyEventTarget(target: EventTarget | null): ViewShortcutTarget | null {
+  return target instanceof HTMLElement
+    ? { tagName: target.tagName, isContentEditable: target.isContentEditable }
+    : null
+}
+
 const DIGIT_CODE = /^Digit([1-9])$/
 const NUMPAD_CODE = /^Numpad([1-9])$/
 
@@ -51,9 +71,7 @@ export function viewShortcutIndex(
 ): number | null {
   if (event.defaultPrevented || event.repeat) return null
   if (event.ctrlKey || event.metaKey || event.altKey || event.shiftKey) return null
-  if (target !== null && (target.isContentEditable || TEXT_ENTRY_TAGS.has(target.tagName))) {
-    return null
-  }
+  if (isTextEntryTarget(target)) return null
   const digit = DIGIT_CODE.exec(event.code)?.[1] ?? numpadDigit(event)
   return digit === undefined ? null : Number(digit) - 1
 }

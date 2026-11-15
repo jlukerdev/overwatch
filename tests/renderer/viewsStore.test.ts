@@ -62,6 +62,7 @@ function appState(views: View[], lastViewId: string | null): AppState {
         accessEnabled: false,
         accessBaseUrl: null,
         accessCertFingerprint: null,
+        connectOnLaunch: false,
       },
       doorLinks: {},
       views,

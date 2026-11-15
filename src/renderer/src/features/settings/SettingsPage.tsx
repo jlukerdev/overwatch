@@ -426,8 +426,9 @@ function ConnectionCard({ accessEnabled }: { accessEnabled: boolean }): JSX.Elem
     <section className="card">
       <h2 className="card__title">Connection</h2>
       <p className="card__hint">
-        Nothing connects on its own: the app opens the camera feed when you ask it to, so a console
-        that is not set up costs nothing.
+        The app opens the camera feed when you ask it to, so a console that is not set up costs
+        nothing. Once a connect has worked, it connects by itself at launch until you disconnect,
+        remove the API key or change the console address.
       </p>
 
       <dl className="settings__facts">

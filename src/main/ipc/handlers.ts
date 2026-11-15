@@ -322,9 +322,12 @@ export function createIpcRouter(deps: IpcRouterDeps): ReadonlyMap<string, IpcHan
           'credential cannot be stored. View Protect never writes a secret in plaintext (CON-2).',
       )
     }
+    const replaced = credentials[input.key] !== input.value
     await secrets.set(input.key, input.value)
     // Into the live object the clients hold a reference to, so the next request uses it (CON-1).
     credentials[input.key] = input.value
+    // CON-4: a new Protect key has to prove itself with a connect before a launch uses it unasked.
+    if (input.key === 'protectApiKey' && replaced) await ready.manager.credentialReplaced()
     return state(ready)
   })
 

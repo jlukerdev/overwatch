@@ -59,6 +59,7 @@ function endpointFor(port: number): ConsoleEndpoint {
     accessEnabled: true,
     accessBaseUrl: `https://${HOST}:${String(port)}${API_PATH}`,
     accessCertFingerprint: null,
+    connectOnLaunch: false,
   })
 }
 

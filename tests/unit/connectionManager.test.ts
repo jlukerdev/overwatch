@@ -117,6 +117,8 @@ interface SetupOptions {
   /** `host:port` keys that have an accepted certificate. */
   readonly pinned?: readonly string[]
   readonly cameras?: readonly Camera[]
+  /** CON-4's stored launch flag. */
+  readonly connectOnLaunch?: boolean
 }
 
 function setup(options: SetupOptions = {}) {
@@ -126,6 +128,7 @@ function setup(options: SetupOptions = {}) {
     accessBaseUrl: options.accessBaseUrl ?? null,
     certFingerprint: options.certFingerprint ?? null,
     accessCertFingerprint: options.accessCertFingerprint ?? null,
+    connectOnLaunch: options.connectOnLaunch ?? false,
   })
   let current: Config = ConfigSchema.parse({
     schemaVersion: CONFIG_SCHEMA_VERSION,
@@ -822,6 +825,222 @@ describe('applyConsoleChange (CON-1/3, DOOR-0)', () => {
   it('emits the new status, so the indicator updates from the save', async () => {
     await h.manager.applyConsoleChange(nextConsole(h, { host: 'udm.local' }))
     expect(h.payloads(IPC_EVENTS.connection.channel).length).toBeGreaterThan(0)
+  })
+})
+
+describe('the connect-on-launch flag (CON-4)', () => {
+  /** Opens the devices feed, as a connect that worked does. */
+  async function connectAndOpen(harness: Harness): Promise<void> {
+    await harness.manager.connect()
+    harness.feeds.last().emitState('open')
+    await flush()
+  }
+
+  /** How many config writes there were. Nothing else in these tests writes the config. */
+  function flagWrites(harness: Harness): number {
+    return harness.update.mock.calls.length
+  }
+
+  it('is set once the devices feed opens, in memory and on disk', async () => {
+    await h.manager.connect()
+    // A connect that has only read the inventory has not shown the socket works yet.
+    expect(h.console.connectOnLaunch).toBe(false)
+    h.feeds.last().emitState('open')
+    await flush()
+    expect(h.console.connectOnLaunch).toBe(true)
+    expect(h.disk.console.connectOnLaunch).toBe(true)
+    expect(flagWrites(h)).toBe(1)
+  })
+
+  it('is written once, not on every reconnect', async () => {
+    await connectAndOpen(h)
+    const feed = h.feeds.last()
+    for (let i = 0; i < 3; i++) {
+      feed.emitState('reconnecting')
+      feed.emitState('open')
+    }
+    await h.manager.connect()
+    await flush()
+    expect(flagWrites(h)).toBe(1)
+    expect(h.disk.console.connectOnLaunch).toBe(true)
+  })
+
+  it('leaves the rest of the stored config alone', async () => {
+    h = setup({ certFingerprint: FP, pinned: ['192.0.2.10:443'] })
+    await connectAndOpen(h)
+    expect(h.disk.console.certFingerprint).toBe(FP)
+    expect(h.disk.console.host).toBe('192.0.2.10')
+  })
+
+  it('is cleared by a disconnect: the user said stop', async () => {
+    await connectAndOpen(h)
+    await h.manager.disconnect()
+    await flush()
+    expect(h.console.connectOnLaunch).toBe(false)
+    expect(h.disk.console.connectOnLaunch).toBe(false)
+  })
+
+  it('writes nothing on a disconnect when it was already off', async () => {
+    await h.manager.disconnect()
+    await flush()
+    expect(flagWrites(h)).toBe(0)
+  })
+
+  it('is cleared when the Protect key is cleared', async () => {
+    await connectAndOpen(h)
+    delete h.services.credentials.protectApiKey
+    await h.manager.credentialCleared()
+    await flush()
+    expect(h.disk.console.connectOnLaunch).toBe(false)
+  })
+
+  it('is cleared when the Protect endpoint moves, in the same write as the pin', async () => {
+    h = setup({ connectOnLaunch: true, certFingerprint: FP, pinned: ['192.0.2.10:443'] })
+    await h.manager.applyConsoleChange({ ...h.console, host: '198.51.100.7' })
+    expect(h.update).toHaveBeenCalledTimes(1)
+    expect(h.disk.console.connectOnLaunch).toBe(false)
+    expect(h.console.connectOnLaunch).toBe(false)
+  })
+
+  it('survives an Access-only change', async () => {
+    h = setup({ connectOnLaunch: true, accessEnabled: true })
+    await h.manager.applyConsoleChange({
+      ...h.console,
+      accessBaseUrl: 'https://192.0.2.10/proxy/access/api/v1/developer',
+    })
+    expect(h.disk.console.connectOnLaunch).toBe(true)
+    expect(h.console.connectOnLaunch).toBe(true)
+  })
+
+  it('survives a feed error, a reconnect and the feed stopping by itself', async () => {
+    await connectAndOpen(h)
+    const feed = h.feeds.last()
+    feed.options.onError?.(
+      new ProtectApiError('WebSocket upgrade failed with HTTP 401.', {
+        kind: 'auth',
+        endpoint: '192.0.2.10:443',
+      }),
+    )
+    feed.emitState('reconnecting')
+    feed.emitState('stopped')
+    await flush()
+    expect(h.disk.console.connectOnLaunch).toBe(true)
+    expect(flagWrites(h)).toBe(1)
+  })
+
+  it('survives a failed connect', async () => {
+    h = setup({ connectOnLaunch: true })
+    h.protect.cameras.mockRejectedValueOnce(new Error('ECONNREFUSED'))
+    await expect(h.manager.connect()).rejects.toThrow()
+    await flush()
+    expect(h.console.connectOnLaunch).toBe(true)
+    expect(flagWrites(h)).toBe(0)
+  })
+
+  it('survives shutdown: quitting is not disconnecting', async () => {
+    await connectAndOpen(h)
+    await h.manager.shutdown()
+    await flush()
+    expect(h.disk.console.connectOnLaunch).toBe(true)
+    expect(flagWrites(h)).toBe(1)
+  })
+
+  it('logs a failed write and keeps the session going', async () => {
+    h.update.mockRejectedValueOnce(new Error('EACCES'))
+    await connectAndOpen(h)
+    expect(h.manager.status().protect.phase).toBe('connected')
+    expect(h.logged.some((line) => line.includes('could not save'))).toBe(true)
+  })
+
+  it('puts memory back after a failed write, so the next change retries it', async () => {
+    await connectAndOpen(h)
+    h.update.mockRejectedValueOnce(new Error('EACCES'))
+    await h.manager.disconnect()
+    await flush()
+    // The disk still says true, so memory must too — or the next disconnect would skip the write.
+    expect(h.console.connectOnLaunch).toBe(true)
+    await h.manager.connect()
+    await h.manager.disconnect()
+    await flush()
+    expect(h.disk.console.connectOnLaunch).toBe(false)
+  })
+
+  it('is cleared when a different Protect key is stored, and set again once it opens', async () => {
+    await connectAndOpen(h)
+    await h.manager.credentialReplaced()
+    await flush()
+    expect(h.disk.console.connectOnLaunch).toBe(false)
+    await h.manager.disconnect()
+    await connectAndOpen(h)
+    expect(h.disk.console.connectOnLaunch).toBe(true)
+  })
+
+  it('ignores an `open` from a feed that is no longer the live one', async () => {
+    await h.manager.connect()
+    const stale = h.feeds.last()
+    await h.manager.disconnect()
+    stale.emitState('open')
+    await flush()
+    expect(h.console.connectOnLaunch).toBe(false)
+    expect(flagWrites(h)).toBe(0)
+  })
+})
+
+describe('connectOnLaunch (CON-4)', () => {
+  const READY = { connectOnLaunch: true, certFingerprint: FP, pinned: ['192.0.2.10:443'] }
+
+  it('connects when the flag, the key, the pin and the endpoint are all there', async () => {
+    h = setup(READY)
+    await h.manager.connectOnLaunch()
+    expect(h.protect.cameras).toHaveBeenCalledTimes(1)
+    expect(h.feeds.feeds).toHaveLength(1)
+    expect(h.events.feeds).toHaveLength(1)
+    expect(h.manager.status().protect.phase).toBe('connecting')
+  })
+
+  const skips: { name: string; options: SetupOptions }[] = [
+    { name: 'the flag is off', options: { ...READY, connectOnLaunch: false } },
+    { name: 'there is no console address', options: { ...READY, host: '' } },
+    { name: 'the address cannot be parsed', options: { ...READY, host: 'http://192.0.2.10' } },
+    { name: 'no Protect key is stored', options: { ...READY, apiKey: null } },
+    { name: 'the Protect endpoint is not pinned', options: { ...READY, pinned: [] } },
+  ]
+  for (const { name, options } of skips) {
+    it(`sends nothing when ${name}`, async () => {
+      h = setup(options)
+      await h.manager.connectOnLaunch()
+      expect(h.protect.cameras).not.toHaveBeenCalled()
+      expect(h.feeds.feeds).toHaveLength(0)
+      expect(h.events.feeds).toHaveLength(0)
+      expect(h.payloads(IPC_EVENTS.connection.channel)).toEqual([])
+    })
+  }
+
+  it('swallows a failure and leaves it in the status like a failed connect', async () => {
+    h = setup(READY)
+    h.protect.cameras.mockRejectedValueOnce(
+      new ProtectApiError('GET /v1/cameras failed with HTTP 401.', {
+        kind: 'auth',
+        endpoint: '192.0.2.10:443',
+      }),
+    )
+    await expect(h.manager.connectOnLaunch()).resolves.toBeUndefined()
+    const status = h.manager.status()
+    expect(status.protect.phase).toBe('error')
+    expect(status.protect.error?.kind).toBe('auth')
+    expect(h.feeds.feeds).toHaveLength(0)
+    // An outage at launch is not the user saying stop.
+    expect(h.console.connectOnLaunch).toBe(true)
+    // Safe lines only (CON-2, NFR-9).
+    for (const line of h.logged) expect(line).not.toContain(API_KEY)
+    expect(h.logged.some((line) => line.startsWith('connect on launch: failed (auth)'))).toBe(true)
+  })
+
+  it('is serialized with the other operations: no second socket from an overlapping connect', async () => {
+    h = setup(READY)
+    await Promise.all([h.manager.connectOnLaunch(), h.manager.connect()])
+    expect(h.feeds.feeds).toHaveLength(1)
+    expect(h.events.feeds).toHaveLength(1)
   })
 })
 

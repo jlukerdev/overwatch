@@ -180,7 +180,9 @@ function setup(options: SetupOptions = {}) {
       current = { ...current, console: next }
       return Promise.resolve()
     }),
+    connectOnLaunch: vi.fn(() => Promise.resolve()),
     credentialCleared: vi.fn(() => Promise.resolve()),
+    credentialReplaced: vi.fn(() => Promise.resolve()),
     shutdown: vi.fn(() => Promise.resolve()),
   } satisfies ConnectionManager
 
@@ -479,7 +481,21 @@ describe('setConsole (CON-1, DOOR-0)', () => {
       // Not writable from a settings form: only the CON-3 flow may pin anything.
       certFingerprint: FP_A,
       accessCertFingerprint: null,
+      // Not writable from a settings form either: main alone owns CON-4's launch flag.
+      connectOnLaunch: false,
     })
+  })
+
+  it('carries a stored connectOnLaunch over rather than resetting it (CON-4)', async () => {
+    h.services.current = {
+      ...h.services.current,
+      console: { ...h.services.current.console, connectOnLaunch: true },
+    }
+    await h.call(IPC.setConsole, { host: 'udm.local', accessEnabled: false, accessBaseUrl: null })
+    // Whether it survives is the manager's call (a moved Protect endpoint clears it, connection.ts).
+    expect(h.manager.applyConsoleChange).toHaveBeenCalledWith(
+      expect.objectContaining({ connectOnLaunch: true }),
+    )
   })
 
   it('refuses an Access API URL that is not https, rather than upgrading it (CON-2)', async () => {
@@ -515,6 +531,15 @@ describe('setSecret / clearSecret (CON-1/2)', () => {
       result.ok &&
         (result.value as { secretsStored: { accessToken: boolean } }).secretsStored.accessToken,
     ).toBe(true)
+  })
+
+  it('clears connect-on-launch when a different Protect key is stored, not the same one (CON-4)', async () => {
+    await h.call(IPC.setSecret, { key: 'protectApiKey', value: 'a-new-key' })
+    expect(h.manager.credentialReplaced).toHaveBeenCalledTimes(1)
+    await h.call(IPC.setSecret, { key: 'protectApiKey', value: 'a-new-key' })
+    expect(h.manager.credentialReplaced).toHaveBeenCalledTimes(1)
+    await h.call(IPC.setSecret, { key: 'accessToken', value: 'another-token' })
+    expect(h.manager.credentialReplaced).toHaveBeenCalledTimes(1)
   })
 
   it('refuses to store anything while the keystore is unavailable (CON-2)', async () => {

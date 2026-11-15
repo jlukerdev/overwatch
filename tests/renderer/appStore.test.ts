@@ -47,6 +47,7 @@ function appState(overrides: Partial<AppState> = {}): AppState {
         accessEnabled: false,
         accessBaseUrl: null,
         accessCertFingerprint: null,
+        connectOnLaunch: false,
       },
       doorLinks: {},
       views: [],

@@ -603,9 +603,10 @@ if (!app.requestSingleInstanceLock()) {
       await startServices().catch((err: unknown) => {
         console.error('[services] Failed to start:', err)
       })
-      // The connection manager and the IPC router, in that order. **Nothing connects here**: the
-      // manager only derives its status from the config and the stored pins, which are offline
-      // reads, so the first request to the console stays a deliberate user action (CON-4, R9).
+      // The connection manager and the IPC router, in that order. Creating the manager connects
+      // nothing: it only derives its status from the config and the stored pins, which are offline
+      // reads. The one launch-time connect is `connectOnLaunch()` below, and only for a console a
+      // previous session connected to successfully (CON-4, R9).
       const started = getServices()
       if (started !== null) {
         connection = createConnectionManager({
@@ -647,6 +648,16 @@ if (!app.requestSingleInstanceLock()) {
       // creating another one here would orphan it (only the last is tracked as mainWindow).
       if (BrowserWindow.getAllWindows().length === 0) createWindow()
       if (perfConfig !== null) startPerf(perfConfig)
+      // CON-4's launch exception: reconnect a console that worked last session, unless the user has
+      // since disconnected, cleared the key or moved the endpoint (the manager checks the flag, the
+      // key and the pin, and sends nothing otherwise). After the router and the window, so the
+      // renderer's `getState` is answered meanwhile. Its pushes need no ordering: one sent before the
+      // page has loaded is dropped by `sendToRenderer` and the load's `getState` reads the newer
+      // status and inventory instead, and the renderer subscribes before it loads (appStore), so
+      // nothing after that is missed. Never during a perf run: the harness connects by itself
+      // (SPEC §5.4). Not awaited, and it never rejects — a failure shows as a normal connection
+      // error in the status.
+      if (perfConfig === null) void connection?.connectOnLaunch()
       app.on('activate', () => {
         if (BrowserWindow.getAllWindows().length === 0) createWindow()
       })

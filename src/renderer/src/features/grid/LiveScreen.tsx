@@ -10,9 +10,10 @@
 //  1. "Reading the console status…" until the first status and settings have landed.
 //  2. The setup / no-cameras notices, by the camera list's own rules (`setupGaps`,
 //     `cameraListBody`), so this screen and that one never disagree about why there is nothing to
-//     show. Nothing connects on launch (CON-4), so "No cameras" is also what a fresh start shows
-//     until the user connects from the Cameras screen. The switcher stays, so a View can still be
-//     picked (and remembered) before the console is reached.
+//     show. Nothing connects on launch unless a previous session's connect worked (CON-4), so "No
+//     cameras" is also what a launch shows until the user connects from the Cameras screen — or,
+//     for the launch auto-connect, until its inventory lands. The switcher stays, so a View can
+//     still be picked (and remembered) before the console is reached.
 //  3. "No Views yet", with a button that makes a first View of the cameras (`starterPreset`).
 //  4. The active View.
 //
@@ -109,6 +110,14 @@ function LiveBody({ activeView, onOpenSettings, onOpenCameras }: LiveBodyProps):
         action={{ label: 'Open settings', icon: <GearIcon />, onClick: onOpenSettings }}
       />
     )
+  }
+  if (
+    body === 'empty' &&
+    (connection.protect.phase === 'connecting' || connection.protect.phase === 'reconnecting')
+  ) {
+    // CON-4: a launch connect opens on Live before the inventory has landed; "No cameras" with a
+    // pointer to the Cameras screen would be a false setup prompt for that moment.
+    return <Notice title="Connecting to the console…" />
   }
   if (body === 'empty') {
     return (

@@ -172,7 +172,8 @@ export type SecretsStored = z.infer<typeof SecretsStoredSchema>
  * - `disabled`: Access is off (DOOR-0). Never used for Protect.
  * - `unconfigured`: no host, no key, or an address that cannot be parsed (CON-1).
  * - `idle`: configured and pinned, but nothing has been asked of it yet. Nothing connects at
- *   startup on purpose (CON-4, and R9's budget).
+ *   startup on purpose (CON-4, and R9's budget) — unless a previous session's connect worked and
+ *   the user has not disconnected since (`console.connectOnLaunch`), when main connects itself.
  * - `connecting` / `connected` / `reconnecting`: the live device feed's state (CAM-2).
  * - `error`: the last attempt failed. `error` carries why.
  */

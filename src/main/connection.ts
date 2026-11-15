@@ -16,10 +16,15 @@
 //
 // Why it is a module of its own rather than a few variables in the IPC handlers:
 //
-//  1. **Nothing connects on its own** (CON-4, R9). `connect()` and `testConnection()` are the only
-//     things that send a request, and both exist because the user asked. The status is derived from
-//     config and pins, which are offline reads, so the indicator is correct at launch without a
-//     single permit spent.
+//  1. **Nothing connects on its own** (CON-4, R9) — with one exception the user opted into by
+//     connecting. `connect()` and `testConnection()` are the only things that send a request, and
+//     both exist because the user asked. The status is derived from config and pins, which are
+//     offline reads, so the indicator is correct at launch without a single permit spent. The
+//     exception is `connectOnLaunch()`: once a connect has *worked* (the devices feed reached
+//     `open`), `console.connectOnLaunch` is persisted as `true`, and the next launch connects by
+//     itself until the user disconnects, clears the Protect key or moves the Protect endpoint — each
+//     of which writes it back to `false`. An outage, a reconnect or a failed connect leaves it alone:
+//     a console that is down when the app starts is not the user saying "stop connecting".
 //  2. **`GET /v1/cameras` is the authority, not the feed** (R11, SPEC §5.1). The devices WebSocket
 //     sends no initial state and its message shapes are unverified, so every connect, reconnect,
 //     add and remove triggers a re-read; the feed only ever supplies a camera's `state`.
@@ -120,8 +125,20 @@ export interface ConnectionManager {
    * or the read fails, so the caller can report *why* (CON-4).
    */
   connect(): Promise<void>
-  /** Closes both feeds and goes back to `idle`. The cached inventory is kept. */
+  /**
+   * Closes both feeds and goes back to `idle`. The cached inventory is kept. A user's disconnect
+   * also clears `console.connectOnLaunch` (CON-4): they said stop, so the next launch does not
+   * reconnect behind their back.
+   */
   disconnect(): Promise<void>
+  /**
+   * CON-4's launch exception, called once by main after start-up. Connects through the same path as
+   * `connect()` when — and only when — `console.connectOnLaunch` is set, the Protect endpoint
+   * resolves, a Protect key is stored and the endpoint is pinned; otherwise it sends nothing. Never
+   * rejects: a failure is logged (safe lines only) and left in the status exactly as a failed
+   * `connect()` leaves it, so the badge and Settings show it the usual way.
+   */
+  connectOnLaunch(): Promise<void>
   /** CON-4: both halves probed independently; one failing is a normal, informative answer. */
   testConnection(): Promise<TestConnection>
   /** CAM-1: re-read `GET /v1/cameras` and cache it. */
@@ -137,12 +154,22 @@ export interface ConnectionManager {
   streamQualities(cameraId: string): Promise<RtspsAvailability>
   /**
    * CON-1/2: the Protect API key has just been deleted. Closes the feed and empties the inventory,
-   * because nothing may keep running on a credential the user has removed.
+   * because nothing may keep running on a credential the user has removed. Clears
+   * `console.connectOnLaunch` too: there is no key left for a launch to connect with.
    */
   credentialCleared(): Promise<void>
+  /**
+   * CON-4: a *different* Protect API key has just been stored. Clears `console.connectOnLaunch`,
+   * because "it worked" was said of the previous key: the new one has to reach `open` once before a
+   * launch connects with it by itself. A running feed is left alone — it reads the key per upgrade.
+   */
+  credentialReplaced(): Promise<void>
   /** CON-1/3, DOOR-0: persist an edited console block, clearing a pin that no longer applies. */
   applyConsoleChange(next: ConsoleConfig): Promise<void>
-  /** App shutdown: close the feed and every pinned Agent. */
+  /**
+   * App shutdown: close the feed and every pinned Agent. Leaves `console.connectOnLaunch` as it is —
+   * quitting is not disconnecting, and the next launch is exactly when it is meant to apply.
+   */
   shutdown(): Promise<void>
 }
 
@@ -314,6 +341,47 @@ export function createConnectionManager(options: ConnectionManagerOptions): Conn
     return error
   }
 
+  // --- CON-4's launch flag ------------------------------------------------------------------------
+
+  /**
+   * `console.connectOnLaunch` onto `current` at once and onto the disk through `config.update`, the
+   * same two-step `applyConsoleChange` uses, touching that one field so a View or pin write queued
+   * ahead of it is not overwritten. **Only when the value changes**: every reconnect reaches `open`
+   * again, and a config write per reconnect would be pointless disk churn. `current` is set before
+   * the write rather than after so two calls in a row (an `open`, then a disconnect) compare against
+   * the newest value; the config store's own queue keeps the writes in call order. A failed write is
+   * logged and swallowed — this is called from feed callbacks, and the session works either way; it
+   * is only the next launch that would decide differently.
+   */
+  function persistConnectOnLaunch(value: boolean): void {
+    if (services.current.console.connectOnLaunch === value) return
+    services.current = {
+      ...services.current,
+      console: { ...services.current.console, connectOnLaunch: value },
+    }
+    void services.config
+      .update((latest) => ({ ...latest, console: { ...latest.console, connectOnLaunch: value } }))
+      .then(
+        () => {
+          log(`connect on launch: ${value ? 'on (a connect worked)' : 'off'}`)
+        },
+        (err: unknown) => {
+          // Put memory back to what the disk still says, unless something newer has set it since:
+          // otherwise the early return above would stop every later call from retrying the write,
+          // and a disconnect whose `false` never landed would reconnect at the next launch.
+          if (services.current.console.connectOnLaunch === value) {
+            services.current = {
+              ...services.current,
+              console: { ...services.current.console, connectOnLaunch: !value },
+            }
+          }
+          log(
+            `connect on launch: could not save the setting: ${err instanceof Error ? err.name : 'unknown error'}`,
+          )
+        },
+      )
+  }
+
   // --- the inventory ----------------------------------------------------------------------------
 
   /**
@@ -404,6 +472,10 @@ export function createConnectionManager(options: ConnectionManagerOptions): Conn
         const current = subscription === feed
         applyFeedState(next)
         if (next === 'stopped' && current) stopEventsFeed()
+        // CON-4: the feed opening is the evidence that this console, key and pin work, so the next
+        // launch may connect by itself. Only for the live feed: a stale one has no say. Written once,
+        // not per reconnect (see `persistConnectOnLaunch`).
+        if (next === 'open' && current) persistConnectOnLaunch(true)
         emitStatus()
       },
       onError: (err) => {
@@ -524,6 +596,8 @@ export function createConnectionManager(options: ConnectionManagerOptions): Conn
 
   async function disconnect(): Promise<void> {
     await stopFeed()
+    // The user said stop (CON-4): the next launch respects that rather than reconnecting.
+    persistConnectOnLaunch(false)
     const slot = state.protect
     slot.phase = 'idle'
     // An idle endpoint has no last failure to show; the contract keeps `error` for `error` and for
@@ -545,6 +619,9 @@ export function createConnectionManager(options: ConnectionManagerOptions): Conn
    */
   async function credentialCleared(): Promise<void> {
     await stopFeed()
+    // Nothing for a launch to connect with any more (CON-4). A key entered later has to be shown to
+    // work by a connect before the next launch connects by itself again.
+    persistConnectOnLaunch(false)
     state.protect = { phase: 'idle', error: null, version: null, updatedAt: now() }
     inventory = []
     emitCameras()
@@ -648,6 +725,10 @@ export function createConnectionManager(options: ConnectionManagerOptions): Conn
    * which is precisely the interception CON-3 exists to catch. The two endpoints are judged
    * separately because they move independently — `accessBaseUrl` can change while `host` does not,
    * and `host` carries Protect's port while Access has its own.
+   *
+   * A moved Protect endpoint also clears `console.connectOnLaunch` (CON-4): "it worked" was said of
+   * the console just left, and the new one has to prove itself with a connect first. An Access-only
+   * change keeps it — the launch connect is Protect's alone.
    */
   async function applyConsoleChange(next: ConsoleConfig): Promise<void> {
     const before = { protect: endpointOf('protect'), access: endpointOf('access') }
@@ -677,7 +758,8 @@ export function createConnectionManager(options: ConnectionManagerOptions): Conn
       log('console changed: cleared the Access certificate pin (CON-3, the endpoint moved)')
     }
 
-    // This change owns the three Settings fields, plus clearing a pin whose endpoint moved. A kept
+    // This change owns the three Settings fields, plus clearing a pin whose endpoint moved — and,
+    // with the Protect pin, the launch flag (CON-4, see above), in the same write. A kept
     // pin is left to the pin store, which writes its own field: copying `next`'s value here could
     // undo a pin accepted while this call was waiting. Applied with `config.update`, so a View or
     // pin write queued ahead of this one is not overwritten with a stale copy (VIEW-6, CON-3).
@@ -686,7 +768,7 @@ export function createConnectionManager(options: ConnectionManagerOptions): Conn
       host: next.host,
       accessEnabled: next.accessEnabled,
       accessBaseUrl: next.accessBaseUrl,
-      ...(keepProtectPin ? {} : { certFingerprint: null }),
+      ...(keepProtectPin ? {} : { certFingerprint: null, connectOnLaunch: false }),
       ...(keepAccessPin ? {} : { accessCertFingerprint: null }),
     })
     await services.config.update((latest) => ({ ...latest, console: own(latest.console) }))
@@ -709,12 +791,32 @@ export function createConnectionManager(options: ConnectionManagerOptions): Conn
     emitStatus()
   }
 
+  async function connectOnLaunch(): Promise<void> {
+    // Every precondition is an offline read, so a launch that does not qualify spends no permit
+    // (R9). The pin is checked here rather than left to the feed: an unpinned console would only
+    // turn into a `pin-required` error the user did not ask for this time.
+    if (!services.current.console.connectOnLaunch) return
+    const endpoint = endpointOf('protect')
+    if (endpoint === null || !credentialStored('protect') || !pinnedFor(endpoint)) {
+      log('connect on launch: skipped (the console, the key or the pin is missing)')
+      return
+    }
+    log('connect on launch: connecting (a previous session connected)')
+    try {
+      await connect()
+    } catch (err) {
+      // `connect()` has already recorded the failure in the status and emitted it, which is how the
+      // user learns of it. Only the kind goes in the log: the message can name the address.
+      log(`connect on launch: failed (${toIpcError(err, { endpoint: null }).kind})`)
+    }
+  }
+
   async function shutdown(): Promise<void> {
     await stopFeed()
     await services.pins.closeAll()
   }
 
-  // The five that move the subscriptions go through the queue; `testConnection`, `cameras`,
+  // The six that move the subscriptions go through the queue; `testConnection`, `cameras`,
   // `snapshot` and `streamQualities` are plain requests that touch none of that state, so serializing them would only
   // make the UI wait for a reconnect's backoff.
   return {
@@ -722,11 +824,17 @@ export function createConnectionManager(options: ConnectionManagerOptions): Conn
     cachedCameras: () => [...inventory],
     connect: () => serialize(connect),
     disconnect: () => serialize(disconnect),
+    connectOnLaunch: () => serialize(connectOnLaunch),
     testConnection,
     cameras: () => refreshInventory('a camera list request'),
     snapshot,
     streamQualities,
     credentialCleared: () => serialize(credentialCleared),
+    credentialReplaced: () =>
+      serialize(() => {
+        persistConnectOnLaunch(false)
+        return Promise.resolve()
+      }),
     applyConsoleChange: (next) => serialize(() => applyConsoleChange(next)),
     shutdown: () => serialize(shutdown),
   }

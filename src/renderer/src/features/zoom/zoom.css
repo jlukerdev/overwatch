@@ -1,0 +1,34 @@
+/*
+ * Digital zoom (P3.6; ZOOM-1/2/3): the layer around the player that `useZoomPan` transforms, and
+ * the cursors of a zoomed cell. Tokens come from src/renderer/src/styles.css.
+ *
+ * The layer is always there, zoomed or not (ZoomPan.tsx, "Only the player is scaled"), and is the
+ * cell's box exactly, so its untransformed coordinates are the cell's and zoomMath needs no
+ * conversion. `transform-origin: 0 0` is what zoomMath's `(x, y) + scale · p` assumes. The
+ * `transform` itself and `will-change` are written on the element by the hook, per frame and only
+ * while zoomed. The cell's `overflow: hidden` (grid.css) clips the zoomed picture to the cell, and
+ * the overlay, painted after the layer, stays on top of it at its own size.
+ */
+.zoomPan {
+  position: absolute;
+  inset: 0;
+  transform-origin: 0 0;
+}
+
+/* FILL-1: the filled cell takes touch gestures for itself, so two fingers pinch the camera, not the page. */
+.gridCell--filled {
+  touch-action: none;
+}
+
+/*
+ * The picture can be grabbed while zoomed, and is grabbed while a drag pans. `:not(...)` rather than
+ * stylesheet order lets CELL-4's idle hide (`.gridCell--cursorHidden`, cells.css) win whichever file
+ * loads first. Controls keep their own `cursor: pointer`.
+ */
+.gridCell.gridCell--zoomed:not(.gridCell--cursorHidden) {
+  cursor: grab;
+}
+
+.gridCell.gridCell--panning:not(.gridCell--cursorHidden) {
+  cursor: grabbing;
+}

@@ -3,11 +3,12 @@
 // movement, taking the idle cursor with it.
 //
 // What is in the strip, and when the rest arrives. Today: the effective quality badge (QUAL-7, e.g.
-// `MED`), and while filled fill's back control (P3.5, FILL-1; passed in by `<Cell>`). `children` is
-// the slot for those buttons, top right next to the badge; later tasks add the quality picker
-// (P3.7, QUAL-4), the position and next / previous plus the motion badge (P4.3, CELL-2/3), mute
-// (P5.1, AUD) and unlock (P5.3, DOOR). No
-// placeholder buttons until then: a control that does nothing is a control someone presses.
+// `MED`); while filled, fill's back control (P3.5, FILL-1); and while filled *and* zoomed, the zoom's
+// "100%" reset (P3.6, ZOOM-2) — both passed in by `<Cell>`. `children` is the slot for those
+// buttons, top right next to the badge; later tasks add the quality picker (P3.7, QUAL-4), the
+// position and next / previous plus the motion badge (P4.3, CELL-2/3), mute (P5.1, AUD) and unlock
+// (P5.3, DOOR). No placeholder buttons until then, and no control shown while it would do nothing
+// (the 100% control at 1×): a control that does nothing is a control someone presses.
 //
 // Thin on purpose (no jsdom here; CLAUDE.md). When the strip is shown is `reduceOverlayVisibility`
 // (./overlayVisibility), pure and tested; this file only feeds it events and draws its answer.
@@ -30,7 +31,9 @@
 // **Controls keep their clicks.** The slot around the controls — and only that — stops pointer and
 // click events from bubbling, so pressing a button is never also FILL-1's "click on the cell" (SPEC:
 // "outside the controls"), which `<Cell>` listens for on the cell (P3.5). The name and the badge are not
-// controls and are left alone.
+// controls and are left alone. That `stopPropagation` is React's, so it does not stop the zoom's
+// *native* listeners on the cell, which run first; those skip a press that starts in this slot
+// themselves (features/zoom/ZoomPan.tsx), so pressing a control never pans.
 //
 // **Hot path.** `pointermove` fires many times a second. The reducer's state lives in a ref, and the
 // one thing React draws, `controlsShown`, is mirrored in a ref and only `setState`d when it flips; a

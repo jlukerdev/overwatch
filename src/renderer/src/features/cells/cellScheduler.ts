@@ -2,7 +2,8 @@
 // why — rotation on a timer, a trigger event breaking in, or the camera pinned by fill. Pure, so
 // every rule is tested in the node environment (CLAUDE.md): no React, no timers, no `Date.now()`,
 // no IPC. The caller (P4.2) feeds it the cell's events and a `tick` at {@link nextWakeAt}; every
-// action carries `now`, local ms since the epoch. P4.3 draws {@link schedulerView}.
+// action carries `now`, local ms since the epoch. The grid and P4.3's overlay (position, next /
+// previous) draw {@link schedulerView}.
 //
 // The rules, and why:
 //
@@ -93,8 +94,6 @@ export interface SchedulerView {
   reason: ShownReason
   /** The trigger of the winning event when reason === 'trigger', else null. */
   trigger: MotionTrigger | null
-  /** True when the shown camera has a matching event still running (no end, not stale) — the motion badge (P4.3). */
-  motion: boolean
 }
 
 /**
@@ -502,7 +501,7 @@ export function reduceScheduler(state: SchedulerState, action: SchedulerAction):
 export function schedulerView(state: SchedulerState): SchedulerView {
   const count = state.cell.cameraIds.length
   if (count === 0) {
-    return { index: -1, cameraId: null, count: 0, reason: 'rotation', trigger: null, motion: false }
+    return { index: -1, cameraId: null, count: 0, reason: 'rotation', trigger: null }
   }
   const index = shownIndex(state)
   const cameraId = state.cell.cameraIds[index] ?? null
@@ -513,8 +512,6 @@ export function schedulerView(state: SchedulerState): SchedulerView {
     count,
     reason: state.pinned ? 'pinned' : triggered ? 'trigger' : 'rotation',
     trigger: triggered ? (triggerWinner(state)?.event.trigger ?? null) : null,
-    // A dismissed event still counts: the camera is still seeing motion.
-    motion: state.events.some((event) => event.phase === 'running' && event.cameraId === cameraId),
   }
 }
 

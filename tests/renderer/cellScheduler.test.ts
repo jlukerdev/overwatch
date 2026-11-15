@@ -118,7 +118,6 @@ describe('createScheduler', () => {
       count: 4,
       reason: 'rotation',
       trigger: null,
-      motion: false,
     })
     expect(nextWakeAt(s)).toBe(T + 10_000)
   })
@@ -132,7 +131,6 @@ describe('createScheduler', () => {
       index: -1,
       cameraId: null,
       count: 0,
-      motion: false,
     })
     expect(nextWakeAt(after)).toBeNull()
   })
@@ -165,7 +163,6 @@ describe('G4 scenario (CELL-2)', () => {
       count: 4,
       reason: 'trigger',
       trigger: 'motion',
-      motion: true,
     })
     // Rotation is paused while the trigger is active; the only deadline is the stale one.
     expect(nextWakeAt(s)).toBe(T + 45_000 + STALE_EVENT_MS)
@@ -178,7 +175,6 @@ describe('G4 scenario (CELL-2)', () => {
       cameraId: 'c2',
       reason: 'trigger',
       trigger: 'motion',
-      motion: false,
     })
     expect(nextWakeAt(s)).toBe(T + 67_000)
     s = run(s, at.tick(T + 66_999))
@@ -191,7 +187,6 @@ describe('G4 scenario (CELL-2)', () => {
       cameraId: 'c2',
       reason: 'rotation',
       trigger: null,
-      motion: false,
     })
     expect(nextWakeAt(s)).toBe(T + 77_000)
     s = run(s, at.tick(T + 76_999))
@@ -245,7 +240,7 @@ describe('clock skew (SPEC §5.1)', () => {
       at.event(motion, T + 1_000),
       at.event(ended(motion, T + 2_000), T + 5_000),
     )
-    expect(schedulerView(s)).toMatchObject({ cameraId: 'c1', reason: 'rotation', motion: false })
+    expect(schedulerView(s)).toMatchObject({ cameraId: 'c1', reason: 'rotation' })
     expect(nextWakeAt(s)).toBe(T + 15_000)
   })
 })
@@ -311,7 +306,7 @@ describe('event lifecycle idempotence', () => {
       at.event(ended(motion, T + 3_000), T + 19_000),
       at.event(motion, T + 20_000),
     )
-    expect(schedulerView(late)).toMatchObject({ cameraId: 'c2', reason: 'rotation', motion: false })
+    expect(schedulerView(late)).toMatchObject({ cameraId: 'c2', reason: 'rotation' })
     expect(nextWakeAt(late)).toBe(T + 28_000)
   })
 })
@@ -323,10 +318,10 @@ describe('stale events', () => {
     expect(nextWakeAt(s)).toBe(T + 62_000)
 
     s = run(s, at.tick(T + 61_999))
-    expect(schedulerView(s)).toMatchObject({ cameraId: 'c2', reason: 'trigger', motion: true })
+    expect(schedulerView(s)).toMatchObject({ cameraId: 'c2', reason: 'trigger' })
 
     s = run(s, at.tick(T + 62_000))
-    expect(schedulerView(s)).toMatchObject({ cameraId: 'c2', reason: 'trigger', motion: false })
+    expect(schedulerView(s)).toMatchObject({ cameraId: 'c2', reason: 'trigger' })
     expect(nextWakeAt(s)).toBe(T + 77_000)
 
     s = run(s, at.tick(T + 77_000))
@@ -351,7 +346,6 @@ describe('stale events', () => {
     expect(schedulerView(later)).toMatchObject({
       cameraId: 'c2',
       reason: 'rotation',
-      motion: false,
     })
     expect(nextWakeAt(later)).toBe(T + 87_000)
   })
@@ -366,7 +360,6 @@ describe('event first seen already ended', () => {
       cameraId: 'c3',
       reason: 'trigger',
       trigger: 'motion',
-      motion: false,
     })
     expect(nextWakeAt(s)).toBe(T + 18_000)
     s = run(s, at.tick(T + 18_000))
@@ -387,7 +380,6 @@ describe('event first seen already ended', () => {
       index: 0,
       cameraId: 'c0',
       reason: 'rotation',
-      motion: false,
     })
     expect(nextWakeAt(s)).toBe(T + 10_000)
   })
@@ -406,7 +398,6 @@ describe('trigger priority', () => {
       cameraId: 'c3',
       reason: 'trigger',
       trigger: 'ring',
-      motion: true,
     })
   })
 
@@ -455,7 +446,6 @@ describe('trigger priority', () => {
       cameraId: 'c1',
       reason: 'trigger',
       trigger: 'motion',
-      motion: true,
     })
   })
 
@@ -540,13 +530,12 @@ describe('eventMatchesCell (filters)', () => {
     expect(schedulerView(after)).toMatchObject({
       cameraId: 'c0',
       reason: 'rotation',
-      motion: false,
     })
   })
 })
 
 describe('pin / unpin (FILL-3)', () => {
-  it('neither rotates nor switches while pinned, but still shows the motion badge', () => {
+  it('neither rotates nor switches while pinned', () => {
     let s = run(createScheduler(cell(), T), at.tick(T + 10_000), at.pin(T + 12_000))
     expect(schedulerView(s)).toMatchObject({
       index: 1,
@@ -565,14 +554,13 @@ describe('pin / unpin (FILL-3)', () => {
       cameraId: 'c1',
       reason: 'pinned',
       trigger: null,
-      motion: false,
     })
     // Events are still aged while pinned: the stale deadline is pending.
     expect(nextWakeAt(s)).toBe(T + 46_000 + STALE_EVENT_MS)
 
     const here = ev({ cameraId: 'c1', start: T + 47_000 })
     s = run(s, at.event(here, T + 47_000))
-    expect(schedulerView(s)).toMatchObject({ cameraId: 'c1', reason: 'pinned', motion: true })
+    expect(schedulerView(s)).toMatchObject({ cameraId: 'c1', reason: 'pinned' })
   })
 
   it('pins the trigger camera when the cell is showing one', () => {
@@ -586,7 +574,6 @@ describe('pin / unpin (FILL-3)', () => {
       cameraId: 'c2',
       reason: 'pinned',
       trigger: null,
-      motion: true,
     })
   })
 
@@ -621,7 +608,6 @@ describe('pin / unpin (FILL-3)', () => {
       cameraId: 'c3',
       reason: 'trigger',
       trigger: 'motion',
-      motion: true,
     })
   })
 
@@ -710,7 +696,7 @@ describe('manual next / prev', () => {
       at.next(T + 2_000),
       at.event(ev({ cameraId: 'c1', start: T + 3_000 }), T + 3_000),
     )
-    expect(schedulerView(s)).toMatchObject({ cameraId: 'c1', reason: 'trigger', motion: true })
+    expect(schedulerView(s)).toMatchObject({ cameraId: 'c1', reason: 'trigger' })
   })
 
   it('is allowed while pinned and the new camera stays pinned', () => {
@@ -771,7 +757,6 @@ describe('configure', () => {
     expect(schedulerView(stillMatches)).toMatchObject({
       cameraId: 'c2',
       reason: 'trigger',
-      motion: true,
     })
 
     for (const next of [
@@ -781,7 +766,6 @@ describe('configure', () => {
     ]) {
       const s = run(triggered, at.configure(next, T + 2_000))
       expect(schedulerView(s).reason).not.toBe('trigger')
-      expect(schedulerView(s).motion).toBe(false)
       // The dropped event does not come back with its end either.
       const after = run(s, at.event(ended(motion, T + 3_000), T + 3_000))
       expect(schedulerView(after).reason).not.toBe('trigger')
@@ -808,7 +792,7 @@ describe('configure', () => {
       at.event(ev({ cameraId: 'c2', start: T + 1_000 }), T + 1_000),
       at.configure(cell({ cameraIds: [] }), T + 2_000),
     )
-    expect(schedulerView(s)).toMatchObject({ index: -1, cameraId: null, count: 0, motion: false })
+    expect(schedulerView(s)).toMatchObject({ index: -1, cameraId: null, count: 0 })
     expect(nextWakeAt(s)).toBeNull()
     expect(schedulerView(run(s, at.tick(T + 100_000))).cameraId).toBeNull()
   })
@@ -908,8 +892,7 @@ describe('nextWakeAt', () => {
     expect(schedulerView(s).index).toBe(3)
 
     const stale = run(createScheduler(cell(), T), at.event(ev({ cameraId: 'c1', start: T }), T))
-    const afterStale = check(stale)
-    expect(schedulerView(afterStale).motion).toBe(false)
+    check(stale) // stale deadline
   })
 })
 
@@ -999,7 +982,6 @@ describe('no rotation configured', () => {
       index: 2,
       cameraId: 'c2',
       reason: 'rotation',
-      motion: false,
     })
     expect(nextWakeAt(s)).toBeNull()
     s = run(s, at.tick(T + 1_000_000))
@@ -1008,7 +990,7 @@ describe('no rotation configured', () => {
 })
 
 describe('single-camera cell', () => {
-  it('stays on index 0 and still triggers and badges', () => {
+  it('stays on index 0 and still triggers', () => {
     const one = cell({ cameraIds: ['c0'] })
     let s = createScheduler(one, T)
     expect(schedulerView(s)).toMatchObject({
@@ -1024,17 +1006,16 @@ describe('single-camera cell', () => {
       index: 0,
       reason: 'trigger',
       trigger: 'motion',
-      motion: true,
     })
     s = run(s, at.pin(T + 2_000))
-    expect(schedulerView(s)).toMatchObject({ index: 0, reason: 'pinned', motion: true })
+    expect(schedulerView(s)).toMatchObject({ index: 0, reason: 'pinned' })
     s = run(
       s,
       at.event(ended(motion, T + 3_000), T + 3_000),
       at.tick(T + 18_000),
       at.unpin(T + 19_000),
     )
-    expect(schedulerView(s)).toMatchObject({ index: 0, reason: 'rotation', motion: false })
+    expect(schedulerView(s)).toMatchObject({ index: 0, reason: 'rotation' })
     expect(nextWakeAt(s)).toBeNull()
   })
 })

@@ -22,8 +22,16 @@
 //    (its slot turns `missing`, CAM-2) or the cell being edited away all leave fill without anyone
 //    having to remember to clear it. `<GridView>` also drops a stale state, so coming back to that
 //    View later does not re-fill it out of nowhere.
+//  - **…except a multi-camera cell on a missing camera, deliberately** (P4.3; CELL-3, FILL-3; the
+//    user's decision, 2026-11-15). Its slot stays filled when it turns `missing`, whatever the cause:
+//    a next / previous in fill that lands on a camera gone from the console, or the shown camera
+//    leaving the console while filled. Throwing the user back to the grid would end their browse of
+//    the cell for a camera they can simply step past; the filled placeholder (MissingCell.tsx) keeps
+//    the back control, the next / previous, `Esc` and the plain double-click to leave. A one-camera
+//    cell has nothing to step to, so it still leaves fill when its camera goes.
 //  - **A plain primary click on a camera cell fills it** (FILL-1). Clicks on a control never get here
-//    (CellOverlay stops them at its slot); empty and missing cells have no `<Cell>` and so no handler.
+//    (CellOverlay stops them at its slot); empty cells have no handler, and a missing cell has one
+//    only while it is the filled one (to leave by double-click), so a click never fills either.
 //    A click with a modifier is left alone, for the same reason the View shortcuts refuse them: they
 //    belong to the OS, and ZOOM-2 takes modifier + double-click for itself (the zoom reset,
 //    features/zoom/ZoomPan.tsx).
@@ -68,6 +76,7 @@
 //    that pick ({@link pickAfterFillSave}): one made while the save was in flight is kept.
 import type { Fit } from '@shared/models'
 import { PACKAGE_CHANNEL, type Quality, type StreamQuality } from '@shared/quality'
+import { showsStepControls } from '../cells/cellPosition'
 import type { GridSlot } from '../grid/gridLayout'
 import { isTextEntryTarget, type ViewShortcutTarget } from '../viewSwitcher/viewShortcut'
 
@@ -82,7 +91,9 @@ export const FILL_FIT: Fit = 'contain'
 
 /**
  * The key of the slot that is actually filled, or `null` for the grid: `state`'s slot, only while
- * `viewId` is the View on screen and that slot is still a camera slot in it (header).
+ * `viewId` is the View on screen and that slot is still a camera slot in it — or, deliberately, a
+ * missing slot of a multi-camera cell, however it went missing (a step, or the camera leaving the
+ * console; header).
  */
 export function filledSlotKey(
   state: FillState,
@@ -91,7 +102,9 @@ export function filledSlotKey(
 ): string | null {
   if (state?.viewId !== viewId) return null
   const slot = slots.find((candidate) => candidate.key === state.slotKey)
-  return slot?.kind === 'camera' ? slot.key : null
+  if (slot === undefined) return null
+  if (slot.kind === 'camera') return slot.key
+  return slot.kind === 'missing' && showsStepControls(slot.position.count) ? slot.key : null
 }
 
 // -------------------------------------------------------------------------------------------------
@@ -174,6 +187,22 @@ export interface FillClickEvent {
   readonly metaKey: boolean
   readonly altKey: boolean
   readonly shiftKey: boolean
+}
+
+/** The parts of a mouse event {@link fillClickStep} reads, copied off the event (`MouseEvent` here). */
+export function toFillClick(
+  event: Pick<FillClickEvent, 'button' | 'detail' | 'ctrlKey' | 'metaKey' | 'altKey' | 'shiftKey'>,
+  type: FillClickEvent['type'],
+): FillClickEvent {
+  return {
+    type,
+    button: event.button,
+    detail: event.detail,
+    ctrlKey: event.ctrlKey,
+    metaKey: event.metaKey,
+    altKey: event.altKey,
+    shiftKey: event.shiftKey,
+  }
 }
 
 /** What a click on a camera cell does: fill it, return to the grid, or nothing. */

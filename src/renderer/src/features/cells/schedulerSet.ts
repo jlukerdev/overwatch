@@ -29,9 +29,13 @@
 //    tick for it; skipping it keeps unrelated cells' state (and their memoised views) untouched.
 //  - **Pin follows the filled slot** ({@link pinSchedulerSet}, FILL-3): the one key pinned, every other
 //    pinned one unpinned — so filling a second cell, or leaving fill, releases the first.
+//  - **A manual step reaches only its own cell** ({@link stepSchedulerSet}, P4.3; CELL-3): the
+//    overlay's next / previous buttons act on the cell they sit on, and the reducer's own rule
+//    applies — in the grid it dismisses the triggers active then and restarts the interval; in fill
+//    it only changes the pinned camera (FILL-3). Every other scheduler stays the same object.
 //  - **Same object when nothing changed**, set and views alike, so React bails out. The views go
 //    further ({@link stableViews}): a set that changed (a tick, an event that moved no camera) still
-//    yields the previous views map when no shown camera, reason or badge differs.
+//    yields the previous views map when no shown camera, position or reason differs.
 import {
   createScheduler,
   eventMatchesCell,
@@ -56,8 +60,12 @@ export interface SchedulerEntry {
 
 export const EMPTY_SCHEDULER_SET: SchedulerSet = new Map()
 
-/** Fewer cameras than this and a cell shows its one camera, no scheduler (header). */
-const MIN_SCHEDULED_CAMERAS = 2
+/**
+ * Fewer cameras than this and a cell shows its one camera, no scheduler (header). Also where the
+ * overlay's position and next / previous controls start (./cellPosition), so a cell has those
+ * controls exactly when it has a scheduler for them to step.
+ */
+export const MIN_SCHEDULED_CAMERAS = 2
 
 function needsScheduler(cell: SchedulerCell): boolean {
   return cell.cameraIds.length >= MIN_SCHEDULED_CAMERAS
@@ -161,6 +169,28 @@ export function pinSchedulerSet(
   })
 }
 
+/** A step of the manual next / previous control. */
+export type StepDirection = 'next' | 'prev'
+
+/**
+ * The user's next / previous on the cell at `key` (header): only that scheduler is reduced, at
+ * `now`. The same set when `key` has no scheduler (a one-camera cell) or the step changed nothing.
+ */
+export function stepSchedulerSet(
+  set: SchedulerSet,
+  key: string,
+  direction: StepDirection,
+  now: number,
+): SchedulerSet {
+  const state = set.get(key)
+  if (state === undefined) return set
+  const stepped = reduceScheduler(state, { type: direction, now })
+  if (stepped === state) return set
+  const next = new Map(set)
+  next.set(key, stepped)
+  return next
+}
+
 /** The earliest `nextWakeAt` across the set; `null` when no scheduler needs a tick. */
 export function nextWakeOfSet(set: SchedulerSet): number | null {
   let wake: number | null = null
@@ -191,7 +221,7 @@ export function schedulerTimerDelay(wake: number, now: number, stalled: boolean)
   return Math.min(MAX_TIMER_MS, Math.max(0, wake - now))
 }
 
-/** What each scheduler shows (`schedulerView`), by slot key — for the grid and P4.3's overlay. */
+/** What each scheduler shows (`schedulerView`), by slot key — for the grid and its overlays' position. */
 export function schedulerViews(set: SchedulerSet): ReadonlyMap<string, SchedulerView> {
   const views = new Map<string, SchedulerView>()
   for (const [key, state] of set) views.set(key, schedulerView(state))
@@ -204,8 +234,7 @@ function sameView(a: SchedulerView, b: SchedulerView): boolean {
     a.cameraId === b.cameraId &&
     a.count === b.count &&
     a.reason === b.reason &&
-    a.trigger === b.trigger &&
-    a.motion === b.motion
+    a.trigger === b.trigger
   )
 }
 

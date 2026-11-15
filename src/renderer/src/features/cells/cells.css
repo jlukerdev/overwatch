@@ -4,8 +4,10 @@
  * the overlay sets on the cell. Tokens come from src/renderer/src/styles.css.
  *
  * Who takes the pointer (CellOverlay.tsx header): the name and the badge, for their `title`s; and
- * the controls in the strip's slot, while shown. Everything else here is `pointer-events: none`, so
- * the player under it, and the cell around it, still get the pointer.
+ * the controls in the strip's slot, while shown (a control group such as the position's as a whole,
+ * so its text's `title` works and a click between its buttons is not a cell click). Everything else
+ * here is `pointer-events: none`, so the player under it, and the cell around it, still get the
+ * pointer.
  */
 
 /* FILL-1 (P3.5): a camera cell in the grid is clicked to fill the window. Not once it is filled. */
@@ -85,6 +87,11 @@
   display: flex;
   align-items: center;
   gap: 0.25rem;
+}
+
+/* A cell with no controls to offer (one camera, no picker) draws no slot, so no stray gap. */
+.cellOverlay__slot:empty {
+  display: none;
 }
 
 /* Only the controls themselves, and the badge, take the pointer, and only while they can be seen. */
@@ -191,6 +198,28 @@
 .cellOverlay__back:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 1px;
+}
+
+/*
+ * A multi-camera cell's previous / position / next (P4.3; CELL-3, CellStepControls.tsx): the back
+ * control's chips either side of the position, drawn like the name's chip. Tighter than the strip's
+ * own gap so the three read as one control.
+ */
+.cellOverlay__position {
+  display: flex;
+  align-items: center;
+  gap: 0.15rem;
+}
+
+.cellOverlay__positionText {
+  padding: 0.1rem 0.35rem;
+  border-radius: var(--radius);
+  background: rgb(0 0 0 / 55%);
+  color: var(--fg);
+  font-size: 0.75rem;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  white-space: nowrap;
 }
 
 /*

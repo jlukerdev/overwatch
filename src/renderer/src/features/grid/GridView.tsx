@@ -25,7 +25,11 @@
 // slot's key follows the cell's first camera, not the shown one, so a rotation or a motion switch
 // keeps the slot, its `<Cell>` and its zoom layer mounted and only hands the cell a new `cameraId`
 // (Cell.tsx restarts the player for it). The filled slot's scheduler is pinned in the same render
-// that fills it, and unpinned in the one that leaves, so a filled cell never changes camera.
+// that fills it, and unpinned in the one that leaves, so a filled cell never changes camera on its
+// own. The overlay's position and next / previous (P4.3; CELL-3) read the slot's `position` and
+// call the hook's stable `step`, handed to every cell as `onStep` — a camera cell's `<Cell>` and a
+// multi-camera cell's missing-camera placeholder (`<MissingCell>`) alike, in the grid and in fill.
+// A filled multi-camera cell stays filled when a step lands on a missing camera (`filledSlotKey`).
 //
 // **Fill lives here too** (P3.5; FILL-1/2/3, QUAL-5/6). Clicking a camera cell fills the grid area with
 // it, and that is this component re-placing one slot, not another component appearing: the filled
@@ -56,8 +60,9 @@ import { cellRect, layoutGrid, type Rect } from '@shared/viewLayout'
 import { useAppStore } from '../../state/appStore'
 import { viewsActions, type ViewResult } from '../../state/viewsStore'
 import { Cell } from '../cells/Cell'
+import { MissingCell } from '../cells/MissingCell'
 import { overlayAutoHideMs } from '../cells/overlayVisibility'
-import { shownIndices } from '../cells/schedulerSet'
+import { shownIndices, type StepDirection } from '../cells/schedulerSet'
 import { useCellSchedulers } from '../cells/useCellSchedulers'
 import {
   activeFillPick,
@@ -133,7 +138,7 @@ export function GridView({ view, cameras, streams }: GridViewProps): JSX.Element
   // compares them by content anyway.
   const entries = useMemo(() => schedulerEntries(view), [view])
   const pinnedKey = fill !== null && fill.viewId === view.id ? fill.slotKey : null
-  const schedulerViewsByKey = useCellSchedulers(entries, pinnedKey)
+  const { views: schedulerViewsByKey, step: onStep } = useCellSchedulers(entries, pinnedKey)
   const shown = useMemo(() => shownIndices(schedulerViewsByKey), [schedulerViewsByKey])
 
   const slots = useMemo(
@@ -291,6 +296,7 @@ export function GridView({ view, cameras, streams }: GridViewProps): JSX.Element
                   onQualityChange={onQualityChange}
                   onFillQualityPick={onFillQualityPick}
                   onSaveFillQuality={onSaveFillQuality}
+                  onStep={onStep}
                 />
               </div>
             )
@@ -336,6 +342,7 @@ function SlotContent({
   onQualityChange,
   onFillQualityPick,
   onSaveFillQuality,
+  onStep,
 }: {
   readonly slot: GridSlot
   readonly autoHideMs: number
@@ -347,6 +354,8 @@ function SlotContent({
   readonly onQualityChange: (slotKey: string, quality: Quality | null) => void
   readonly onFillQualityPick: (slotKey: string, quality: Quality) => void
   readonly onSaveFillQuality: (slotKey: string, quality: StreamQuality) => void
+  /** P4.3: a multi-camera cell's next / previous (`useCellSchedulers`' stable `step`). */
+  readonly onStep: (slotKey: string, direction: StepDirection) => void
 }): JSX.Element {
   switch (slot.kind) {
     case 'camera': {
@@ -370,19 +379,30 @@ function SlotContent({
           onQualityChange={onQualityChange}
           onFillQualityPick={onFillQualityPick}
           onSaveFillQuality={onSaveFillQuality}
+          cameraIndex={slot.position.index}
+          cameraCount={slot.position.count}
+          onStep={onStep}
         />
       )
     }
     case 'missing':
       // No player: the camera is gone from the console, or has no package camera to play
-      // (gridLayout.ts header). Still `gridCell--empty`, because nothing streams here. Not fillable:
-      // there is nothing to enlarge.
+      // (gridLayout.ts header). Never filled by a click; a multi-camera cell keeps its next /
+      // previous here, and stays filled on it — leaving by back, Esc or double-click
+      // (MissingCell.tsx).
       return (
-        <div className="gridCell gridCell--empty gridCell--missing">
-          <span className="gridCell__missing" title={slot.ref}>
-            {slot.label}
-          </span>
-        </div>
+        <MissingCell
+          slotKey={slot.key}
+          cameraRef={slot.ref}
+          label={slot.label}
+          cameraIndex={slot.position.index}
+          cameraCount={slot.position.count}
+          overlayAutoHideMs={autoHideMs}
+          filled={filled}
+          onBack={onBack}
+          onClickEvent={onCellClick}
+          onStep={onStep}
+        />
       )
     case 'empty':
       return <div className="gridCell gridCell--empty" aria-hidden="true" />

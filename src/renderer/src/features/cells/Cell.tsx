@@ -24,19 +24,29 @@
 // is `null`). This file only reports picks upward with the slot's key — saving a cell override,
 // keeping fill's session pick and saving it for the View are `<GridView>`'s.
 //
+// **Position and next / previous (P4.3; CELL-2, CELL-3).** A cell with two or more cameras gets
+// `<CellStepControls>` first in the strip — previous, `2/4`, next — in the grid and while filled.
+// A press is reported upward as `onStep(slotKey, direction)`; what it does is the scheduler's
+// (`stepSchedulerSet`): in the grid it dismisses the active triggers and restarts the interval, in
+// fill it changes the pinned camera (FILL-3). Either way the cell gets a new `cameraId` and the
+// player below restarts for it. A step in fill also resets the zoom first: the zoom was on the
+// previous camera's picture, and the next camera starts at 1× like a freshly filled one (ZOOM-2).
+//
 // The cell owns no size: `<GridView>` positions a box for it from the View's layout (VIEW-5/7) and
 // the cell fills that box. The player then fits the camera inside it by the View's `fit` (contain or
 // cover, player.css), which is how a camera whose shape differs from the View's `aspect` — or a
 // spanned cell a few px off it because of the gap (VIEW-7) — is never distorted.
-import { memo, useMemo, type JSX, type MouseEvent } from 'react'
+import { memo, useMemo, type JSX } from 'react'
 import type { Fit } from '@shared/models'
 import type { Quality, StreamQuality } from '@shared/quality'
 import { LivePlayer } from '../../player/LivePlayer'
-import { GridIcon } from '../../ui/icons'
-import type { FillClickEvent } from '../fill/fillMode'
+import { toFillClick, type FillClickEvent } from '../fill/fillMode'
 import { useZoomPan, ZoomPanLayer } from '../zoom/ZoomPan'
+import { BackToGridButton } from './BackToGridButton'
 import { CellOverlay } from './CellOverlay'
+import { CellStepControls } from './CellStepControls'
 import { CellQualityPicker, FillQualityPicker } from './QualityPicker'
+import type { StepDirection } from './schedulerSet'
 
 export interface CellProps {
   /** The grid slot this cell is in (`GridSlot.key`), handed back with each click. */
@@ -73,6 +83,14 @@ export interface CellProps {
   readonly onFillQualityPick: (slotKey: string, quality: Quality) => void
   /** QUAL-5: "Save for this View" with the quality shown. Stable. */
   readonly onSaveFillQuality: (slotKey: string, quality: StreamQuality) => void
+  /**
+   * CELL-2/3: 0-based position of the camera shown in the cell's `cameraIds`, of `cameraCount`
+   * (the strip reads it 1-based, `2/4`). With fewer than two cameras there are no step controls.
+   */
+  readonly cameraIndex: number
+  readonly cameraCount: number
+  /** P4.3: the user's next / previous on this cell's scheduler. Stable, like `onClickEvent`. */
+  readonly onStep: (slotKey: string, direction: StepDirection) => void
 }
 
 /**
@@ -84,19 +102,6 @@ export interface CellProps {
 const ZOOM_RESET_TITLE = navigator.userAgent.includes('Mac')
   ? 'Reset zoom to 100% (or ⌘/⌥/⇧ + double-click)'
   : 'Reset zoom to 100% (or Ctrl/Alt/Shift + double-click)'
-
-/** The parts of a mouse event `fillClickStep` reads. */
-function toFillClick(event: MouseEvent, type: FillClickEvent['type']): FillClickEvent {
-  return {
-    type,
-    button: event.button,
-    detail: event.detail,
-    ctrlKey: event.ctrlKey,
-    metaKey: event.metaKey,
-    altKey: event.altKey,
-    shiftKey: event.shiftKey,
-  }
-}
 
 /**
  * Memoised: the slot list is rebuilt on every camera-state push (any camera's `state` changes the
@@ -125,6 +130,9 @@ export const Cell = memo(function Cell({
   onQualityChange,
   onFillQualityPick,
   onSaveFillQuality,
+  cameraIndex,
+  cameraCount,
+  onStep,
 }: CellProps): JSX.Element {
   const { cellRef, layerRef, zoomed, resetZoom } = useZoomPan(filled)
   // The same element object across renders that change nothing of the player's own, so a flip of
@@ -135,12 +143,47 @@ export const Cell = memo(function Cell({
   // extra reconnect; what it buys is that everything a player sets up at mount — its placeholder,
   // its props ref — belongs to one camera, and the first frame after a switch is a clean
   // "Connecting…" rather than the old camera's picture under the new camera's name until the
-  // rebuild's effect runs. Zoom is unaffected: it lives in the cell, works only while filled, and a
-  // filled cell is pinned (FILL-3), so its camera does not change under it.
+  // rebuild's effect runs. Zoom lives in the cell and works only while filled; a filled cell is
+  // pinned (FILL-3), so only the user's own step changes its camera there, and that resets the zoom
+  // (header).
   const player = useMemo(
     () => <LivePlayer key={cameraId} cameraId={cameraId} quality={quality} muted fit={fit} />,
     [cameraId, quality, fit],
   )
+  const qualityPicker =
+    inheritedQuality === null ? null : filled ? (
+      <FillQualityPicker
+        shown={quality}
+        canSave={canSaveFillQuality}
+        onPick={(picked) => {
+          onFillQualityPick(slotKey, picked)
+        }}
+        onSave={() => {
+          onSaveFillQuality(slotKey, quality)
+        }}
+      />
+    ) : (
+      <CellQualityPicker
+        override={cellQuality}
+        inherited={inheritedQuality}
+        onChange={(picked) => {
+          onQualityChange(slotKey, picked)
+        }}
+      />
+    )
+  const zoomReset =
+    filled && zoomed ? (
+      <button
+        type="button"
+        className="cellOverlay__back"
+        aria-label="Reset zoom to 100%"
+        title={ZOOM_RESET_TITLE}
+        onClick={resetZoom}
+      >
+        100%
+      </button>
+    ) : null
+
   return (
     // A mouse target only: the cell is not focusable, and fill is left from the keyboard by `Esc`
     // or the back control. `gridCell--fillable` is the pointer cursor (cells.css); `gridCell--filled`
@@ -160,55 +203,19 @@ export const Cell = memo(function Cell({
         name={name}
         quality={quality}
         autoHideMs={overlayAutoHideMs}
-        centerControls={
-          filled ? (
-            <button
-              type="button"
-              className="cellOverlay__back cellOverlay__iconButton"
-              aria-label="Back to grid"
-              title="Back to grid (Esc)"
-              onClick={onBack}
-            >
-              <GridIcon className="cellOverlay__icon" />
-            </button>
-          ) : undefined
-        }
+        centerControls={filled ? <BackToGridButton onBack={onBack} /> : undefined}
       >
-        {filled ? (
-          <>
-            {inheritedQuality !== null ? (
-              <FillQualityPicker
-                shown={quality}
-                canSave={canSaveFillQuality}
-                onPick={(picked) => {
-                  onFillQualityPick(slotKey, picked)
-                }}
-                onSave={() => {
-                  onSaveFillQuality(slotKey, quality)
-                }}
-              />
-            ) : null}
-            {zoomed ? (
-              <button
-                type="button"
-                className="cellOverlay__back"
-                aria-label="Reset zoom to 100%"
-                title={ZOOM_RESET_TITLE}
-                onClick={resetZoom}
-              >
-                100%
-              </button>
-            ) : null}
-          </>
-        ) : inheritedQuality !== null ? (
-          <CellQualityPicker
-            override={cellQuality}
-            inherited={inheritedQuality}
-            onChange={(picked) => {
-              onQualityChange(slotKey, picked)
-            }}
-          />
-        ) : undefined}
+        {/* Left to right: position, quality, 100%; the badge follows (CellOverlay header). The
+            step's zoom reset gives the next camera 1× (header); in the grid it is a no-op. */}
+        <CellStepControls
+          slotKey={slotKey}
+          index={cameraIndex}
+          count={cameraCount}
+          onStep={onStep}
+          onBeforeStep={resetZoom}
+        />
+        {qualityPicker}
+        {zoomReset}
       </CellOverlay>
     </div>
   )

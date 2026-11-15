@@ -107,6 +107,24 @@ export function ChevronDownIcon(props: IconProps): JSX.Element {
   )
 }
 
+/** A multi-camera cell's previous camera (CELL-3). */
+export function ChevronLeftIcon(props: IconProps): JSX.Element {
+  return (
+    <Svg {...props}>
+      <path d="M10 4l-4 4 4 4" />
+    </Svg>
+  )
+}
+
+/** A multi-camera cell's next camera (CELL-3). */
+export function ChevronRightIcon(props: IconProps): JSX.Element {
+  return (
+    <Svg {...props}>
+      <path d="M6 4l4 4-4 4" />
+    </Svg>
+  )
+}
+
 /** Merge: two cells joined into one. */
 export function MergeIcon(props: IconProps): JSX.Element {
   return (

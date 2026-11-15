@@ -2,7 +2,9 @@
 //
 // What these tests protect:
 //  - a fill state only fills while its View is on screen and its slot is still a camera slot, so a
-//    View switch, a camera leaving the console or an edited-away cell all leave fill.
+//    View switch, a camera leaving the console or an edited-away cell all leave fill — except that a
+//    multi-camera cell stays filled on a missing camera, however it went missing (P4.3).
+//  - `toFillClick` copies just the fields the click rules read.
 //  - a plain primary click fills a grid cell; modifiers, other buttons and the later clicks of a
 //    multi-click do not.
 //  - a plain double-click leaves fill, but only when its first click arrived while filled — a
@@ -25,6 +27,7 @@ import {
   filledSlotKey,
   isFillExitKey,
   pickAfterFillSave,
+  toFillClick,
   type FillClickEvent,
   type FillClickResult,
   type FillExitKey,
@@ -55,6 +58,14 @@ const SLOTS: GridSlot[] = [
     label: 'Camera not found (gone)',
     position: { index: 0, count: 1 },
   },
+  {
+    kind: 'missing',
+    key: 'cam:m#0',
+    placement: { ...PLACEMENT, col: 3 },
+    ref: 'gone2',
+    label: 'Camera not found (gone2)',
+    position: { index: 1, count: 3 },
+  },
   { kind: 'empty', key: 'empty:2,0', placement: { ...PLACEMENT, col: 2 } },
 ]
 
@@ -75,9 +86,39 @@ describe('filledSlotKey (FILL-1)', () => {
     expect(filledSlotKey({ viewId: 'v1', slotKey: 'cam:b#0' }, 'v1', SLOTS)).toBeNull()
   })
 
-  it('is null when the slot is no longer a camera slot (camera left the console)', () => {
+  it('is null when a one-camera slot is no longer a camera slot (camera left the console)', () => {
     expect(filledSlotKey({ viewId: 'v1', slotKey: 'cam:gone#0' }, 'v1', SLOTS)).toBeNull()
     expect(filledSlotKey({ viewId: 'v1', slotKey: 'empty:2,0' }, 'v1', SLOTS)).toBeNull()
+  })
+
+  it('stays on a multi-camera cell whose shown camera is missing, however it went missing (P4.3)', () => {
+    // A step in fill that landed on a gone camera and the shown camera leaving the console while
+    // filled both arrive here as the same slot: a `missing` slot of a cell with two or more cameras.
+    expect(filledSlotKey({ viewId: 'v1', slotKey: 'cam:m#0' }, 'v1', SLOTS)).toBe('cam:m#0')
+    expect(filledSlotKey({ viewId: 'v2', slotKey: 'cam:m#0' }, 'v1', SLOTS)).toBeNull()
+  })
+})
+
+describe('toFillClick', () => {
+  it('copies exactly the fields fillClickStep reads, with the given type', () => {
+    const native = {
+      button: 0,
+      detail: 2,
+      ctrlKey: false,
+      metaKey: true,
+      altKey: false,
+      shiftKey: true,
+      clientX: 10,
+    }
+    expect(toFillClick(native, 'dblclick')).toEqual({
+      type: 'dblclick',
+      button: 0,
+      detail: 2,
+      ctrlKey: false,
+      metaKey: true,
+      altKey: false,
+      shiftKey: true,
+    })
   })
 })
 

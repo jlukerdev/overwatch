@@ -25,7 +25,15 @@
 //    `buildViewSlots` (../grid/gridLayout) labels its `missing` slot, so the editor and the wall
 //    describe the same broken cell in the same words.
 import type { Camera } from '@shared/ipc'
-import { ViewSchema, type Aspect, type Cell, type View } from '@shared/models'
+import {
+  MIN_ROTATE_INTERVAL_SEC,
+  MOTION_TRIGGERS,
+  ViewSchema,
+  type Aspect,
+  type Cell,
+  type MotionTrigger,
+  type View,
+} from '@shared/models'
 import {
   contains,
   intersects,
@@ -300,6 +308,226 @@ export function swapCellContents<V extends View>(view: V, a: number, b: number):
 }
 
 // -------------------------------------------------------------------------------------------------
+// Multi-camera settings (CELL-2)
+//
+// The inspector's "Multi-camera" group edits these. Like the camera edits above, each returns the
+// View itself when nothing changes, and never writes a value `CellSchema` would reject, so the draft
+// stays savable. None of them turns anything on by itself: the schema's defaults (no rotation,
+// motion switch off) are what a new cell gets.
+
+/**
+ * Upper bound of the rotate interval input, in seconds (one day; the lower bound is CELL-2's 5 s).
+ * `CellSchema` has no upper bound, so only the input applies it: a stored longer interval is kept,
+ * and changes only when the user edits that field.
+ */
+export const MAX_ROTATE_INTERVAL_SEC = 86_400
+
+/** What the rotate interval starts at when the user turns rotation on. */
+export const DEFAULT_ROTATE_INTERVAL_SEC = 10
+
+/** Upper bound of the hold input, in seconds (one day; the lower bound is 0), like the interval's. */
+export const MAX_MOTION_HOLD_SEC = 86_400
+
+/** The inspector's label for each trigger, in `MOTION_TRIGGERS` order. */
+export const MOTION_TRIGGER_LABELS: Readonly<Record<MotionTrigger, string>> = {
+  motion: 'Motion',
+  smartDetect: 'Smart detection',
+  ring: 'Ring',
+}
+
+/**
+ * Protect's smart-detection types today, in the order the filter lists them. `CellSchema` keeps the
+ * field a plain string list (a console upgrade can add types), so a type not in here — reported by
+ * a camera, or already in a stored View — is kept and shown under its own name
+ * ({@link smartDetectTypeLabel}). The filter offers what the cell's cameras report
+ * ({@link smartDetectFilterChoices}); this whole list only when none of them reports any.
+ */
+export const KNOWN_SMART_DETECT_TYPES: readonly {
+  readonly type: string
+  readonly label: string
+}[] = [
+  { type: 'person', label: 'Person' },
+  { type: 'vehicle', label: 'Vehicle' },
+  { type: 'package', label: 'Package' },
+  { type: 'licensePlate', label: 'License plate' },
+  { type: 'face', label: 'Face' },
+  { type: 'animal', label: 'Animal' },
+]
+
+/** The filter checkbox's label for `type`: the known label, else the type as Protect names it. */
+export function smartDetectTypeLabel(type: string): string {
+  return KNOWN_SMART_DETECT_TYPES.find((known) => known.type === type)?.label ?? type
+}
+
+function sameList(a: readonly string[], b: readonly string[]): boolean {
+  return a.length === b.length && a.every((item, i) => item === b[i])
+}
+
+/** `cell` with no `rotateIntervalSec` key at all, rather than one holding `undefined`. */
+function withoutRotation(cell: Cell): Cell {
+  const next = { ...cell }
+  delete next.rotateIntervalSec
+  return next
+}
+
+/** `cell` with no `smartDetectTypes` key at all, rather than one holding `undefined`. */
+function withoutSmartFilter(cell: Cell): Cell {
+  const next = { ...cell }
+  delete next.smartDetectTypes
+  return next
+}
+
+/**
+ * A whole number of at least `min`, or `null` for something that is not a finite number. Only the
+ * schema's lower bound: the editor's upper bounds belong to its inputs, so a stored value above
+ * them is never lowered by a setter.
+ */
+function wholeAtLeast(n: number, min: number): number | null {
+  return Number.isFinite(n) ? Math.max(min, Math.round(n)) : null
+}
+
+/**
+ * Cell `index` rotating every `sec` seconds (rounded, at least `MIN_ROTATE_INTERVAL_SEC`; the input
+ * caps it at {@link MAX_ROTATE_INTERVAL_SEC}), or not rotating for `undefined` (the field is
+ * removed). A value that is not a finite number changes nothing.
+ */
+export function setCellRotation<V extends View>(
+  view: V,
+  index: number,
+  sec: number | undefined,
+): V {
+  return updateCell(view, index, (cell) => {
+    if (sec === undefined) {
+      return cell.rotateIntervalSec === undefined ? cell : withoutRotation(cell)
+    }
+    const next = wholeAtLeast(sec, MIN_ROTATE_INTERVAL_SEC)
+    if (next === null || next === cell.rotateIntervalSec) return cell
+    return { ...cell, rotateIntervalSec: next }
+  })
+}
+
+/** Cell `index` with its motion switch `on` or off. */
+export function setCellMotionSwitch<V extends View>(view: V, index: number, on: boolean): V {
+  return updateCell(view, index, (cell) =>
+    cell.motionSwitch === on ? cell : { ...cell, motionSwitch: on },
+  )
+}
+
+/**
+ * Cell `index` triggered by exactly `triggers`, in `MOTION_TRIGGERS` order with duplicates and
+ * anything that is not a trigger dropped. An empty list is allowed (nothing switches the cell).
+ */
+export function setCellMotionTriggers<V extends View>(
+  view: V,
+  index: number,
+  triggers: readonly string[],
+): V {
+  const next = MOTION_TRIGGERS.filter((trigger) => triggers.includes(trigger))
+  return updateCell(view, index, (cell) =>
+    sameList(cell.motionTriggers, next) ? cell : { ...cell, motionTriggers: next },
+  )
+}
+
+/** `triggers` with `trigger` added (`on`) or removed, for a trigger checkbox. */
+export function toggleMotionTrigger(
+  triggers: readonly MotionTrigger[],
+  trigger: MotionTrigger,
+  on: boolean,
+): MotionTrigger[] {
+  const rest = triggers.filter((t) => t !== trigger)
+  return MOTION_TRIGGERS.filter((t) => (t === trigger ? on : rest.includes(t)))
+}
+
+/**
+ * Distinct non-empty smart-detection types, known ones in {@link KNOWN_SMART_DETECT_TYPES} order,
+ * then any others in the order given (kept, never dropped: a newer console's type is valid). The
+ * one ordering rule for both the stored filter and the checkboxes.
+ */
+function orderSmartDetectTypes(types: readonly string[]): string[] {
+  const distinct = dedupeRefs(types)
+  const known = KNOWN_SMART_DETECT_TYPES.map((k) => k.type).filter((t) => distinct.includes(t))
+  return [...known, ...distinct.filter((t) => !known.includes(t))]
+}
+
+/**
+ * The smart-detection types the cell's cameras report (`Camera.smartDetectTypes`, from Protect's
+ * `featureFlags`), in the order found, duplicates kept (the ordering is
+ * {@link smartDetectFilterChoices}'). A package ref (`<id>:package`) counts as its camera; a ref to
+ * a camera the inventory does not have adds nothing.
+ */
+export function cellCameraSmartDetectTypes(
+  cameraIds: readonly string[],
+  cameras: readonly Camera[],
+): string[] {
+  return cameraIds.flatMap((ref) => {
+    const { cameraId } = parseCameraRef(ref)
+    return cameras.find((camera) => camera.id === cameraId)?.smartDetectTypes ?? []
+  })
+}
+
+/**
+ * The filter's checkboxes: the types the cell's cameras report (`cellCameraTypes`,
+ * {@link cellCameraSmartDetectTypes}) plus any already `stored` in the cell — so a type no camera
+ * reports any more stays visible, checked and removable — ordered as the filter is stored (known
+ * types first). When no camera reports any type (an inventory without `featureFlags`, or cameras
+ * not loaded yet), all of {@link KNOWN_SMART_DETECT_TYPES} instead.
+ */
+export function smartDetectFilterChoices(
+  cellCameraTypes: readonly string[],
+  stored: readonly string[] | undefined,
+): string[] {
+  const reported = cellCameraTypes.filter((type) => type.length > 0)
+  const offered = reported.length > 0 ? reported : KNOWN_SMART_DETECT_TYPES.map((k) => k.type)
+  return orderSmartDetectTypes([...offered, ...(stored ?? [])])
+}
+
+/**
+ * Cell `index` filtering smart detections to `types`, ordered by the filter's rule (distinct,
+ * non-empty, known types in {@link KNOWN_SMART_DETECT_TYPES} order, then the others as given). An
+ * empty list, or `undefined`, removes the filter — CELL-2's "no filter", i.e. any type triggers.
+ */
+export function setCellSmartDetectTypes<V extends View>(
+  view: V,
+  index: number,
+  types: readonly string[] | undefined,
+): V {
+  const next = orderSmartDetectTypes(types ?? [])
+  return updateCell(view, index, (cell) => {
+    if (next.length === 0) {
+      return cell.smartDetectTypes === undefined ? cell : withoutSmartFilter(cell)
+    }
+    return cell.smartDetectTypes !== undefined && sameList(cell.smartDetectTypes, next)
+      ? cell
+      : { ...cell, smartDetectTypes: next }
+  })
+}
+
+/**
+ * `types` with `type` added (`on`) or removed, for a filter checkbox. Every other entry, a type the
+ * checkboxes do not know included, is kept.
+ */
+export function toggleSmartDetectType(
+  types: readonly string[] | undefined,
+  type: string,
+  on: boolean,
+): string[] {
+  const rest = (types ?? []).filter((t) => t !== type)
+  return on ? [...rest, type] : rest
+}
+
+/**
+ * Cell `index` holding a triggered camera `sec` seconds after its event ends (rounded, at least 0;
+ * the input caps it at {@link MAX_MOTION_HOLD_SEC}). A value that is not a finite number changes
+ * nothing.
+ */
+export function setCellMotionHold<V extends View>(view: V, index: number, sec: number): V {
+  return updateCell(view, index, (cell) => {
+    const next = wholeAtLeast(sec, 0)
+    return next === null || next === cell.motionHoldSec ? cell : { ...cell, motionHoldSec: next }
+  })
+}
+
+// -------------------------------------------------------------------------------------------------
 // Aspect and number inputs (VIEW-5)
 
 /** The aspect choices the select offers, in this order. Anything else is "Custom…". */
@@ -343,6 +571,7 @@ export function aspectChoiceLabel(aspect: Aspect): string | null {
 }
 
 const DECIMAL = /^[+-]?(\d+(\.\d*)?|\.\d+)$/
+const WHOLE = /^[+-]?\d+$/
 
 /**
  * A number input's text as a whole number in `[min, max]`: rounded, then clamped. `null` when the
@@ -355,6 +584,43 @@ export function parseBoundedInt(text: string, min: number, max: number): number 
   const n = Number(trimmed)
   if (!Number.isFinite(n)) return null
   return clamp(Math.round(n), min, max)
+}
+
+/**
+ * What a bounded number input commits while the user types `text`: the typed whole number (digits
+ * only), only when it is already within `[min, max]` and differs from `value`; else `null`, and the
+ * text stays as typed. Clamping here would commit a bound on the first keystroke (with min 5, the
+ * "3" of "30" would commit 5) and the resync would then turn "30" into "50".
+ */
+export function boundedInputCommit(
+  text: string,
+  min: number,
+  max: number,
+  value: number,
+): number | null {
+  const trimmed = text.trim()
+  // Digits only: "1." is a decimal being typed, and committing 1 would resync the text to "1".
+  if (!WHOLE.test(trimmed)) return null
+  const n = Number(trimmed)
+  if (n < min || n > max) return null
+  return n === value ? null : n
+}
+
+/**
+ * What a bounded number input commits on blur: {@link parseBoundedInt}'s rounded, clamped number
+ * when it differs from `value`, else `null` (the field then shows `value` again). Text that still
+ * reads as `value` commits nothing, so a stored value outside `[min, max]` (the schema may allow
+ * more than the input) survives a focus and blur the user did not type in.
+ */
+export function boundedInputBlurCommit(
+  text: string,
+  min: number,
+  max: number,
+  value: number,
+): number | null {
+  const parsed = parseBoundedInt(text, min, max)
+  if (parsed === null || parsed === value) return null
+  return Math.round(Number(text.trim())) === value ? null : parsed
 }
 
 // -------------------------------------------------------------------------------------------------

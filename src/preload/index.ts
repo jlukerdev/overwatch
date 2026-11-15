@@ -21,6 +21,7 @@ import {
   ipcResultSchema,
   type AppState,
   type Camera,
+  type CameraEvent,
   type CameraStateChange,
   type ConnectionStatus,
   type IpcResult,
@@ -134,6 +135,9 @@ const impl: ViewProtectApi = {
     subscribe(IPC_EVENTS.cameras, listener),
   onCameraState: (listener: (change: CameraStateChange) => void): Unsubscribe =>
     subscribe(IPC_EVENTS.cameraState, listener),
+  // CELL-2: validated like the rest, so a malformed frame is dropped here, not inside the scheduler.
+  onCameraEvent: (listener: (event: CameraEvent) => void): Unsubscribe =>
+    subscribe(IPC_EVENTS.cameraEvent, listener),
   // Validated like every other push: a malformed runtime frame would otherwise send every player
   // to a port that is not go2rtc's (P2.2, SPEC §5.3 "Renderer isolation").
   onStreamRuntime: (listener: (runtime: StreamRuntime) => void): Unsubscribe =>

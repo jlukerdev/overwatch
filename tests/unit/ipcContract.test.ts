@@ -345,6 +345,44 @@ describe('event payloads', () => {
     ).toBe(false)
   })
 
+  it('parses a camera event and defaults a missing `end` to null (CELL-2, SPEC §5.1)', () => {
+    const opening = {
+      id: 'evt-1',
+      cameraId: 'cam-1',
+      trigger: 'smartDetect',
+      protectType: 'smartDetectZone',
+      start: 1_700_000_000_000,
+      smartDetectTypes: ['person'],
+    }
+    // The opening `add` omits `end` entirely; it reads as "still running".
+    expect(IPC_EVENTS.cameraEvent.payload.parse(opening)).toEqual({ ...opening, end: null })
+    expect(IPC_EVENTS.cameraEvent.payload.parse({ ...opening, end: 1_700_000_005_000 }).end).toBe(
+      1_700_000_005_000,
+    )
+    // A plain motion event carries no smart types.
+    expect(
+      IPC_EVENTS.cameraEvent.payload.parse({
+        id: 'evt-2',
+        cameraId: 'cam-1',
+        trigger: 'motion',
+        protectType: 'motion',
+        start: 1,
+      }).smartDetectTypes,
+    ).toEqual([])
+  })
+
+  it('refuses a camera event with an empty id', () => {
+    expect(
+      IPC_EVENTS.cameraEvent.payload.safeParse({
+        id: '',
+        cameraId: 'cam-1',
+        trigger: 'motion',
+        protectType: 'motion',
+        start: 1,
+      }).success,
+    ).toBe(false)
+  })
+
   it('parses the whole inventory, since GET /v1/cameras stays the authority (R11)', () => {
     expect(IPC_EVENTS.cameras.payload.parse([{ id: 'cam-1' }])).toHaveLength(1)
   })

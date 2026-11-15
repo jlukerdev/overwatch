@@ -71,6 +71,11 @@ import {
   selectionActions,
   selectionRect,
   setCellCameras,
+  setCellMotionHold,
+  setCellMotionSwitch,
+  setCellMotionTriggers,
+  setCellRotation,
+  setCellSmartDetectTypes,
   swapCellContents,
   validateDraft,
   type Slot,
@@ -639,6 +644,21 @@ function DraftEditor({
           onQualityChange={(quality) => {
             if (inspected !== null)
               edit(setCellQuality(draft, inspected.col, inspected.row, quality))
+          }}
+          onRotateChange={(sec) => {
+            edit(setCellRotation(draft, inspectedIndex, sec))
+          }}
+          onMotionSwitchChange={(on) => {
+            edit(setCellMotionSwitch(draft, inspectedIndex, on))
+          }}
+          onMotionTriggersChange={(triggers) => {
+            edit(setCellMotionTriggers(draft, inspectedIndex, triggers))
+          }}
+          onSmartDetectTypesChange={(types) => {
+            edit(setCellSmartDetectTypes(draft, inspectedIndex, types))
+          }}
+          onMotionHoldChange={(sec) => {
+            edit(setCellMotionHold(draft, inspectedIndex, sec))
           }}
         />
         <CameraPalette choices={choices} />

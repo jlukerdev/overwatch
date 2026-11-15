@@ -45,6 +45,7 @@ const SLOTS: GridSlot[] = [
     fillQuality: 'high',
     fit: 'cover',
     qualityChoice: { override: null, inherited: 'low' },
+    position: { index: 0, count: 1 },
   },
   {
     kind: 'missing',
@@ -52,6 +53,7 @@ const SLOTS: GridSlot[] = [
     placement: { ...PLACEMENT, col: 1 },
     ref: 'gone',
     label: 'Camera not found (gone)',
+    position: { index: 0, count: 1 },
   },
   { kind: 'empty', key: 'empty:2,0', placement: { ...PLACEMENT, col: 2 } },
 ]

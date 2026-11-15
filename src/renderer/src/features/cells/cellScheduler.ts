@@ -384,7 +384,11 @@ function sameList<T>(a: readonly T[] | undefined, b: readonly T[] | undefined): 
   return a.every((value, i) => value === b[i])
 }
 
-function sameCell(a: SchedulerCell, b: SchedulerCell): boolean {
+/**
+ * The CELL-2 fields equal by content: what `configure` compares to return the same state, and what
+ * P4.2's scheduler set compares to tell a slot rebuild that changes nothing from a real View edit.
+ */
+export function sameSchedulerCell(a: SchedulerCell, b: SchedulerCell): boolean {
   return (
     sameList(a.cameraIds, b.cameraIds) &&
     a.rotateIntervalSec === b.rotateIntervalSec &&
@@ -407,7 +411,7 @@ function pickCell(cell: SchedulerCell): SchedulerCell {
 }
 
 function onConfigure(state: SchedulerState, input: SchedulerCell, now: number): SchedulerState {
-  if (sameCell(state.cell, input)) return state
+  if (sameSchedulerCell(state.cell, input)) return state
   const cell = pickCell(input)
   const old = state.cell.cameraIds
 

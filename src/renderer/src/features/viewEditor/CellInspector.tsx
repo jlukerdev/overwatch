@@ -4,16 +4,33 @@
 //
 // Every edit is a call into ./editorModel (`addCellCamera`, `removeCellCamera`, `moveCellCamera`)
 // made by the editor; this component only says which one. A cell holds several cameras already
-// (VIEW-2), but until multi-camera cells play (Phase 4) the Live grid shows the first, which the
-// note under the list says.
+// (VIEW-2); with two or more, what the Live grid does with them depends on the cell's CELL-2
+// settings (P4.2) — it rotates only with a `rotateIntervalSec`, and switches on events only with
+// `motionSwitch` on, otherwise it stays on the first camera — so the note under the list
+// ({@link multiCameraHint}) says which of those this cell will do.
 //
 // Below the cameras, the cell's quality override (P3.7; QUAL-3): "View default (X)" — X being what
 // the View and the app defaults give the cell now — then the qualities. It edits the draft's
 // `quality` (`setCellQuality`), saved with the rest; the overlay's picker on the Live screen
 // (QUAL-4) edits the same field directly.
-import { useId, type JSX } from 'react'
+//
+// With two or more cameras, a "Multi-camera" group between the two edits the cell's CELL-2 settings
+// (P4.2): Rotate (off, or every N s from 5), Switch on events, and — while that is on — which
+// triggers count, the smart-detection type filter and the hold. The filter offers the types the
+// cell's cameras report, plus any the cell already stores (`smartDetectFilterChoices`; none checked
+// = any type; a type it has no label for, from a newer console, is listed under its own name and
+// kept). Unticking Rotate removes the interval, as the schema has it; the inspector remembers it for
+// the selected cell, so ticking Rotate again restores it (10 s when there is none). The group is
+// hidden for fewer cameras, where none of it does anything; the settings stay in the cell. Each
+// control is one `setCell…` edit (./editorModel), saved with the draft like the quality.
+import { useId, useState, type JSX } from 'react'
 import type { Camera } from '@shared/ipc'
-import type { Cell } from '@shared/models'
+import {
+  MIN_ROTATE_INTERVAL_SEC,
+  MOTION_TRIGGERS,
+  type Cell,
+  type MotionTrigger,
+} from '@shared/models'
 import type { Quality } from '@shared/quality'
 import {
   inheritOptionLabel,
@@ -22,7 +39,20 @@ import {
 } from '../quality/qualityChoice'
 import { QualityOptions } from '../quality/QualityOptions'
 import { ChevronDownIcon, ChevronUpIcon, XIcon } from '../../ui/icons'
-import { cameraRefLabel, type CameraChoice } from './editorModel'
+import { BoundedNumberInput } from './BoundedNumberInput'
+import {
+  cameraRefLabel,
+  cellCameraSmartDetectTypes,
+  DEFAULT_ROTATE_INTERVAL_SEC,
+  MAX_MOTION_HOLD_SEC,
+  MAX_ROTATE_INTERVAL_SEC,
+  MOTION_TRIGGER_LABELS,
+  smartDetectFilterChoices,
+  smartDetectTypeLabel,
+  toggleMotionTrigger,
+  toggleSmartDetectType,
+  type CameraChoice,
+} from './editorModel'
 
 export interface CellInspectorProps {
   /** The selected cell, or `null` when the selection is not exactly one cell. */
@@ -42,6 +72,28 @@ export interface CellInspectorProps {
   readonly viewDefaultQuality: Quality | null
   /** A new quality override for the cell; `null` clears it. */
   readonly onQualityChange: (quality: Quality | null) => void
+  /** CELL-2: a new rotate interval in seconds; `undefined` turns rotation off. */
+  readonly onRotateChange: (sec: number | undefined) => void
+  readonly onMotionSwitchChange: (on: boolean) => void
+  readonly onMotionTriggersChange: (triggers: readonly MotionTrigger[]) => void
+  /** The whole filter; empty means no filter. */
+  readonly onSmartDetectTypesChange: (types: readonly string[]) => void
+  readonly onMotionHoldChange: (sec: number) => void
+}
+
+/** The note under the camera list: what the Live grid does with this cell's cameras (header). */
+export function multiCameraHint(cell: Pick<Cell, 'rotateIntervalSec' | 'motionSwitch'>): string {
+  const rotates = cell.rotateIntervalSec !== undefined
+  if (rotates && cell.motionSwitch) {
+    return `With two or more cameras, the cell rotates through them in this order every ${String(cell.rotateIntervalSec)} s, and switches to a camera on its events.`
+  }
+  if (rotates) {
+    return `With two or more cameras, the cell rotates through them in this order every ${String(cell.rotateIntervalSec)} s.`
+  }
+  if (cell.motionSwitch) {
+    return 'With two or more cameras, the cell shows the first and switches to a camera on its events.'
+  }
+  return 'With two or more cameras, the cell shows the first (rotation and event switching are off).'
 }
 
 export function CellInspector({
@@ -54,8 +106,16 @@ export function CellInspector({
   onMove,
   viewDefaultQuality,
   onQualityChange,
+  onRotateChange,
+  onMotionSwitchChange,
+  onMotionTriggersChange,
+  onSmartDetectTypesChange,
+  onMotionHoldChange,
 }: CellInspectorProps): JSX.Element {
   const qualityId = useId()
+  const fieldId = useId()
+  // The interval Rotate had when it was last unticked, for the cell it belongs to (header).
+  const [lastRotate, setLastRotate] = useState<{ cell: string; sec: number } | null>(null)
   if (cell === null) {
     return (
       <section className="viewEditor__panel" aria-label="Cell">
@@ -72,6 +132,7 @@ export function CellInspector({
   const present = new Set(cell.cameraIds)
   const addable = choices.filter((choice) => !present.has(choice.ref))
   const last = cell.cameraIds.length - 1
+  const cellKey = `${String(cell.col)},${String(cell.row)},${String(cell.colSpan)}x${String(cell.rowSpan)}`
 
   return (
     <section className="viewEditor__panel" aria-label="Cell">
@@ -149,9 +210,29 @@ export function CellInspector({
           </option>
         ))}
       </select>
-      <p className="viewEditor__hint">
-        Until multi-camera cells (Phase 4), a cell shows its first camera.
-      </p>
+      <p className="viewEditor__hint">{multiCameraHint(cell)}</p>
+      {cell.cameraIds.length >= 2 ? (
+        <MultiCameraSettings
+          cell={cell}
+          idPrefix={fieldId}
+          smartDetectChoices={smartDetectFilterChoices(
+            cellCameraSmartDetectTypes(cell.cameraIds, cameras),
+            cell.smartDetectTypes,
+          )}
+          rotateRestoreSec={
+            lastRotate?.cell === cellKey ? lastRotate.sec : DEFAULT_ROTATE_INTERVAL_SEC
+          }
+          onRotateOff={(sec) => {
+            setLastRotate({ cell: cellKey, sec })
+            onRotateChange(undefined)
+          }}
+          onRotateChange={onRotateChange}
+          onMotionSwitchChange={onMotionSwitchChange}
+          onMotionTriggersChange={onMotionTriggersChange}
+          onSmartDetectTypesChange={onSmartDetectTypesChange}
+          onMotionHoldChange={onMotionHoldChange}
+        />
+      ) : null}
       <label className="field__label" htmlFor={qualityId}>
         Quality
       </label>
@@ -166,5 +247,153 @@ export function CellInspector({
         <QualityOptions inheritLabel={inheritOptionLabel('View default', viewDefaultQuality)} />
       </select>
     </section>
+  )
+}
+
+type MultiCameraSettingsProps = Pick<
+  CellInspectorProps,
+  | 'onRotateChange'
+  | 'onMotionSwitchChange'
+  | 'onMotionTriggersChange'
+  | 'onSmartDetectTypesChange'
+  | 'onMotionHoldChange'
+> & {
+  readonly cell: Cell
+  /** A `useId` value; each control's id is this plus a suffix. */
+  readonly idPrefix: string
+  /** The filter's checkboxes, `smartDetectFilterChoices` order. */
+  readonly smartDetectChoices: readonly string[]
+  /** What ticking Rotate sets the interval to: the cell's last one, else the default. */
+  readonly rotateRestoreSec: number
+  /** Unticking Rotate, with the interval it had, for the inspector to remember. */
+  readonly onRotateOff: (sec: number) => void
+}
+
+/** The CELL-2 group, for a cell with two or more cameras (header). */
+function MultiCameraSettings({
+  cell,
+  idPrefix,
+  smartDetectChoices,
+  rotateRestoreSec,
+  onRotateOff,
+  onRotateChange,
+  onMotionSwitchChange,
+  onMotionTriggersChange,
+  onSmartDetectTypesChange,
+  onMotionHoldChange,
+}: MultiCameraSettingsProps): JSX.Element {
+  const rotateSec = cell.rotateIntervalSec
+  const types = cell.smartDetectTypes ?? []
+  const smartOn = cell.motionTriggers.includes('smartDetect')
+
+  return (
+    <fieldset className="viewEditor__group viewEditor__group--stack">
+      <legend className="viewEditor__groupTitle">Multi-camera</legend>
+
+      <div className="viewEditor__checkRow">
+        <input
+          id={`${idPrefix}-rotate`}
+          type="checkbox"
+          checked={rotateSec !== undefined}
+          onChange={(event) => {
+            if (event.target.checked) onRotateChange(rotateRestoreSec)
+            else if (rotateSec !== undefined) onRotateOff(rotateSec)
+          }}
+        />
+        <label htmlFor={`${idPrefix}-rotate`}>Rotate every</label>
+        {rotateSec !== undefined ? (
+          <>
+            <BoundedNumberInput
+              className="viewEditor__number"
+              label="Rotate interval, in seconds"
+              value={rotateSec}
+              min={MIN_ROTATE_INTERVAL_SEC}
+              max={MAX_ROTATE_INTERVAL_SEC}
+              onChange={onRotateChange}
+            />
+            <span aria-hidden="true">s</span>
+          </>
+        ) : null}
+      </div>
+
+      <div className="viewEditor__checkRow">
+        <input
+          id={`${idPrefix}-switch`}
+          type="checkbox"
+          checked={cell.motionSwitch}
+          onChange={(event) => {
+            onMotionSwitchChange(event.target.checked)
+          }}
+        />
+        <label htmlFor={`${idPrefix}-switch`}>Switch on events</label>
+      </div>
+
+      {cell.motionSwitch ? (
+        <>
+          <fieldset className="viewEditor__subgroup">
+            <legend className="field__label">Triggers</legend>
+            {MOTION_TRIGGERS.map((trigger) => (
+              <div key={trigger} className="viewEditor__checkRow">
+                <input
+                  id={`${idPrefix}-trigger-${trigger}`}
+                  type="checkbox"
+                  checked={cell.motionTriggers.includes(trigger)}
+                  onChange={(event) => {
+                    onMotionTriggersChange(
+                      toggleMotionTrigger(cell.motionTriggers, trigger, event.target.checked),
+                    )
+                  }}
+                />
+                <label htmlFor={`${idPrefix}-trigger-${trigger}`}>
+                  {MOTION_TRIGGER_LABELS[trigger]}
+                </label>
+              </div>
+            ))}
+            {cell.motionTriggers.length === 0 ? (
+              <p className="viewEditor__hint">
+                No trigger is checked, so no event switches the cell.
+              </p>
+            ) : null}
+          </fieldset>
+
+          {smartOn ? (
+            <fieldset className="viewEditor__subgroup">
+              <legend className="field__label">Smart detection types</legend>
+              <p className="viewEditor__hint">None checked = any type.</p>
+              {smartDetectChoices.map((type, i) => (
+                <div key={type} className="viewEditor__checkRow">
+                  <input
+                    id={`${idPrefix}-type-${String(i)}`}
+                    type="checkbox"
+                    checked={types.includes(type)}
+                    onChange={(event) => {
+                      onSmartDetectTypesChange(
+                        toggleSmartDetectType(cell.smartDetectTypes, type, event.target.checked),
+                      )
+                    }}
+                  />
+                  <label htmlFor={`${idPrefix}-type-${String(i)}`}>
+                    {smartDetectTypeLabel(type)}
+                  </label>
+                </div>
+              ))}
+            </fieldset>
+          ) : null}
+
+          <div className="viewEditor__inlineRow">
+            <label htmlFor={`${idPrefix}-hold`}>Hold after the event ends</label>
+            <BoundedNumberInput
+              id={`${idPrefix}-hold`}
+              className="viewEditor__number"
+              value={cell.motionHoldSec}
+              min={0}
+              max={MAX_MOTION_HOLD_SEC}
+              onChange={onMotionHoldChange}
+            />
+            <span aria-hidden="true">s</span>
+          </div>
+        </>
+      ) : null}
+    </fieldset>
   )
 }

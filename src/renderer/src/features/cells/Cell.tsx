@@ -129,8 +129,16 @@ export const Cell = memo(function Cell({
   const { cellRef, layerRef, zoomed, resetZoom } = useZoomPan(filled)
   // The same element object across renders that change nothing of the player's own, so a flip of
   // `zoomed` (or of `filled` alone) re-renders the overlay and never the player.
+  // Keyed by camera (P4.2; CELL-2): when a multi-camera cell rotates or a motion event switches it,
+  // this cell stays mounted and gets a new `cameraId`, and the key makes that a fresh player. The
+  // controller is per camera anyway (LivePlayer rebuilds it on `cameraId`), so the key costs no
+  // extra reconnect; what it buys is that everything a player sets up at mount — its placeholder,
+  // its props ref — belongs to one camera, and the first frame after a switch is a clean
+  // "Connecting…" rather than the old camera's picture under the new camera's name until the
+  // rebuild's effect runs. Zoom is unaffected: it lives in the cell, works only while filled, and a
+  // filled cell is pinned (FILL-3), so its camera does not change under it.
   const player = useMemo(
-    () => <LivePlayer cameraId={cameraId} quality={quality} muted fit={fit} />,
+    () => <LivePlayer key={cameraId} cameraId={cameraId} quality={quality} muted fit={fit} />,
     [cameraId, quality, fit],
   )
   return (

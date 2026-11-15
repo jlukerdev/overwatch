@@ -66,7 +66,7 @@ const execFileAsync = promisify(execFile)
 export interface PerfRunDeps {
   readonly config: PerfConfig
   readonly window: BrowserWindow
-  /** `ConnectionManager.connect()`: loads the inventory and opens the devices feed. */
+  /** `ConnectionManager.connect()`: loads the inventory and opens the devices and events feeds. */
   readonly connect: () => Promise<void>
   /** The cached inventory (`ConnectionManager.cachedCameras()`), in any order. */
   readonly cameras: () => readonly Camera[]

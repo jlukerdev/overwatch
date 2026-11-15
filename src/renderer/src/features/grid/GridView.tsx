@@ -21,7 +21,9 @@ import type { Camera } from '@shared/ipc'
 import type { View } from '@shared/models'
 import type { QualityDefaults } from '@shared/quality'
 import { cellRect, layoutGrid, type Rect } from '@shared/viewLayout'
+import { useAppStore } from '../../state/appStore'
 import { Cell } from '../cells/Cell'
+import { overlayAutoHideMs } from '../cells/overlayVisibility'
 import { buildViewSlots, type GridSlot } from './gridLayout'
 import './grid.css'
 
@@ -64,6 +66,10 @@ export function GridView({ view, cameras, streams }: GridViewProps): JSX.Element
     }
   }, [])
 
+  // CELL-4. Read here, once for the grid, and handed down as a number so `<Cell>` stays memoised on
+  // primitives. `undefined` before settings load, which `overlayAutoHideMs` turns into the default.
+  const autoHideMs = overlayAutoHideMs(useAppStore((s) => s.settings?.ui.overlayAutoHideSec))
+
   const slots = useMemo(() => buildViewSlots({ view, cameras, streams }), [view, cameras, streams])
 
   const layout = layoutGrid({
@@ -91,7 +97,7 @@ export function GridView({ view, cameras, streams }: GridViewProps): JSX.Element
               className="gridView__slot"
               style={drawable ? slotStyle(cellRect(layout, slot.placement)) : HIDDEN_SLOT}
             >
-              <SlotContent slot={slot} />
+              <SlotContent slot={slot} autoHideMs={autoHideMs} />
             </div>
           ))
         : null}
@@ -118,11 +124,23 @@ function slotStyle(rect: Rect): {
   return { left: rect.x, top: rect.y, width: rect.width, height: rect.height }
 }
 
-function SlotContent({ slot }: { readonly slot: GridSlot }): JSX.Element {
+function SlotContent({
+  slot,
+  autoHideMs,
+}: {
+  readonly slot: GridSlot
+  readonly autoHideMs: number
+}): JSX.Element {
   switch (slot.kind) {
     case 'camera':
       return (
-        <Cell cameraId={slot.cameraId} name={slot.name} quality={slot.quality} fit={slot.fit} />
+        <Cell
+          cameraId={slot.cameraId}
+          name={slot.name}
+          quality={slot.quality}
+          fit={slot.fit}
+          overlayAutoHideMs={autoHideMs}
+        />
       )
     case 'missing':
       // No player: the camera is gone from the console, or has no package camera to play

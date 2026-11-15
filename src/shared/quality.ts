@@ -43,6 +43,23 @@ export function isStreamQuality(value: string): value is StreamQuality {
   return StreamQualitySchema.safeParse(value).success
 }
 
+/**
+ * The short badge text for a stream, e.g. `MED` (QUAL-7: "the app shows the effective quality on
+ * hover"). A `Record` over every {@link StreamQuality}, so adding a quality without a label is a
+ * type error rather than a blank badge. `PKG` is the doorbell package channel (CAM-4), which a cell
+ * plays as its own source and so also shows.
+ */
+const QUALITY_BADGE_LABELS: Readonly<Record<StreamQuality, string>> = {
+  high: 'HIGH',
+  medium: 'MED',
+  low: 'LOW',
+  package: 'PKG',
+}
+
+export function qualityBadgeLabel(quality: StreamQuality): string {
+  return QUALITY_BADGE_LABELS[quality]
+}
+
 // -------------------------------------------------------------------------------------------------
 // resolveQuality (QUAL-2/3/5, docs/ARCHITECTURE.md §3 "Streaming details")
 //

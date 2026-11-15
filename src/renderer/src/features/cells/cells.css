@@ -1,0 +1,105 @@
+/*
+ * The cell overlay (P3.4; CELL-3, CELL-4, QUAL-7). The cell box itself (`.gridCell`) is the grid's
+ * (features/grid/grid.css); this file is what is drawn over the player, plus the idle-cursor class
+ * the overlay sets on the cell. Tokens come from src/renderer/src/styles.css.
+ *
+ * Who takes the pointer (CellOverlay.tsx header): the name and the badge, for their `title`s; and
+ * the controls in the strip's slot, while shown. Everything else here is `pointer-events: none`, so
+ * the player under it, and the cell around it, still get the pointer.
+ */
+
+/* CELL-4's spirit: an idle cursor over a wall of cameras gets out of the picture. Set on the cell. */
+.gridCell--cursorHidden,
+.gridCell--cursorHidden * {
+  cursor: none;
+}
+
+.cellOverlay {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+/*
+ * The top row: the name on the left, the strip on the right. One flex row so a long name stops at
+ * the strip with an ellipsis instead of running under it. The row's empty space is the cell's.
+ */
+.cellOverlay__top {
+  position: absolute;
+  top: 0.35rem;
+  right: 0.35rem;
+  left: 0.35rem;
+  display: flex;
+  align-items: flex-start;
+  gap: 0.35rem;
+  pointer-events: none;
+}
+
+/*
+ * The camera name, over the top-left corner of the picture. Always on screen (CELL-3). It shrinks
+ * (`min-width: 0`) but does not grow, so its chip stays the size of the name.
+ */
+.cellOverlay__name {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  padding: 0.1rem 0.4rem;
+  border-radius: var(--radius);
+  background: rgb(0 0 0 / 55%);
+  color: var(--fg);
+  font-size: 0.8rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  pointer-events: auto;
+}
+
+/*
+ * The auto-hiding strip, top right. Faded rather than removed, so its controls stay in the tab order
+ * and focusing one reveals it (CellOverlay.tsx, "Keyboard").
+ */
+.cellOverlay__controls {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 0.25rem;
+  margin-left: auto;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 150ms ease-out;
+}
+
+.cellOverlay--controlsShown .cellOverlay__controls {
+  opacity: 1;
+}
+
+.cellOverlay__slot {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+}
+
+/* Only the controls themselves, and the badge, take the pointer, and only while they can be seen. */
+.cellOverlay--controlsShown .cellOverlay__slot > *,
+.cellOverlay--controlsShown .cellOverlay__badge {
+  pointer-events: auto;
+}
+
+/* QUAL-7: the effective quality, e.g. `MED`. Information, not a control. */
+.cellOverlay__badge {
+  flex-shrink: 0;
+  padding: 0.1rem 0.35rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: rgb(0 0 0 / 55%);
+  color: var(--muted);
+  font-size: 0.7rem;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .cellOverlay__controls {
+    transition: none;
+  }
+}

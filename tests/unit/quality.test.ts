@@ -1,5 +1,6 @@
 // P1.1: the Quality / StreamQuality split in src/shared/quality.ts (QUAL preamble, QUAL-1, CAM-4).
 // P2.2: the two inheritance chains, `resolveGridQuality` and `resolveFillQuality` (QUAL-2/3/5).
+// P3.4: the overlay's quality badge text, `qualityBadgeLabel` (QUAL-7).
 //
 // The chains are three lines of code and the single most consequential three lines in the app: get
 // one level wrong and every cell of a 4x4 View streams `high` (NFR-2/4), or a per-cell override
@@ -13,6 +14,7 @@ import {
   PACKAGE_CHANNEL,
   QUALITIES,
   QualitySchema,
+  qualityBadgeLabel,
   resolveFillQuality,
   resolveGridQuality,
   STREAM_QUALITIES,
@@ -44,6 +46,21 @@ describe('quality', () => {
     }
     expect(isQuality('medium')).toBe(true)
     expect(isStreamQuality('medium')).toBe(true)
+  })
+})
+
+describe('qualityBadgeLabel (QUAL-7)', () => {
+  it('labels every stream quality, including the package channel', () => {
+    expect(qualityBadgeLabel('high')).toBe('HIGH')
+    expect(qualityBadgeLabel('medium')).toBe('MED')
+    expect(qualityBadgeLabel('low')).toBe('LOW')
+    expect(qualityBadgeLabel('package')).toBe('PKG')
+  })
+
+  it('gives each stream quality a distinct, non-empty label', () => {
+    const labels = STREAM_QUALITIES.map(qualityBadgeLabel)
+    for (const label of labels) expect(label.length).toBeGreaterThan(0)
+    expect(new Set(labels).size).toBe(STREAM_QUALITIES.length)
   })
 })
 

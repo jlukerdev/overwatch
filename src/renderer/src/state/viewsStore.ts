@@ -22,6 +22,8 @@ import { type AppState, type IpcResult, ipcFail } from '@shared/ipc'
 import { ViewSchema, type View } from '@shared/models'
 import {
   DEFAULT_LAYOUT_PRESET,
+  LAYOUT_PRESETS,
+  assignCameras,
   presetCells,
   type LayoutPreset,
   type LayoutResult,
@@ -41,17 +43,56 @@ export function resolveActiveView(views: readonly View[], lastViewId: string | n
 }
 
 /**
- * A new View laid out as `preset`, every cell empty, every other field at its schema default —
- * parsed rather than spelled out, so the defaults have one home (`ViewSchema`).
+ * Whether selecting View `id` has to be sent to main (`setLastView`). Compared with the **stored**
+ * `lastViewId`, not the resolved active View: with a dangling or `null` id the first View is shown
+ * by fallback (VIEW-6), and choosing it must still be stored, or the app would not reopen on it
+ * once another View is added in front of it.
  */
-export function createViewFromPreset(id: string, name: string, preset: LayoutPreset): View {
-  return ViewSchema.parse({
+export function selectionNeedsStore(lastViewId: string | null, id: string): boolean {
+  return lastViewId !== id
+}
+
+/**
+ * A new View laid out as `preset`, every other field at its schema default — parsed rather than
+ * spelled out, so the defaults have one home (`ViewSchema`). Every cell is empty unless `cameraIds`
+ * is given, in which case they fill the cells in order (see {@link assignCameras}).
+ */
+export function createViewFromPreset(
+  id: string,
+  name: string,
+  preset: LayoutPreset,
+  cameraIds: readonly string[] = [],
+): View {
+  const view = ViewSchema.parse({
     id,
     name,
     cols: preset.cols,
     rows: preset.rows,
     cells: presetCells(preset),
   })
+  // Assigned after the parse, so the cells are already in canonical order (row, then column) and
+  // "in order" means reading order whatever order the preset listed them in. Parsed again so the
+  // result is still a View the schema vouches for.
+  return ViewSchema.parse({ ...view, cells: assignCameras(view.cells, cameraIds) })
+}
+
+/** Presets whose cells are all 1×1, smallest first (by slot count, then list order). */
+const UNIFORM_PRESETS: readonly LayoutPreset[] = LAYOUT_PRESETS.filter((preset) =>
+  preset.cells.every((cell) => cell.colSpan === 1 && cell.rowSpan === 1),
+).toSorted((a, b) => a.cols * a.rows - b.cols * b.rows)
+
+/** The name the "Create a View" button gives the first View. */
+export const STARTER_VIEW_NAME = 'View 1'
+
+/**
+ * The layout for a first View showing `cameraCount` cameras: the smallest uniform preset with a slot
+ * for each of them, or the largest one (4×4) when there are more cameras than any preset has slots.
+ * Spanned presets are left out — a starter View has no camera that matters more than the others.
+ */
+export function starterPreset(cameraCount: number): LayoutPreset {
+  const fits = UNIFORM_PRESETS.find((preset) => preset.cols * preset.rows >= cameraCount)
+  // `LAYOUT_PRESETS` always has uniform presets (the unit test checks it); the default is the belt.
+  return fits ?? UNIFORM_PRESETS[UNIFORM_PRESETS.length - 1] ?? DEFAULT_LAYOUT_PRESET
 }
 
 /** The list with View `id` renamed. Unchanged when no View has that id. */
@@ -136,6 +177,16 @@ export function selectActiveView(state: Pick<AppStoreState, 'settings'>): View |
   return settings === null ? null : resolveActiveView(settings.views, settings.lastViewId)
 }
 
+/** The stored `lastViewId`, as is (no fallback). `null` before the first load. */
+export function selectLastViewId(state: Pick<AppStoreState, 'settings'>): string | null {
+  return state.settings?.lastViewId ?? null
+}
+
+/** React hook: the stored `lastViewId` (see {@link selectLastViewId}). */
+export function useLastViewId(): string | null {
+  return useAppStore(selectLastViewId)
+}
+
 /** React hook: every View. Re-renders only when the list itself changes. */
 export function useViews(): readonly View[] {
   return useAppStore(selectViews)
@@ -197,15 +248,18 @@ function mutate(
 
 export const viewsActions = {
   /**
-   * VIEW-3: a new, empty View laid out as `preset` (2×2 by default), appended to the list and made
-   * active — creating a View is always followed by looking at it, or editing it.
+   * VIEW-3: a new View laid out as `preset` (2×2 by default), appended to the list and made active —
+   * creating a View is always followed by looking at it, or editing it. Its cells are empty, or
+   * filled one camera each from `cameraIds` in order (`assignCameras`); the Live screen's "Create a
+   * View" passes the inventory in the camera list's order to make a first View that shows something.
    */
-  createView(name: string, preset?: LayoutPreset): ViewResult {
+  createView(name: string, preset?: LayoutPreset, cameraIds?: readonly string[]): ViewResult {
     return mutate(({ views }) => {
       const view = createViewFromPreset(
         crypto.randomUUID(),
         name.trim(),
         preset ?? DEFAULT_LAYOUT_PRESET,
+        cameraIds,
       )
       return { views: [...views, view], lastViewId: view.id }
     })

@@ -2,14 +2,14 @@
 // between the screens. Routing is a piece of state rather than a router — the prototype has two
 // screens in Phase 1 and the Views come in Phase 3 (VIEW-1), so a URL would buy nothing.
 //
-// P2.4 adds a third, temporary screen: the live grid (`TempGridScreen`), which Phase 3 replaces
-// with real Views. It is never the default screen — the choice below is unchanged.
+// The third screen is Live (`LiveScreen`, P3.2): the View switcher and the active View. It is never
+// the default screen — nothing connects on launch (CON-4), so it would open on "No cameras".
 //
 // The connection indicator lives in the header, outside the switch: CON-5 asks for it to be visible
 // at all times, not only on the Settings screen.
 import { useEffect, useState, type JSX } from 'react'
 import { CameraList } from './features/cameras/CameraList'
-import { TempGridScreen } from './features/grid/TempGridScreen'
+import { LiveScreen } from './features/grid/LiveScreen'
 import { SettingsPage } from './features/settings/SettingsPage'
 import { ConnectionBadge } from './features/status/ConnectionBadge'
 import { navClass } from './navClass'
@@ -116,7 +116,7 @@ export function App(): JSX.Element {
             }}
           />
         ) : current === 'grid' ? (
-          <TempGridScreen
+          <LiveScreen
             onOpenSettings={() => {
               setScreen('settings')
             }}

@@ -2,7 +2,7 @@
 // [--warmup 60] [--interval 5] [--label <text>] [--verbose]`.
 //
 // Starts the **built** app (`npm run build` first) with VP_PERF_* set, so main enters perf mode
-// (src/main/perf/): it connects, opens the temp grid at that quality, samples for `--duration`
+// (src/main/perf/): it connects, shows an in-memory View at that quality, samples for `--duration`
 // seconds after `--warmup`, writes its results and quits. The app uses the normal userData (the API
 // key is in the OS keystore, the certificate pin in config.json) and never writes config in perf
 // mode: the quality override lives only in memory.

@@ -27,8 +27,11 @@ import {
   renameViewIn,
   reorderViewsIn,
   resolveActiveView,
+  selectionNeedsStore,
   selectActiveView,
   selectViews,
+  STARTER_VIEW_NAME,
+  starterPreset,
   viewsActions,
 } from '../../src/renderer/src/state/viewsStore'
 
@@ -94,6 +97,19 @@ describe('resolveActiveView (VIEW-6)', () => {
   })
 })
 
+describe('selectionNeedsStore (VIEW-6)', () => {
+  it('skips only a View that is already the stored lastViewId', () => {
+    expect(selectionNeedsStore('a', 'a')).toBe(false)
+    expect(selectionNeedsStore('a', 'b')).toBe(true)
+  })
+
+  it('stores the fallback View when lastViewId is null or dangling', () => {
+    // resolveActiveView shows 'a' for both, yet choosing 'a' must still be written.
+    expect(selectionNeedsStore(null, 'a')).toBe(true)
+    expect(selectionNeedsStore('deleted-elsewhere', 'a')).toBe(true)
+  })
+})
+
 describe('list operations (VIEW-3)', () => {
   const views = [view('a'), view('b'), view('c')]
 
@@ -152,6 +168,66 @@ describe('list operations (VIEW-3)', () => {
         true,
       )
     }
+  })
+})
+
+describe('starter View (the Live screen’s "Create a View")', () => {
+  const cameraIds = (n: number): string[] =>
+    Array.from({ length: n }, (_, i) => `c${String(i + 1)}`)
+
+  it('picks the smallest uniform preset with a slot per camera', () => {
+    const sizes = [0, 1, 2, 4, 5, 6, 7, 9, 10, 12, 13, 16].map((n) => {
+      const preset = starterPreset(n)
+      return [n, `${String(preset.cols)}x${String(preset.rows)}`]
+    })
+    expect(sizes).toEqual([
+      [0, '1x1'],
+      [1, '1x1'],
+      [2, '2x2'],
+      [4, '2x2'],
+      [5, '3x2'],
+      [6, '3x2'],
+      [7, '3x3'],
+      [9, '3x3'],
+      [10, '4x3'],
+      [12, '4x3'],
+      [13, '4x4'],
+      [16, '4x4'],
+    ])
+  })
+
+  it('caps at 4×4 for more cameras than any preset holds, and never picks a spanned preset', () => {
+    expect(starterPreset(40)).toMatchObject({ cols: 4, rows: 4 })
+    for (let n = 0; n <= 20; n += 1) {
+      expect(starterPreset(n).cells.every((c) => c.colSpan === 1 && c.rowSpan === 1)).toBe(true)
+    }
+  })
+
+  it('createViewFromPreset fills the cells in reading order and stays a valid View', () => {
+    const ids5 = cameraIds(5)
+    const created = createViewFromPreset('id-1', STARTER_VIEW_NAME, starterPreset(5), ids5)
+    expect(created).toMatchObject({ name: 'View 1', cols: 3, rows: 2 })
+    expect(created.cells.map((c) => [c.row, c.col, c.cameraIds])).toEqual([
+      [0, 0, ['c1']],
+      [0, 1, ['c2']],
+      [0, 2, ['c3']],
+      [1, 0, ['c4']],
+      [1, 1, ['c5']],
+      [1, 2, []],
+    ])
+    expect(SetViewsInputSchema.safeParse({ views: [created], lastViewId: 'id-1' }).success).toBe(
+      true,
+    )
+  })
+
+  it('a starter View for 20 cameras shows the first 16', () => {
+    const created = createViewFromPreset(
+      'id-1',
+      STARTER_VIEW_NAME,
+      starterPreset(20),
+      cameraIds(20),
+    )
+    expect(created.cells.flatMap((c) => c.cameraIds)).toEqual(cameraIds(16))
   })
 })
 
@@ -238,6 +314,13 @@ describe('viewsActions', () => {
     expect(ids(storeViews())).toEqual(['a', '00000000-0000-4000-8000-000000000001'])
     expect(storeActive()).toMatchObject({ name: 'Front', cols: 3, rows: 3 })
     expect(storeActive()?.cells).toHaveLength(6)
+  })
+
+  it('createView fills the cells from cameraIds when given', async () => {
+    installFakeMain([], null)
+    await viewsActions.createView(STARTER_VIEW_NAME, starterPreset(3), ['x', 'y', 'z'])
+    expect(storeActive()?.cells.map((c) => c.cameraIds)).toEqual([['x'], ['y'], ['z'], []])
+    expect(useAppStore.getState().settings?.lastViewId).toBe(storeActive()?.id)
   })
 
   it('createView defaults to the 2×2 preset', async () => {

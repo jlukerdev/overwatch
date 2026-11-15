@@ -63,6 +63,18 @@ export function uniformCells(cols: number, rows: number): Cell[] {
   return uniformPlacements(cols, rows).map((p) => emptyCell(p.col, p.row))
 }
 
+/**
+ * `cells` with one camera each from `cameraIds`, first cell first. Cells past the last camera keep
+ * whatever they had (empty, for a fresh layout); cameras past the last cell are dropped. Shared by
+ * the starter View (renderer) and the perf View (main) so "fill in order" means one thing.
+ */
+export function assignCameras(cells: readonly Cell[], cameraIds: readonly string[]): Cell[] {
+  return cells.map((cell, index) => {
+    const id = cameraIds[index]
+    return id === undefined ? cell : { ...cell, cameraIds: [id] }
+  })
+}
+
 function uniformPlacements(cols: number, rows: number): CellPlacement[] {
   const out: CellPlacement[] = []
   for (let row = 0; row < rows; row += 1) {

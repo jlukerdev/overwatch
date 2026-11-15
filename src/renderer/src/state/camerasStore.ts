@@ -18,18 +18,9 @@ import type { Camera, EndpointStatus, IpcError, IpcResult, SnapshotResult } from
 // -------------------------------------------------------------------------------------------------
 // How one camera reads (CAM-1, CAM-3)
 
-/**
- * CAM-1's fallback chain: Protect's `name`, then the model (`type`), then the id. The id is never
- * pretty, but a row the user cannot identify at all is worse than an ugly one — and a camera that
- * is missing from the list is worse still.
- */
-export function cameraDisplayName(camera: Camera): string {
-  const name = camera.name?.trim() ?? ''
-  if (name !== '') return name
-  const model = camera.model.trim()
-  if (model !== '') return model
-  return camera.id
-}
+// `cameraDisplayName` lives in @shared/cameraOrder with `sortCameras`, so main (the P3.2 perf
+// harness) orders cameras exactly as this list does. Re-exported so callers keep importing here.
+export { cameraDisplayName, sortCameras } from '@shared/cameraOrder'
 
 /** What a placeholder stands in for, or `null` when the thumbnail is shown instead (CAM-3). */
 export type CameraPlaceholder = 'offline' | 'connecting'
@@ -63,20 +54,6 @@ export function cameraPresentation(camera: Camera): CameraPresentation {
   const state = camera.state.trim()
   const stateLabel = state === '' ? 'Unknown' : state === 'DISCONNECTED' ? 'Offline' : state
   return { online: false, placeholder: 'offline', audio, stateLabel }
-}
-
-/**
- * Display order: by display name, case-insensitively, numbers compared as numbers (`Cam 10` after
- * `Cam 2`), and **ties keep their inventory order** — `Array.prototype.sort` is stable, so two
- * cameras with the same name never swap places between renders.
- *
- * Offline cameras are deliberately *not* grouped or pushed to the end. Being offline is a state,
- * not a position: a camera that drops off for a minute would otherwise jump to the bottom and back,
- * and the row the user is watching during the G1 unplug test has to stay where it is.
- */
-export function sortCameras(cameras: readonly Camera[]): Camera[] {
-  const collator = new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' })
-  return [...cameras].sort((a, b) => collator.compare(cameraDisplayName(a), cameraDisplayName(b)))
 }
 
 // -------------------------------------------------------------------------------------------------

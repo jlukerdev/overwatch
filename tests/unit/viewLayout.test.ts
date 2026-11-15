@@ -11,6 +11,7 @@ import { CellSchema, type Cell, type View } from '@shared/models'
 import {
   DEFAULT_LAYOUT_PRESET,
   LAYOUT_PRESETS,
+  assignCameras,
   cellRect,
   layoutGrid,
   mergeCells,
@@ -139,6 +140,20 @@ describe('uniformCells', () => {
       [2, 1, 1, 1],
     ])
     expect(cells[0]).toEqual(CellSchema.parse({ col: 0, row: 0 }))
+  })
+})
+
+describe('assignCameras', () => {
+  it('fills cells in order, leaves extra cells alone and drops extra cameras', () => {
+    const cells = uniformCells(2, 1)
+    expect(assignCameras(cells, ['x']).map((c) => c.cameraIds)).toEqual([['x'], []])
+    expect(assignCameras(cells, ['x', 'y', 'z']).map((c) => c.cameraIds)).toEqual([['x'], ['y']])
+  })
+
+  it('does not mutate the cells it is given', () => {
+    const cells = uniformCells(1, 1)
+    assignCameras(cells, ['x'])
+    expect(cells[0]?.cameraIds).toEqual([])
   })
 })
 

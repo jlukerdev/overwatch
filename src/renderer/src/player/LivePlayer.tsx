@@ -1,4 +1,4 @@
-// `<LivePlayer cameraId quality muted />` — one camera, one quality, live (P2.3; QUAL-6, FILL-2,
+// `<LivePlayer cameraId quality muted fit? />` — one camera, one quality, live (P2.3; QUAL-6, FILL-2,
 // CAM-3, NFR-5/7, R1/R7, gate G2).
 //
 // The shell around `playerMachine.ts`. It does three jobs and holds no rules of its own: turn props
@@ -27,6 +27,7 @@
 // "keeps playing until the new one renders its first frame" means in DOM terms.
 import { useEffect, useRef, useState, type JSX } from 'react'
 import type { IpcError } from '@shared/ipc'
+import type { Fit } from '@shared/models'
 import type { StreamQuality } from '@shared/quality'
 import { useAppStore } from '../state/appStore'
 import { createMsePlayer, type MsePlayer } from './MsePlayer'
@@ -57,9 +58,20 @@ export interface LivePlayerProps {
   readonly quality: StreamQuality
   /** Phase 5 owns the single-active-audio policy (AUD-1); this is just the element's state. */
   readonly muted: boolean
+  /**
+   * VIEW-5: how a picture whose shape is not the box's sits in it — letterboxed (`contain`, the
+   * default: never hide part of a camera unless asked) or cropped to fill (`cover`). Pure CSS on the
+   * `<video>`s (player.css), so changing it never touches the stream.
+   */
+  readonly fit?: Fit
 }
 
-export function LivePlayer({ cameraId, quality, muted }: LivePlayerProps): JSX.Element {
+export function LivePlayer({
+  cameraId,
+  quality,
+  muted,
+  fit = 'contain',
+}: LivePlayerProps): JSX.Element {
   // CAM-3 comes from the inventory's `state`, never from whether a stream started: `camerasStore`
   // already decides what each Protect state means, including the undocumented ones (SPEC R8/R11).
   const camera = useAppStore((state) => state.cameras.find((entry) => entry.id === cameraId))
@@ -124,7 +136,7 @@ export function LivePlayer({ cameraId, quality, muted }: LivePlayerProps): JSX.E
   }, [muted])
 
   return (
-    <div className="livePlayer">
+    <div className={fit === 'cover' ? 'livePlayer livePlayer--cover' : 'livePlayer'}>
       <div className="livePlayer__layers" ref={containerRef} />
       {placeholder === null ? null : (
         <div className="livePlayer__placeholder" title={placeholderDetail(placeholder)}>

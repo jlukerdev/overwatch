@@ -9,8 +9,15 @@
 // anything happens (CLAUDE.md), a call that arrives before the services exist says `not-ready`
 // rather than throwing, and the CON-3 certificate flow refuses a fingerprint that is no longer the
 // one the user was shown.
-import { IPC, IPC_CHANNELS, ipcResultSchema, type IpcError, type IpcResult } from '@shared/ipc'
-import { CameraSchema, ConsoleConfigSchema } from '@shared/models'
+import {
+  IPC,
+  IPC_CHANNELS,
+  ipcResultSchema,
+  type AppState,
+  type IpcError,
+  type IpcResult,
+} from '@shared/ipc'
+import { CameraSchema, ConsoleConfigSchema, type Settings } from '@shared/models'
 import type { StreamQuality } from '@shared/quality'
 import { streamHandle } from '@shared/streams'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
@@ -28,6 +35,7 @@ import { ConsoleEndpointError } from '../../src/main/console/endpoints'
 import { toIpcError } from '../../src/main/ipc/errors'
 import { ProtectApiError } from '../../src/main/protect/errors'
 import { SecretsError } from '../../src/main/secrets/secrets'
+import { withPerfGridQuality } from '../../src/main/perf/perfStats'
 import {
   StreamRegistryError,
   type StreamRegistry,
@@ -80,6 +88,8 @@ interface SetupOptions {
   readonly brokenPin?: boolean
   /** What the endpoint presents on the wire right now. */
   readonly presented?: string
+  /** The P2.5 perf harness's in-memory settings override. */
+  readonly settingsView?: (settings: Settings) => Settings
 }
 
 function setup(options: SetupOptions = {}) {
@@ -171,6 +181,7 @@ function setup(options: SetupOptions = {}) {
     getRegistry: () => (ready ? registry : null),
     appVersion: () => '0.1.0',
     readLeaf,
+    ...(options.settingsView === undefined ? {} : { settingsView: options.settingsView }),
   })
 
   return {
@@ -366,6 +377,24 @@ describe('getState (contract rule 3)', () => {
     expect(value).not.toBeNull()
     expect(JSON.stringify(value)).not.toContain('schemaVersion')
     expect(JSON.stringify(value)).not.toContain(API_KEY)
+  })
+})
+
+describe('settingsView (P2.5 perf harness)', () => {
+  it('changes what the renderer is shown and never the stored config', async () => {
+    const p = setup({ settingsView: (s) => withPerfGridQuality(s, 'high') })
+    const before = JSON.stringify(p.services.current)
+    const state = await p.call<AppState>(IPC.getState)
+    expect(state.ok && state.value.settings.streams.defaultGridQuality).toBe('high')
+    const saved = await p.call<AppState>(IPC.setConsole, {
+      host: 'udm.local',
+      accessEnabled: false,
+      accessBaseUrl: null,
+    })
+    expect(saved.ok && saved.value.settings.streams.defaultGridQuality).toBe('high')
+    // The stored config keeps its own default; only the console block changed.
+    expect(p.services.current.streams.defaultGridQuality).toBe('low')
+    expect(JSON.parse(before)).toMatchObject({ streams: p.services.current.streams })
   })
 })
 

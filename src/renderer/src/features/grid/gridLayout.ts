@@ -77,19 +77,9 @@ export function emptySlotKey(index: number): string {
 // -------------------------------------------------------------------------------------------------
 // TEMPORARY (P2.4): hard-coded presets and assignment. Replaced by real Views in Phase 3.
 
-export interface TempGridPreset extends GridSize {
-  readonly id: string
-  readonly label: string
-}
-
-/**
- * The two sizes P2.4 asks for. 3×3 is nine streams and 4×3 twelve, which brackets the "10 streams"
- * P2.5 measures. Both are VIEW-1 presets, so the numbers are not invented here.
- */
-export const TEMP_GRID_PRESETS: readonly TempGridPreset[] = [
-  { id: '3x3', label: '3×3', cols: 3, rows: 3 },
-  { id: '4x3', label: '4×3', cols: 4, rows: 3 },
-]
+// The presets themselves live in `@shared/tempGrid` (also TEMPORARY), because the P2.5 perf
+// harness in main picks one by its button label.
+export { TEMP_GRID_PRESETS, type TempGridPreset } from '@shared/tempGrid'
 
 /**
  * The effective grid quality while there are no Views: QUAL-3's chain with no cell and no View

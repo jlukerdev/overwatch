@@ -35,7 +35,7 @@ import {
   type IpcResult,
   type PinCheck,
 } from '@shared/ipc'
-import { SettingsSchema, type ConsoleConfig } from '@shared/models'
+import { SettingsSchema, type ConsoleConfig, type Settings } from '@shared/models'
 import type { z } from 'zod'
 import type { Config } from '../config/schema'
 import { accessEndpoint, protectEndpoint, type ConsoleEndpoint } from '../console/endpoints'
@@ -103,6 +103,13 @@ export interface IpcRouterDeps {
    * `fetchLeafCert`; injected so the certificate handlers can be tested without a TLS socket.
    */
   readonly readLeaf?: typeof fetchLeafCert
+  /**
+   * Rewrites the settings the renderer is *shown*, in memory only. The P2.5 perf harness uses it to
+   * run the grid at the quality under test (`withPerfGridQuality`) without writing anything: the
+   * stored config, `services.current`, is never touched, so no save can persist the override.
+   * Absent in normal runs.
+   */
+  readonly settingsView?: (settings: Settings) => Settings
 }
 
 /** Everything a handler body may assume exists, having passed rule 2. */
@@ -208,11 +215,15 @@ function toPinCheck(result: PinCheckResult): PinCheck {
  * `SettingsSchema.parse` is what drops the `schemaVersion` envelope: zod strips unknown keys, so the
  * storage detail cannot reach the UI and the reply is a copy rather than main's own object.
  */
-function appState(ready: Ready, version: string): AppState {
+function appState(
+  ready: Ready,
+  version: string,
+  settingsView: (settings: Settings) => Settings = (settings) => settings,
+): AppState {
   const { services, manager } = ready
   return {
     version,
-    settings: SettingsSchema.parse(services.current),
+    settings: settingsView(SettingsSchema.parse(services.current)),
     keystoreAvailable: services.secrets.isEncryptionAvailable(),
     // CON-2, NFR-9: whether a credential is stored, never a character of it.
     secretsStored: {
@@ -261,7 +272,8 @@ export function createIpcRouter(deps: IpcRouterDeps): ReadonlyMap<string, IpcHan
   }
 
   /** `AppState` for the channels that answer with it (rule 4). */
-  const state = (ready: Ready): IpcResult<AppState> => ipcOk(appState(ready, deps.appVersion()))
+  const state = (ready: Ready): IpcResult<AppState> =>
+    ipcOk(appState(ready, deps.appVersion(), deps.settingsView))
 
   on(IPC.getState, (_input, ready) => Promise.resolve(state(ready)))
 

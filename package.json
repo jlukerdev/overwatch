@@ -27,7 +27,8 @@
     "spike:protect": "node scripts/spikes/protect-spike.ts",
     "spike:scan": "node scripts/spikes/scan-fixtures.ts",
     "spike:access": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/spikes/access-spike.ts",
-    "spike:video": "node --disable-warning=ExperimentalWarning scripts/spikes/video-spike/launch.ts",
+    "spike:video": "node --disable-warning=ExperimentalWarning --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/spikes/video-spike/launch.ts",
+    "perf": "node --disable-warning=ExperimentalWarning --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/perf/run.ts",
     "mock:access": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/mock-access/server.ts"
   },
   "dependencies": {

@@ -5,4 +5,5 @@ resources/bin/
 .env.local
 *.log
 scripts/spikes/output/
+scripts/perf/output/
 scripts/mock-access/.cert/

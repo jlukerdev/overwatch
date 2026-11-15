@@ -3,6 +3,7 @@
 // CPU-time parsing, go2rtc stream summaries and the G0 verdict. No I/O and no globals, so
 // everything here is unit-tested.
 import { codecsOf } from './stats.ts'
+import { cpuPercent, type PsRow } from '../../../src/main/perf/measure.ts'
 
 export const QUALITIES = ['high', 'medium', 'low'] as const
 export type Quality = (typeof QUALITIES)[number]
@@ -425,35 +426,10 @@ export function summarizeGo2rtcStream(body: unknown): StreamCodecSummary {
 // ---------------------------------------------------------------------------------------------
 // CPU
 
-/** Parses `ps -o time=` output (`[[dd-]hh:]mm:ss[.cc]`) into seconds. */
-export function parsePsCpuTime(text: string): number {
-  const s = text.trim()
-  const m = /^(?:(\d+)-)?(?:(\d+):)?(\d+):(\d+(?:\.\d+)?)$/.exec(s)
-  if (!m) throw new Error(`Unrecognised ps time "${s}"`)
-  const [, d = '0', h = '0', min = '0', sec = '0'] = m
-  return Number(d) * 86400 + Number(h) * 3600 + Number(min) * 60 + Number(sec)
-}
-
-export interface PsRow {
-  pid: number
-  ppid: number
-  cpuSec: number
-  command: string
-}
-
-/** Parses `ps -A -o pid=,ppid=,time=,args=` output. Unparseable lines are skipped. */
-export function parsePsRows(text: string): PsRow[] {
-  return text.split('\n').flatMap((line) => {
-    const m = /^\s*(\d+)\s+(\d+)\s+(\S+)\s+(.*)$/.exec(line)
-    if (!m) return []
-    const [, pid = '', ppid = '', time = '', command = ''] = m
-    try {
-      return [{ pid: Number(pid), ppid: Number(ppid), cpuSec: parsePsCpuTime(time), command }]
-    } catch {
-      return []
-    }
-  })
-}
+// parsePsCpuTime, parsePsRows, PsRow, cpuPercent and asBool moved to src/main/perf/measure.ts in P2.5
+// so the app's perf harness shares them; re-exported here for the spike and its tests.
+export { asBool, cpuPercent, parsePsCpuTime, parsePsRows } from '../../../src/main/perf/measure.ts'
+export type { PsRow } from '../../../src/main/perf/measure.ts'
 
 /** Groups the spike's processes: go2rtc, Electron main, and Electron helpers by kind. */
 export function processLabel(
@@ -489,12 +465,6 @@ export function cpuByLabel(
   return out
 }
 
-/** Average CPU % (100 = one core) between two cumulative CPU-time readings. */
-export function cpuPercent(prevCpuSec: number, nowCpuSec: number, wallMs: number): number {
-  if (wallMs <= 0) return 0
-  return Math.max(0, ((nowCpuSec - prevCpuSec) * 1000 * 100) / wallMs)
-}
-
 // ---------------------------------------------------------------------------------------------
 // G0 verdict
 
@@ -519,13 +489,6 @@ export interface CheckResult {
 
 const HW_DECODER =
   /VideoToolbox|D3D11|D3D12|MediaFoundation|DXVA|VaapiVideoDecoder|V4L2|Mojo|Platform/i
-
-/** Media-domain property values arrive as strings (`"true"`); accept both forms. */
-export function asBool(v: unknown): boolean | undefined {
-  if (v === true || v === 'true') return true
-  if (v === false || v === 'false') return false
-  return undefined
-}
 
 export function isHevcCodec(codec: string): boolean {
   return /^(hvc1|hev1)(\.|$)/i.test(codec)

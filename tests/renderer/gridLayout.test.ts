@@ -3,7 +3,11 @@
 //
 // What these tests protect:
 //  - every cell becomes exactly one slot, in the View's order, carrying its placement for `cellRect`.
-//  - a cell shows its first camera (multi-camera rotation is Phase 4).
+//  - (P4.2, CELL-2) a cell shows the camera its scheduler picks (`shown`: slot key → index), its
+//    first by default or when the index is out of range; the slot's key follows the cell's first
+//    ref, so it is stable while the shown camera changes; `schedulerEntries` uses exactly the same
+//    keys; a missing ref in a multi-camera cell takes its turn as a `missing` slot; camera and
+//    missing slots carry their `position` for P4.3.
 //  - quality comes from QUAL-3's chain (cell → View → settings), never a literal; a
 //    `<cameraId>:package` ref plays the package channel instead (CAM-4).
 //  - fill quality (P3.5) comes from QUAL-5's chain (View → settings), and a package ref stays on the
@@ -22,8 +26,10 @@ import { describe, expect, it } from 'vitest'
 import {
   buildViewSlots,
   cameraSlotKey,
+  cellSlotKeys,
   emptySlotKey,
   parseCameraRef,
+  schedulerEntries,
   type GridSlot,
 } from '../../src/renderer/src/features/grid/gridLayout'
 
@@ -80,8 +86,12 @@ function view(
   }
 }
 
-function slots(v: View, cameras: readonly Camera[] = INVENTORY): GridSlot[] {
-  return buildViewSlots({ view: v, cameras, streams: STREAMS })
+function slots(
+  v: View,
+  cameras: readonly Camera[] = INVENTORY,
+  shown?: ReadonlyMap<string, number>,
+): GridSlot[] {
+  return buildViewSlots({ view: v, cameras, streams: STREAMS, ...(shown ? { shown } : {}) })
 }
 
 function cameraSlot(slot: GridSlot | undefined): Extract<GridSlot, { kind: 'camera' }> {
@@ -134,9 +144,10 @@ describe('buildViewSlots: placement and contents', () => {
     expect(result.map((s) => cameraSlot(s).name)).toEqual(['Front', 'G4 Bullet'])
   })
 
-  it('shows the first camera of a multi-camera cell (rotation is Phase 4)', () => {
+  it('shows the first camera of a multi-camera cell without a scheduler', () => {
     const slot = cameraSlot(slots(view(1, 1, [['b', 'a']]))[0])
     expect(slot.cameraId).toBe('b')
+    expect(slot.position).toEqual({ index: 0, count: 2 })
   })
 
   it('passes the View’s fit through', () => {
@@ -272,6 +283,7 @@ describe('buildViewSlots: a camera no longer on the console (CAM-2)', () => {
       placement: { col: 0, row: 0, colSpan: 1, rowSpan: 1 },
       ref: 'gone',
       label: 'Camera not found (gone)',
+      position: { index: 0, count: 1 },
     })
   })
 
@@ -298,6 +310,7 @@ describe('buildViewSlots: a package ref to a camera without a package camera (CA
       placement: { col: 0, row: 0, colSpan: 1, rowSpan: 1 },
       ref: `a:${PACKAGE_CHANNEL}`,
       label: 'No package camera (Front)',
+      position: { index: 0, count: 1 },
     })
   })
 
@@ -313,5 +326,91 @@ describe('buildViewSlots: a package ref to a camera without a package camera (CA
     const after = cameraSlot(slots(v, withPackage)[0])
     expect(before?.kind).toBe('missing')
     expect(after).toMatchObject({ quality: PACKAGE_CHANNEL, key: before?.key })
+  })
+})
+
+describe('buildViewSlots: multi-camera cells (P4.2, CELL-2)', () => {
+  const key = cameraSlotKey('a', 0)
+
+  it('draws the ref the shown map picks, with its position', () => {
+    const slot = cameraSlot(slots(view(1, 1, [['a', 'b', 'm']]), INVENTORY, new Map([[key, 2]]))[0])
+    expect(slot).toMatchObject({
+      cameraId: 'm',
+      name: 'G4 Bullet',
+      position: { index: 2, count: 3 },
+    })
+  })
+
+  it('keeps the slot key on the first ref whichever camera is shown', () => {
+    const v = view(1, 1, [['a', 'b']])
+    const keys = [0, 1].map((index) => slots(v, INVENTORY, new Map([[key, index]]))[0]?.key)
+    expect(keys).toEqual([key, key])
+  })
+
+  it('falls back to the first ref for an index out of range or not a whole number', () => {
+    const v = view(1, 1, [['a', 'b']])
+    for (const index of [2, -1, 0.5, Number.NaN]) {
+      const slot = cameraSlot(slots(v, INVENTORY, new Map([[key, index]]))[0])
+      expect(slot.cameraId).toBe('a')
+      expect(slot.position).toEqual({ index: 0, count: 2 })
+    }
+  })
+
+  it('ignores the map for slots it does not name', () => {
+    const v = view(2, 1, [['a', 'b'], 'm'])
+    const result = slots(v, INVENTORY, new Map([['cam:other#0', 1]]))
+    expect(result.map((s) => cameraSlot(s).cameraId)).toEqual(['a', 'm'])
+  })
+
+  it('draws a missing ref in its turn as "Camera not found", under the same key', () => {
+    const v = view(1, 1, [['a', 'gone']])
+    const slot = slots(v, INVENTORY, new Map([[key, 1]]))[0]
+    expect(slot).toMatchObject({
+      kind: 'missing',
+      key,
+      ref: 'gone',
+      label: 'Camera not found (gone)',
+      position: { index: 1, count: 2 },
+    })
+  })
+
+  it('applies the package rules to the shown ref', () => {
+    const v = view(1, 1, [['b', `d:${PACKAGE_CHANNEL}`, `a:${PACKAGE_CHANNEL}`]])
+    const k = cameraSlotKey('b', 0)
+    expect(cameraSlot(slots(v, INVENTORY, new Map([[k, 1]]))[0]).quality).toBe(PACKAGE_CHANNEL)
+    expect(slots(v, INVENTORY, new Map([[k, 2]]))[0]?.kind).toBe('missing')
+  })
+})
+
+describe('schedulerEntries and cellSlotKeys (P4.2)', () => {
+  it('lists each cell with cameras under exactly the key buildViewSlots gives it', () => {
+    // Duplicate first refs across cells, a package ref and empty cells.
+    const v = view(3, 2, [['a', 'b'], 'a', null, ['a', 'm'], `d:${PACKAGE_CHANNEL}`, null])
+    const entries = schedulerEntries(v)
+    const camKeys = slots(v)
+      .filter((s) => s.kind !== 'empty')
+      .map((s) => s.key)
+    expect(entries.map((e) => e.key)).toEqual(camKeys)
+    expect(entries.map((e) => e.key)).toEqual([
+      cameraSlotKey('a', 0),
+      cameraSlotKey('a', 1),
+      cameraSlotKey('a', 2),
+      cameraSlotKey(`d:${PACKAGE_CHANNEL}`, 0),
+    ])
+    expect(entries[0]?.cell).toBe(v.cells[0])
+  })
+
+  it('counts occurrences of first refs only', () => {
+    // `b` second in the first cell does not bump the key of the cell led by `b`.
+    expect(cellSlotKeys(view(2, 1, [['a', 'b'], 'b']))).toEqual([
+      cameraSlotKey('a', 0),
+      cameraSlotKey('b', 0),
+    ])
+  })
+
+  it('is null for an empty cell, and lists no entry for it', () => {
+    const v = view(2, 1, [null, 'a'])
+    expect(cellSlotKeys(v)).toEqual([null, cameraSlotKey('a', 0)])
+    expect(schedulerEntries(v).map((e) => e.key)).toEqual([cameraSlotKey('a', 0)])
   })
 })

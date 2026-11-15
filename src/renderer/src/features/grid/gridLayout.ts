@@ -9,14 +9,23 @@
 //
 // Decisions made here, each for a reason:
 //
-//  - **One camera per cell, for now.** A cell shows `cameraIds[0]`. Multi-camera cells (rotation and
-//    motion switching, CELL-2) are Phase 4's `cellScheduler`; until then the other cameras in a cell
-//    are kept in the View and simply not shown.
-//  - **Keys follow the camera, not the cell.** A camera slot is keyed by its ref plus how many times
-//    that ref has already appeared in the View (`<ref>#<n>`), so switching to another View that also
-//    shows the camera keeps its `<LivePlayer>` mounted — React moves it to its new rectangle instead
-//    of closing one stream and opening another — and the same camera twice in one View still gets
-//    two distinct keys. Empty slots have no identity of their own and are keyed by position.
+//  - **A multi-camera cell shows the camera its scheduler picks** (P4.2; CELL-2, FILL-3). Which one
+//    is `shown` — slot key → position in the cell's `cameraIds`, from `useCellSchedulers` — and a
+//    cell without an entry (one camera, or no scheduler yet) shows its first. A position out of
+//    range falls back to the first too, so a stale map can never draw nothing. The chosen ref then
+//    goes through exactly the camera / missing / package rules below: a camera in the cell that is
+//    no longer on the console simply takes its turn in the rotation as "Camera not found", because
+//    the scheduler runs over the View's `cameraIds` as stored. Every camera and missing slot
+//    carries its `position` (`index` of `count`) for P4.3's `2/4` indicator.
+//  - **Keys follow the cell's first camera, not the one shown.** A camera slot is keyed by its
+//    **first** ref plus how many times that ref has already been some cell's first in the View
+//    (`<ref>#<n>`, {@link cellSlotKeys}). Not the shown camera: then every rotation would change the
+//    key and remount the cell, and the scheduler — keyed the same way (`schedulerEntries`, one
+//    helper so the two cannot drift) — would lose its state with it. Following a camera still keeps
+//    a View switch cheap: a camera that leads a cell in both Views keeps its `<LivePlayer>` mounted
+//    — React moves it to its new rectangle instead of closing one stream and opening another — and
+//    the same camera leading two cells in one View still gets two distinct keys. Empty slots have
+//    no identity of their own and are keyed by position.
 //  - **A camera that is no longer on the console** (removed or unadopted since the View was built,
 //    CAM-2) gets a `missing` slot: drawn as an empty cell with a label naming the id, and **no
 //    player**. A player would ask main for a stream that cannot exist and retry it forever, and its
@@ -50,6 +59,7 @@ import {
 } from '@shared/quality'
 import type { CellPlacement } from '@shared/viewLayout'
 import { cameraDisplayName } from '../../state/camerasStore'
+import type { SchedulerEntry } from '../cells/schedulerSet'
 
 // -------------------------------------------------------------------------------------------------
 // Camera refs (CAM-4)
@@ -103,6 +113,8 @@ export type GridSlot =
       readonly fit: Fit
       /** QUAL-4's picker for this cell, or `null` for a package ref, which has none (header). */
       readonly qualityChoice: SlotQualityChoice | null
+      /** Which of the cell's cameras this is (CELL-2, P4.3's `2/4`). */
+      readonly position: SlotPosition
     }
   | {
       /**
@@ -115,8 +127,16 @@ export type GridSlot =
       readonly ref: string
       /** What the cell says instead of a picture, e.g. `Camera not found (<ref>)`. */
       readonly label: string
+      /** Which of the cell's cameras this is (CELL-2, P4.3's `2/4`). */
+      readonly position: SlotPosition
     }
   | { readonly kind: 'empty'; readonly key: string; readonly placement: CellPlacement }
+
+/** The shown ref's place in its cell: `index` into `cameraIds`, of `count` (1 for a one-camera cell). */
+export interface SlotPosition {
+  readonly index: number
+  readonly count: number
+}
 
 /** What a camera slot's quality picker shows (QUAL-3/4). */
 export interface SlotQualityChoice {
@@ -132,6 +152,37 @@ export interface SlotQualityChoice {
  */
 export function cameraSlotKey(ref: string, occurrence: number): string {
   return `cam:${ref}#${String(occurrence)}`
+}
+
+/**
+ * The key of each of `view.cells`' slots, in order: {@link cameraSlotKey} of the cell's **first**
+ * ref and that ref's occurrence as a first ref so far, or `null` for a cell without cameras (keyed
+ * by {@link emptySlotKey} instead). The one place the key is computed, for both
+ * {@link buildViewSlots} and {@link schedulerEntries} (header).
+ */
+export function cellSlotKeys(view: Pick<View, 'cells'>): (string | null)[] {
+  const seen = new Map<string, number>()
+  return view.cells.map((cell) => {
+    const first = cell.cameraIds[0]
+    if (first === undefined) return null
+    const occurrence = seen.get(first) ?? 0
+    seen.set(first, occurrence + 1)
+    return cameraSlotKey(first, occurrence)
+  })
+}
+
+/**
+ * The View's camera cells as scheduler entries (P4.2; CELL-2): each cell with cameras under its slot
+ * key. `syncSchedulerSet` gives the ones with two or more cameras a scheduler.
+ */
+export function schedulerEntries(view: Pick<View, 'cells'>): SchedulerEntry[] {
+  const keys = cellSlotKeys(view)
+  const entries: SchedulerEntry[] = []
+  view.cells.forEach((cell, i) => {
+    const key = keys[i]
+    if (key !== undefined && key !== null) entries.push({ key, cell })
+  })
+  return entries
 }
 
 /** The key of an empty slot: its top-left slot, which is unique within a tiled View. */
@@ -157,33 +208,47 @@ export function buildViewSlots(input: {
   readonly view: View
   readonly cameras: readonly Camera[]
   readonly streams: QualityDefaults
+  /**
+   * CELL-2: slot key → position in that cell's `cameraIds` to draw (`useCellSchedulers`). A slot
+   * not in it, or a position out of range, draws the first camera (header).
+   */
+  readonly shown?: ReadonlyMap<string, number>
 }): GridSlot[] {
-  const { view, cameras, streams } = input
+  const { view, cameras, streams, shown } = input
   const byId = new Map(cameras.map((camera) => [camera.id, camera]))
-  const seen = new Map<string, number>()
-  return view.cells.map((cell): GridSlot => {
+  const keys = cellSlotKeys(view)
+  return view.cells.map((cell, i): GridSlot => {
     const placement: CellPlacement = {
       col: cell.col,
       row: cell.row,
       colSpan: cell.colSpan,
       rowSpan: cell.rowSpan,
     }
-    // Phase 4 (CELL-2) rotates through the rest; until then a cell shows its first camera.
-    const first = cell.cameraIds[0]
-    if (first === undefined) return { kind: 'empty', key: emptySlotKey(placement), placement }
+    const key = keys[i] ?? null
+    if (key === null) return { kind: 'empty', key: emptySlotKey(placement), placement }
 
-    const occurrence = seen.get(first) ?? 0
-    seen.set(first, occurrence + 1)
-    const key = cameraSlotKey(first, occurrence)
+    const count = cell.cameraIds.length
+    const wanted = shown?.get(key) ?? 0
+    const index = Number.isInteger(wanted) && wanted >= 0 && wanted < count ? wanted : 0
+    const position: SlotPosition = { index, count }
+    // `key` is non-null only for a cell with cameras, so the shown ref exists.
+    const refText = cell.cameraIds[index] ?? ''
 
-    const ref = parseCameraRef(first)
+    const ref = parseCameraRef(refText)
     const camera = byId.get(ref.cameraId)
     if (camera === undefined) {
-      return { kind: 'missing', key, placement, ref: first, label: `Camera not found (${first})` }
+      return {
+        kind: 'missing',
+        key,
+        placement,
+        ref: refText,
+        label: `Camera not found (${refText})`,
+        position,
+      }
     }
     if (ref.packageChannel && !camera.hasPackageCamera) {
       const label = `No package camera (${cameraDisplayName(camera)})`
-      return { kind: 'missing', key, placement, ref: first, label }
+      return { kind: 'missing', key, placement, ref: refText, label, position }
     }
 
     return {
@@ -201,6 +266,7 @@ export function buildViewSlots(input: {
             override: cell.quality,
             inherited: resolveGridQuality({ cell: { quality: null }, view, streams }),
           },
+      position,
     }
   })
 }

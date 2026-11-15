@@ -4,8 +4,10 @@
 //
 // Every edit is a call into ./editorModel (`addCellCamera`, `removeCellCamera`, `moveCellCamera`)
 // made by the editor; this component only says which one. A cell holds several cameras already
-// (VIEW-2), but until multi-camera cells play (Phase 4) the Live grid shows the first, which the
-// note under the list says.
+// (VIEW-2); with two or more, what the Live grid does with them depends on the cell's CELL-2
+// settings (P4.2) — it rotates only with a `rotateIntervalSec`, and switches on events only with
+// `motionSwitch` on, otherwise it stays on the first camera — so the note under the list
+// ({@link multiCameraHint}) says which of those this cell will do.
 //
 // Below the cameras, the cell's quality override (P3.7; QUAL-3): "View default (X)" — X being what
 // the View and the app defaults give the cell now — then the qualities. It edits the draft's
@@ -42,6 +44,21 @@ export interface CellInspectorProps {
   readonly viewDefaultQuality: Quality | null
   /** A new quality override for the cell; `null` clears it. */
   readonly onQualityChange: (quality: Quality | null) => void
+}
+
+/** The note under the camera list: what the Live grid does with this cell's cameras (header). */
+export function multiCameraHint(cell: Pick<Cell, 'rotateIntervalSec' | 'motionSwitch'>): string {
+  const rotates = cell.rotateIntervalSec !== undefined
+  if (rotates && cell.motionSwitch) {
+    return `With two or more cameras, the cell rotates through them in this order every ${String(cell.rotateIntervalSec)} s, and switches to a camera on its events.`
+  }
+  if (rotates) {
+    return `With two or more cameras, the cell rotates through them in this order every ${String(cell.rotateIntervalSec)} s.`
+  }
+  if (cell.motionSwitch) {
+    return 'With two or more cameras, the cell shows the first and switches to a camera on its events.'
+  }
+  return 'With two or more cameras, the cell shows the first (rotation and event switching are off).'
 }
 
 export function CellInspector({
@@ -149,9 +166,7 @@ export function CellInspector({
           </option>
         ))}
       </select>
-      <p className="viewEditor__hint">
-        Until multi-camera cells (Phase 4), a cell shows its first camera.
-      </p>
+      <p className="viewEditor__hint">{multiCameraHint(cell)}</p>
       <label className="field__label" htmlFor={qualityId}>
         Quality
       </label>

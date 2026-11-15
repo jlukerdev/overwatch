@@ -1,7 +1,18 @@
 // The connection manager (P1.5): the single piece of state behind CON-5's indicator and CAM-1's
-// camera list. It owns three things and nothing else — the per-endpoint `ConnectionStatus`, the
-// camera inventory, and the devices subscription that keeps the inventory current (CAM-2) — and it
-// pushes every change to the renderer through the two `IPC_EVENTS` the contract defines.
+// camera list. It owns four things and nothing else — the per-endpoint `ConnectionStatus`, the
+// camera inventory, the devices subscription that keeps the inventory current (CAM-2), and the
+// events subscription that feeds the cell scheduler (CELL-2, P4.2) — and it pushes every change to
+// the renderer through `IPC_EVENTS`.
+//
+// The two feeds open and close together (same endpoint, same key, same pinned Agent, same R9
+// limiter), but **only the devices feed drives the Protect `ConnectionStatus`**. The badge answers
+// "is the camera inventory live" (CON-5, CAM-2); the events feed is a second socket to the same
+// console whose failures are almost always the devices feed's failures too, and letting both write
+// the phase would make it flap between two sockets' retry loops. So an events-feed error is logged
+// and nothing more, and a repeated `connect()` reopens an events feed that stopped by itself. The
+// reverse is not symmetric on purpose: when the *devices* feed stops by itself (a rejected key or
+// pin), the events feed is stopped with it — the badge then says "not connected", and a socket left
+// switching cells behind it would contradict the badge; the next `connect()` opens both fresh.
 //
 // Why it is a module of its own rather than a few variables in the IPC handlers:
 //
@@ -19,8 +30,8 @@
 //     injected services at the moment of use and never put in a status, an event or a log line; the
 //     renderer learns only `credentialStored`.
 //
-// **No Electron import, by construction.** The services, the event sink, the devices-subscription
-// factory and the clock are all injected (`src/main/index.ts` wires the real ones), so the unit
+// **No Electron import, by construction.** The services, the event sink, the two subscription
+// factories and the clock are all injected (`src/main/index.ts` wires the real ones), so the unit
 // tests drive every phase, the feed and the pin-clearing in plain Node with no window and no socket.
 import {
   IPC_EVENTS,
@@ -55,6 +66,7 @@ import { ProtectApiError } from './protect/errors'
 import type { RtspsStreams } from './protect/types'
 import {
   createDevicesSubscription,
+  createEventsSubscription,
   type ProtectSubscription,
   type SubscriptionState,
 } from './protect/subscriptions'
@@ -88,6 +100,8 @@ export interface ConnectionManagerOptions {
   readonly emit: (channel: string, payload: unknown) => void
   /** Injected so the tests can drive a fake devices feed. */
   readonly createDevices?: typeof createDevicesSubscription
+  /** Injected so the tests can drive a fake events feed (CELL-2). */
+  readonly createEvents?: typeof createEventsSubscription
   readonly now?: () => number
   /** Safe lines only — no key, no token, no URL (CON-2, NFR-9). Default: no-op. */
   readonly log?: (line: string) => void
@@ -99,13 +113,14 @@ export interface ConnectionManager {
   /** The inventory as main last read it (CAM-1). Empty before the first successful read. */
   cachedCameras(): Camera[]
   /**
-   * CAM-1/2: read the inventory and open the devices feed. Idempotent — a second call while the
-   * feed is up re-reads the inventory instead of opening another socket, and two overlapping calls
-   * are serialized rather than racing. Throws when the console is not configured or the first read
-   * fails, so the caller can report *why* (CON-4).
+   * CAM-1/2, CELL-2: read the inventory and open the devices and events feeds. Idempotent — a
+   * second call while the feeds are up re-reads the inventory instead of opening another socket
+   * (it only reopens an events feed that stopped by itself — even when that re-read fails), and two
+   * overlapping calls are serialized rather than racing. Throws when the console is not configured
+   * or the read fails, so the caller can report *why* (CON-4).
    */
   connect(): Promise<void>
-  /** Closes the feed and goes back to `idle`. The cached inventory is kept. */
+  /** Closes both feeds and goes back to `idle`. The cached inventory is kept. */
   disconnect(): Promise<void>
   /** CON-4: both halves probed independently; one failing is a normal, informative answer. */
   testConnection(): Promise<TestConnection>
@@ -177,6 +192,7 @@ interface EndpointState {
 export function createConnectionManager(options: ConnectionManagerOptions): ConnectionManager {
   const { services, emit } = options
   const createDevices = options.createDevices ?? createDevicesSubscription
+  const createEvents = options.createEvents ?? createEventsSubscription
   const now = options.now ?? Date.now
   const log = options.log ?? ((): void => undefined)
 
@@ -184,6 +200,11 @@ export function createConnectionManager(options: ConnectionManagerOptions): Conn
   let subscription: ProtectSubscription | null = null
   /** True while the feed is stopping because we asked it to, so its `stopped` reads as `idle`. */
   let stopRequested = false
+  /**
+   * The events feed (CELL-2). Separate from `subscription` because it can stop on its own while the
+   * devices feed stays up (and the reverse), and neither should take the other down with it.
+   */
+  let eventsFeed: ProtectSubscription | null = null
 
   const state: Record<EndpointName, EndpointState> = {
     protect: { phase: 'idle', error: null, version: null, updatedAt: now() },
@@ -378,7 +399,11 @@ export function createConnectionManager(options: ConnectionManagerOptions): Conn
         refreshFromFeed(reconnect ? 'a reconnect' : 'the first connect')
       },
       onStateChange: (next) => {
+        // Read before `applyFeedState` drops the handle. A stop we asked for has already cleared
+        // it, so `current` on a `stopped` means this feed stopped by itself (header).
+        const current = subscription === feed
         applyFeedState(next)
+        if (next === 'stopped' && current) stopEventsFeed()
         emitStatus()
       },
       onError: (err) => {
@@ -391,11 +416,63 @@ export function createConnectionManager(options: ConnectionManagerOptions): Conn
     feed.start()
   }
 
+  // --- the events feed (CELL-2) -----------------------------------------------------------------
+
+  /**
+   * One push per mapped events-WS message, repeats included: the scheduler is idempotent on
+   * `(id, end)` (subscriptions.ts), so deduping here would only hide the lifecycle from it. Nothing
+   * is logged per event — a busy driveway is dozens a minute — and nothing here writes `state`:
+   * the subscription logs its own errors and reconnects (safe lines, `events:` prefixed), and the
+   * status stays the devices feed's alone (see the header).
+   */
+  function startEventsFeed(endpoint: ConsoleEndpoint): void {
+    const feed = createEvents({
+      url: protectSubscribeUrl(endpoint, 'events'),
+      // The same per-upgrade reads as the devices feed, for the same reasons (CON-1, CON-3).
+      apiKey: () => services.credentials.protectApiKey ?? null,
+      dispatcher: () => services.pins.agentFor(endpoint.host, endpoint.port),
+      limiter: services.limiter,
+      onEvent: (event) => {
+        emit(IPC_EVENTS.cameraEvent.channel, event)
+      },
+      onStateChange: (next) => {
+        if (next !== 'stopped' || eventsFeed !== feed) return
+        // Stopped of its own accord (a wrong key or pin: no retry can fix it). Dropped so the next
+        // `connect()` opens a fresh one. A stop we asked for has already cleared the handle, and the
+        // identity check keeps a late `stopped` from an old feed from forgetting a newer one.
+        eventsFeed = null
+        log('events feed stopped and will not retry; the next connect reopens it')
+      },
+      log,
+    })
+    eventsFeed = feed
+    feed.start()
+  }
+
+  /**
+   * The events feed alone, from inside the devices feed's `stopped` callback (header): the handle is
+   * dropped at once, so a `connect()` queued behind it opens a fresh one, and the stop is not awaited
+   * (a callback cannot). Its own late `stopped` then fails the `eventsFeed === feed` check and so
+   * cannot forget a newer feed.
+   */
+  function stopEventsFeed(): void {
+    const events = eventsFeed
+    if (events === null) return
+    eventsFeed = null
+    log('events feed stopped with the devices feed; the next connect reopens both')
+    void events.stop().catch((err: unknown) => {
+      log(`events feed: stop failed: ${err instanceof Error ? err.name : 'unknown error'}`)
+    })
+  }
+
+  /** Both feeds, together: every path that stops one stops the other (CON-1/2/3, shutdown). */
   async function stopFeed(): Promise<void> {
     stopRequested = true
     const feed = subscription
+    const events = eventsFeed
     subscription = null
-    if (feed !== null) await feed.stop()
+    eventsFeed = null
+    await Promise.all([feed?.stop(), events?.stop()])
   }
 
   // --- the operations ---------------------------------------------------------------------------
@@ -426,12 +503,22 @@ export function createConnectionManager(options: ConnectionManagerOptions): Conn
       // kind, instead of disappearing into the feed's retry loop (CON-4).
       await refreshInventory(alreadyUp ? 'a repeated connect' : 'a connect')
     } catch (err) {
-      if (!alreadyUp) state.protect.phase = 'error'
+      if (alreadyUp) {
+        // The devices socket is up, so the console is reachable and pinned: one failed GET is no
+        // reason to leave a stopped events feed down (the feed's own re-read fails the same way and
+        // keeps the socket too, see `refreshFromFeed`). The error is still reported and thrown.
+        if (eventsFeed === null) startEventsFeed(endpoint)
+      } else {
+        state.protect.phase = 'error'
+      }
       recordError('protect', err, endpoint.hostPort)
       emitStatus()
       throw err
     }
     if (!alreadyUp) startFeed(endpoint)
+    // Independent of `alreadyUp`: the events feed may have stopped on its own while the devices feed
+    // stayed up, and a repeated connect is the user's way of asking for everything again.
+    if (eventsFeed === null) startEventsFeed(endpoint)
     emitStatus()
   }
 
@@ -627,7 +714,7 @@ export function createConnectionManager(options: ConnectionManagerOptions): Conn
     await services.pins.closeAll()
   }
 
-  // The five that move the subscription go through the queue; `testConnection`, `cameras`,
+  // The five that move the subscriptions go through the queue; `testConnection`, `cameras`,
   // `snapshot` and `streamQualities` are plain requests that touch none of that state, so serializing them would only
   // make the UI wait for a reconnect's backoff.
   return {

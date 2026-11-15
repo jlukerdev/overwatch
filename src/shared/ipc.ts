@@ -23,11 +23,13 @@
 //     patch its own copy and drift from main.
 import { z } from 'zod'
 import {
+  CameraEventSchema,
   CameraSchema,
   CameraStateChangeSchema,
   SettingsSchema,
   ViewSchema,
   type Camera,
+  type CameraEvent,
   type CameraStateChange,
 } from './models'
 import { QualitySchema, StreamQualitySchema } from './quality'
@@ -613,6 +615,19 @@ export const IPC_EVENTS = {
   /** CAM-2/3: one camera's `state` changed on the devices feed. The G1 10-second path. */
   cameraState: { channel: 'vp:event/cameraState', payload: CameraStateChangeSchema },
   /**
+   * CELL-2 (P4.2): one push per mapped message on the events feed — `motion`, the `smartDetect*`
+   * types and `ring` (SPEC §5.1), as a {@link CameraEvent}. The opening `add` arrives with `end:
+   * null` and the closing `update` with `end` set.
+   *
+   * **Repeats are passed through on purpose.** The console sends the closing update two or three
+   * times (P0.3 §5); the renderer's scheduler is idempotent on `(id, end)`, which is where the
+   * dedupe belongs, so main forwards what it saw rather than guessing which copy is the real one.
+   *
+   * No secrets (rule 1): event and camera ids, the Protect type names and console timestamps only.
+   * The events feed does not drive the `connection` status; that is the devices feed's job.
+   */
+  cameraEvent: { channel: 'vp:event/cameraEvent', payload: CameraEventSchema },
+  /**
    * P2.1/P2.2: the go2rtc gateway came up on a (new) port, or went down. Every attached player
    * re-asks `ensureStream` on an `up` with an epoch it does not hold, and shows its placeholder on
    * a `down` — see {@link StreamRuntime} for why this is a union and not a nullable port.
@@ -683,11 +698,13 @@ export interface ViewProtectApi {
   onConnection(listener: (status: ConnectionStatus) => void): Unsubscribe
   onCameras(listener: (cameras: Camera[]) => void): Unsubscribe
   onCameraState(listener: (change: CameraStateChange) => void): Unsubscribe
+  /** CELL-2: motion, smart-detect and ring events, repeats included (see `IPC_EVENTS.cameraEvent`). */
+  onCameraEvent(listener: (event: CameraEvent) => void): Unsubscribe
   onStreamRuntime(listener: (runtime: StreamRuntime) => void): Unsubscribe
 }
 
 // Imported for the signatures above; re-exported so the renderer can take the whole contract plus
 // the domain types it carries from one module.
-export type { Camera, CameraStateChange, Cell, Settings, View } from './models'
+export type { Camera, CameraEvent, CameraStateChange, Cell, Settings, View } from './models'
 export type { StreamHandle, StreamRuntime } from './streams'
 export type { Quality, StreamQuality } from './quality'

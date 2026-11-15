@@ -13,9 +13,19 @@
 // rounding would make the grid narrower than it could be (see `layoutGrid`).
 //
 // **One component across View switches.** The Live screen renders the same `<GridView>` whatever the
-// active View, and the slots are keyed by camera (`buildViewSlots`), so a camera that is in both the
-// old and the new View keeps its player and its stream; only the box around it moves. The player is
+// active View, and the slots are keyed by camera — a cell's first (`buildViewSlots`) — so a camera
+// that leads a cell in both the old and the new View keeps its player and its stream; only the box
+// around it moves. A multi-camera cell keyed the same in both keeps its scheduler too, `configure`d
+// to the new View's cell, so the camera it shows carries over. The player is
 // built for that: a moved `<vp-mse-player>` keeps playing (MsePlayer.ts, `onconnect`).
+//
+// **Multi-camera cells** (P4.2; CELL-2, FILL-3). `useCellSchedulers` (features/cells/) keeps one
+// scheduler per slot whose cell has two or more cameras, driven by the Protect event bus and a
+// timer, and says which of the cell's cameras each one shows; `buildViewSlots` draws that one. The
+// slot's key follows the cell's first camera, not the shown one, so a rotation or a motion switch
+// keeps the slot, its `<Cell>` and its zoom layer mounted and only hands the cell a new `cameraId`
+// (Cell.tsx restarts the player for it). The filled slot's scheduler is pinned in the same render
+// that fills it, and unpinned in the one that leaves, so a filled cell never changes camera.
 //
 // **Fill lives here too** (P3.5; FILL-1/2/3, QUAL-5/6). Clicking a camera cell fills the grid area with
 // it, and that is this component re-placing one slot, not another component appearing: the filled
@@ -47,6 +57,8 @@ import { useAppStore } from '../../state/appStore'
 import { viewsActions, type ViewResult } from '../../state/viewsStore'
 import { Cell } from '../cells/Cell'
 import { overlayAutoHideMs } from '../cells/overlayVisibility'
+import { shownIndices } from '../cells/schedulerSet'
+import { useCellSchedulers } from '../cells/useCellSchedulers'
 import {
   activeFillPick,
   canSaveFillQuality,
@@ -62,7 +74,7 @@ import {
 } from '../fill/fillMode'
 import { setCellQuality } from '../quality/qualityChoice'
 import { keyEventTarget } from '../viewSwitcher/viewShortcut'
-import { buildViewSlots, type GridSlot } from './gridLayout'
+import { buildViewSlots, schedulerEntries, type GridSlot } from './gridLayout'
 import './grid.css'
 
 export interface GridViewProps {
@@ -108,13 +120,27 @@ export function GridView({ view, cameras, streams }: GridViewProps): JSX.Element
   // primitives. `undefined` before settings load, which `overlayAutoHideMs` turns into the default.
   const autoHideMs = overlayAutoHideMs(useAppStore((s) => s.settings?.ui.overlayAutoHideSec))
 
-  const slots = useMemo(() => buildViewSlots({ view, cameras, streams }), [view, cameras, streams])
-
   // FILL-1. The state names a slot of a View; `filledSlotKey` decides whether it is still filled
   // (another View on screen, the camera gone, the cell edited away: no). A state that no longer
   // fills anything is dropped right away, in render (React's "adjust state when props change"), so
   // coming back to that View later does not re-fill a cell out of nowhere.
   const [fill, setFill] = useState<FillState>(null)
+
+  // CELL-2 / FILL-3 (header): the multi-camera cells' schedulers pick what each slot shows. The pin
+  // is the fill *request* for this View, read before the slots exist because the slots depend on
+  // what the schedulers show; a request that turns out not to fill (its slot is not a camera) is
+  // dropped just below, and the next render unpins it. Entries are memoised on the View; the hook
+  // compares them by content anyway.
+  const entries = useMemo(() => schedulerEntries(view), [view])
+  const pinnedKey = fill !== null && fill.viewId === view.id ? fill.slotKey : null
+  const schedulerViewsByKey = useCellSchedulers(entries, pinnedKey)
+  const shown = useMemo(() => shownIndices(schedulerViewsByKey), [schedulerViewsByKey])
+
+  const slots = useMemo(
+    () => buildViewSlots({ view, cameras, streams, shown }),
+    [view, cameras, streams, shown],
+  )
+
   const filledKey = filledSlotKey(fill, view.id, slots)
   if (fill !== null && filledKey === null) setFill(null)
   const isFilled = filledKey !== null
@@ -139,7 +165,7 @@ export function GridView({ view, cameras, streams }: GridViewProps): JSX.Element
   // `fillClickStep`'s "armed" flag (fillMode.ts, "does not bounce"). Only event handlers touch it.
   const armedRef = useRef(false)
   // Disarmed on every way out of fill — Esc, the back control, a View switch, the slot going away —
-  // not only by grid clicks, so a later way *into* fill that skips a grid click (a shortcut, Phase 4)
+  // not only by grid clicks, so a later way *into* fill that skips a grid click (a shortcut, say)
   // can never start armed and leave on its first double-click.
   useEffect(() => {
     if (!isFilled) armedRef.current = false

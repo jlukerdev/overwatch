@@ -136,6 +136,8 @@ function fakeBridge(overrides: Partial<ViewProtectApi> = {}): FakeBridge {
     onCameras: (listener) => subscribeTo(cameraListeners, listener),
     onCameraState: (listener) => subscribeTo(stateListeners, listener),
     onStreamRuntime: (listener) => subscribeTo(runtimeListeners, listener),
+    // P4.2 (CELL-2): the event bus's source (state/eventBus.ts), not the store's; never pushed here.
+    onCameraEvent: () => () => undefined,
     ...overrides,
   }
 

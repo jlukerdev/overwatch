@@ -12,7 +12,13 @@
 //  - CAM-3's split: an offline camera is `unavailable`, a bad key is a real error;
 //  - **the pin clearing on a host change** (CON-3). That one is a security rule: a fingerprint the
 //    user accepted for one console must never be applied to a different machine.
-import { CameraSchema, ConsoleConfigSchema, type Camera } from '@shared/models'
+import {
+  CameraEventSchema,
+  CameraSchema,
+  ConsoleConfigSchema,
+  type Camera,
+  type CameraEvent,
+} from '@shared/models'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   createConnectionManager,
@@ -25,8 +31,10 @@ import { createRateLimiter } from '../../src/main/net/rateLimiter'
 import { ProtectApiError } from '../../src/main/protect/errors'
 import type {
   ProtectSubscription,
+  ProtectSubscriptionOptions,
   SubscriptionState,
   createDevicesSubscription,
+  createEventsSubscription,
 } from '../../src/main/protect/subscriptions'
 import { PinRequiredError, hostPortKey } from '../../src/main/tls/pinning'
 import { IPC_EVENTS } from '@shared/ipc'
@@ -44,26 +52,27 @@ function camera(id: string, extra: Partial<Camera> = {}): Camera {
   return CameraSchema.parse({ id, ...extra })
 }
 
-/** The devices feed as a hand-driven fake: nothing is sent and nothing is scheduled. */
+/** A feed (devices or events) as a hand-driven fake: nothing is sent and nothing is scheduled. */
 type DevicesOptions = Parameters<typeof createDevicesSubscription>[0]
+type EventsOptions = Parameters<typeof createEventsSubscription>[0]
 
-interface FeedHandle {
-  readonly options: DevicesOptions
+interface FeedHandle<Options = DevicesOptions> {
+  readonly options: Options
   starts: number
   stops: number
   /** Pushes a `SubscriptionState` as the real subscription would. */
   emitState(next: SubscriptionState): void
 }
 
-function createFeedFactory(): {
-  factory: typeof createDevicesSubscription
-  feeds: FeedHandle[]
-  last(): FeedHandle
+function createFeedFactory<Options extends ProtectSubscriptionOptions = DevicesOptions>(): {
+  factory: (options: Options) => ProtectSubscription
+  feeds: FeedHandle<Options>[]
+  last(): FeedHandle<Options>
 } {
-  const feeds: FeedHandle[] = []
-  const factory: typeof createDevicesSubscription = (options) => {
+  const feeds: FeedHandle<Options>[] = []
+  const factory = (options: Options): ProtectSubscription => {
     let state: SubscriptionState = 'idle'
-    const handle: FeedHandle = {
+    const handle: FeedHandle<Options> = {
       options,
       starts: 0,
       stops: 0,
@@ -89,9 +98,9 @@ function createFeedFactory(): {
     feeds.push(handle)
     return subscription
   }
-  const last = (): FeedHandle => {
+  const last = (): FeedHandle<Options> => {
     const feed = feeds.at(-1)
-    if (feed === undefined) throw new Error('no devices subscription has been created')
+    if (feed === undefined) throw new Error('no subscription has been created')
     return feed
   }
   return { factory, feeds, last }
@@ -182,6 +191,8 @@ function setup(options: SetupOptions = {}) {
   }
 
   const feeds = createFeedFactory()
+  // Always injected: the default is the real events subscription, which would open a socket.
+  const events = createFeedFactory<EventsOptions>()
   let clock = 1000
   const manager = createConnectionManager({
     services,
@@ -189,6 +200,7 @@ function setup(options: SetupOptions = {}) {
       emitted.push({ channel, payload })
     },
     createDevices: feeds.factory,
+    createEvents: events.factory,
     now: () => {
       clock += 1
       return clock
@@ -210,6 +222,7 @@ function setup(options: SetupOptions = {}) {
       return stored
     },
     feeds,
+    events,
     emitted,
     logged,
     /** What the console answers to the next `GET /v1/cameras`. */
@@ -819,5 +832,188 @@ describe('shutdown', () => {
     await h.manager.shutdown()
     expect(h.feeds.last().stops).toBe(1)
     expect(h.pins.closeAll).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('the events feed (CELL-2, P4.2)', () => {
+  const EVENT: CameraEvent = CameraEventSchema.parse({
+    id: 'evt-1',
+    cameraId: 'cam-1',
+    trigger: 'smartDetect',
+    protectType: 'smartDetectZone',
+    start: 1_700_000_000_000,
+    smartDetectTypes: ['person'],
+  })
+
+  const authFailure = (): ProtectApiError =>
+    new ProtectApiError('The Protect subscription was refused with HTTP 401.', {
+      kind: 'auth',
+      endpoint: '192.0.2.10:443',
+    })
+
+  it('opens alongside the devices feed, on the events channel of the same console', async () => {
+    await h.manager.connect()
+    expect(h.events.feeds).toHaveLength(1)
+    expect(h.events.last().starts).toBe(1)
+    expect(h.events.last().options.url).toBe(
+      'wss://192.0.2.10/proxy/protect/integration/v1/subscribe/events',
+    )
+    // The same shared limiter as the REST client and the devices feed (R9).
+    expect(h.events.last().options.limiter).toBe(h.services.limiter)
+    // The key is read per upgrade, never captured (CON-1).
+    expect(h.events.last().options.apiKey()).toBe(API_KEY)
+  })
+
+  it('opens nothing when the first inventory read fails', async () => {
+    h.protect.cameras.mockRejectedValueOnce(authFailure())
+    await expect(h.manager.connect()).rejects.toThrow(/401/)
+    expect(h.events.feeds).toHaveLength(0)
+  })
+
+  it('pushes every mapped event, repeats included, and logs none of them', async () => {
+    await h.manager.connect()
+    const linesBefore = h.logged.length
+    const closing = { ...EVENT, end: 1_700_000_005_000 }
+    h.events.last().options.onEvent(EVENT)
+    h.events.last().options.onEvent(closing)
+    // The closing update is repeated by the console; the scheduler dedupes on (id, end).
+    h.events.last().options.onEvent(closing)
+    expect(h.payloads(IPC_EVENTS.cameraEvent.channel)).toEqual([EVENT, closing, closing])
+    for (const payload of h.payloads(IPC_EVENTS.cameraEvent.channel)) {
+      expect(IPC_EVENTS.cameraEvent.payload.safeParse(payload).success).toBe(true)
+    }
+    expect(h.logged.length).toBe(linesBefore)
+  })
+
+  it('never changes the Protect status, whatever the events feed does', async () => {
+    await h.manager.connect()
+    h.feeds.last().emitState('open')
+    const before = h.manager.status().protect
+    const statusEvents = h.payloads(IPC_EVENTS.connection.channel).length
+
+    const feed = h.events.last()
+    feed.emitState('reconnecting')
+    feed.options.onError?.(authFailure())
+    feed.emitState('stopped')
+
+    const after = h.manager.status().protect
+    expect(after.phase).toBe('connected')
+    expect(after.error).toBeNull()
+    expect(after.updatedAt).toBe(before.updatedAt)
+    expect(h.payloads(IPC_EVENTS.connection.channel)).toHaveLength(statusEvents)
+    // The devices feed is left alone too.
+    expect(h.feeds.last().stops).toBe(0)
+  })
+
+  it('reopens an events feed that stopped by itself on a repeated connect', async () => {
+    await h.manager.connect()
+    h.feeds.last().emitState('open')
+    h.events.last().emitState('stopped')
+    await h.manager.connect()
+    expect(h.events.feeds).toHaveLength(2)
+    expect(h.events.last().starts).toBe(1)
+    // The devices feed was up throughout, so it is not reopened.
+    expect(h.feeds.feeds).toHaveLength(1)
+  })
+
+  it('opens no second events socket on a repeated connect while it is up', async () => {
+    await h.manager.connect()
+    h.feeds.last().emitState('open')
+    h.events.last().emitState('open')
+    await h.manager.connect()
+    await h.manager.connect()
+    expect(h.events.feeds).toHaveLength(1)
+    expect(h.events.last().starts).toBe(1)
+  })
+
+  it('opens one events feed for two overlapping connects', async () => {
+    await Promise.all([h.manager.connect(), h.manager.connect()])
+    expect(h.events.feeds).toHaveLength(1)
+  })
+
+  it('is stopped with the devices feed when that stops by itself, and a connect opens both fresh', async () => {
+    await h.manager.connect()
+    h.events.last().emitState('open')
+    // A rejected key or pin: the devices feed stops for good on its own.
+    h.feeds.last().options.onError?.(authFailure())
+    h.feeds.last().emitState('stopped')
+    expect(h.events.last().stops).toBe(1)
+    expect(h.manager.status().protect.phase).toBe('error')
+
+    await h.manager.connect()
+    expect(h.feeds.feeds).toHaveLength(2)
+    expect(h.events.feeds).toHaveLength(2)
+    expect(h.events.last().starts).toBe(1)
+    expect(h.events.last().stops).toBe(0)
+  })
+
+  it('a late `stopped` from the events feed stopped with the devices feed spares a newer one', async () => {
+    await h.manager.connect()
+    const first = h.events.last()
+    h.feeds.last().emitState('stopped')
+    await h.manager.connect()
+    expect(h.events.feeds).toHaveLength(2)
+    // The old socket reports `stopped` again, late: the new handle must survive it.
+    first.emitState('stopped')
+    await h.manager.connect()
+    expect(h.events.feeds).toHaveLength(2)
+    expect(h.events.last().stops).toBe(0)
+  })
+
+  it('reopens a stopped events feed on a repeated connect even when the re-read fails', async () => {
+    await h.manager.connect()
+    h.feeds.last().emitState('open')
+    h.events.last().emitState('stopped')
+    h.protect.cameras.mockRejectedValueOnce(authFailure())
+    await expect(h.manager.connect()).rejects.toThrow(/401/)
+    // The devices socket is up, so the console is reachable: the events feed comes back anyway.
+    expect(h.events.feeds).toHaveLength(2)
+    expect(h.events.last().starts).toBe(1)
+    expect(h.feeds.feeds).toHaveLength(1)
+    // The failure is still reported, without taking the live phase down.
+    expect(h.manager.status().protect.phase).toBe('connected')
+    expect(h.manager.status().protect.error?.kind).toBe('auth')
+  })
+
+  const stoppers: { name: string; run: (harness: Harness) => Promise<void> }[] = [
+    { name: 'disconnect', run: (harness) => harness.manager.disconnect() },
+    {
+      name: 'credentialCleared',
+      run: async (harness) => {
+        delete harness.services.credentials.protectApiKey
+        await harness.manager.credentialCleared()
+      },
+    },
+    {
+      name: 'applyConsoleChange',
+      run: (harness) =>
+        harness.manager.applyConsoleChange({ ...harness.console, host: '198.51.100.7' }),
+    },
+    { name: 'shutdown', run: (harness) => harness.manager.shutdown() },
+  ]
+
+  for (const { name, run } of stoppers) {
+    it(`is stopped by ${name}, and a later connect opens a fresh one`, async () => {
+      await h.manager.connect()
+      h.events.last().emitState('open')
+      await run(h)
+      expect(h.events.last().stops).toBe(1)
+      if (name === 'shutdown') return
+      if (name === 'credentialCleared') h.services.credentials.protectApiKey = API_KEY
+      await h.manager.connect()
+      expect(h.events.feeds).toHaveLength(2)
+      expect(h.events.feeds[0]?.stops).toBe(1)
+    })
+  }
+
+  it('a stop we asked for does not forget a feed opened after it', async () => {
+    await h.manager.connect()
+    const first = h.events.last()
+    await h.manager.disconnect()
+    await h.manager.connect()
+    // A late `stopped` from the old socket must not drop the new handle.
+    first.emitState('stopped')
+    await h.manager.connect()
+    expect(h.events.feeds).toHaveLength(2)
   })
 })

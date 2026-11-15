@@ -45,10 +45,12 @@
 //  - **Fit in fill is `contain`** ({@link FILL_FIT}), whatever the View's `fit`: fill is for seeing the
 //    whole camera, and the View's `cover` crops to make a wall of cells tidy. Detail is what zoom is
 //    for (ZOOM-1, P3.6): it works in fill only, at 1×–8× (features/zoom/).
-//  - **FILL-3 pins trivially for now.** A cell shows `cameraIds[0]` until Phase 4 (gridLayout.ts), so
-//    a filled cell already never rotates. TODO(Phase 4, CELL-2): when `cellScheduler` drives the
-//    shown camera, a filled cell must hold its current camera — feed the scheduler a "pinned" input
-//    while `filledSlotKey` names the cell, and release it on leaving fill.
+//  - **FILL-3: a filled multi-camera cell is pinned** (P4.2). Its scheduler (features/cells/
+//    useCellSchedulers.ts) is pinned while `<GridView>`'s fill state names its slot, in the same
+//    render that fills it, and unpinned on every way out — so the camera on screen when the cell was
+//    filled, a trigger's included, stays until the grid comes back. The slot's key follows the
+//    cell's first camera (gridLayout.ts), never the shown one, so nothing here changes when the
+//    shown camera does: the state keeps naming the same slot.
 //  - **The fill picker's pick lasts as long as that fill** (P3.7; QUAL-5: "applies until you leave
 //    fill mode"). It is a *session pick*, `{ viewId, slotKey, quality }`, held by `<GridView>` and
 //    never persisted, applied above QUAL-5's chain (src/shared/quality.ts): the filled cell plays

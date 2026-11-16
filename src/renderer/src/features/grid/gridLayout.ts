@@ -16,7 +16,8 @@
 //    goes through exactly the camera / missing / package rules below: a camera in the cell that is
 //    no longer on the console simply takes its turn in the rotation as "Camera not found", because
 //    the scheduler runs over the View's `cameraIds` as stored. Every camera and missing slot
-//    carries its `position` (`index` of `count`) for P4.3's `2/4` indicator.
+//    carries its `position` (`index` of `count`) for the overlay's `2/4` and next / previous
+//    (P4.3), so a missing camera in a multi-camera cell can be stepped past too.
 //  - **Keys follow the cell's first camera, not the one shown.** A camera slot is keyed by its
 //    **first** ref plus how many times that ref has already been some cell's first in the View
 //    (`<ref>#<n>`, {@link cellSlotKeys}). Not the shown camera: then every rotation would change the
@@ -43,7 +44,7 @@
 //    (View, then settings — fill has no per-cell level) for a camera, and the package channel again
 //    for a package ref, because that is a different source rather than a quality to upgrade.
 //  - **…and what its quality picker needs** (P3.7; QUAL-4): the cell's own override and what the
-//    cell gets with it cleared (`resolveGridQuality` with a `null` cell level — the "View default
+//    cell gets with it cleared (`resolveGridQuality` with a `null` cell level — the "Default
 //    (X)" option). The persisted cell is named by `placement`'s top-left slot (`setCellQuality`,
 //    features/quality/qualityChoice.ts). A package ref has no picker (`qualityChoice: null`): the
 //    package channel is a source, not a quality, so there is nothing to pick.
@@ -113,7 +114,7 @@ export type GridSlot =
       readonly fit: Fit
       /** QUAL-4's picker for this cell, or `null` for a package ref, which has none (header). */
       readonly qualityChoice: SlotQualityChoice | null
-      /** Which of the cell's cameras this is (CELL-2, P4.3's `2/4`). */
+      /** Which of the cell's cameras this is (CELL-2; the overlay's `2/4`, P4.3). */
       readonly position: SlotPosition
     }
   | {
@@ -127,7 +128,7 @@ export type GridSlot =
       readonly ref: string
       /** What the cell says instead of a picture, e.g. `Camera not found (<ref>)`. */
       readonly label: string
-      /** Which of the cell's cameras this is (CELL-2, P4.3's `2/4`). */
+      /** Which of the cell's cameras this is (CELL-2; the overlay's `2/4`, P4.3). */
       readonly position: SlotPosition
     }
   | { readonly kind: 'empty'; readonly key: string; readonly placement: CellPlacement }
@@ -140,7 +141,7 @@ export interface SlotPosition {
 
 /** What a camera slot's quality picker shows (QUAL-3/4). */
 export interface SlotQualityChoice {
-  /** The cell's own `quality`: `null` when it inherits (the picker's "View default" option). */
+  /** The cell's own `quality`: `null` when it inherits (the picker's "Default" option). */
   readonly override: Quality | null
   /** What the cell plays with its override cleared: `view.gridQuality ?? streams.defaultGridQuality`. */
   readonly inherited: Quality

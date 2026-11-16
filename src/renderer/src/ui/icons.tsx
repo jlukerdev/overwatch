@@ -107,6 +107,24 @@ export function ChevronDownIcon(props: IconProps): JSX.Element {
   )
 }
 
+/** A multi-camera cell's previous camera (CELL-3). */
+export function ChevronLeftIcon(props: IconProps): JSX.Element {
+  return (
+    <Svg {...props}>
+      <path d="M10 4l-4 4 4 4" />
+    </Svg>
+  )
+}
+
+/** A multi-camera cell's next camera (CELL-3). */
+export function ChevronRightIcon(props: IconProps): JSX.Element {
+  return (
+    <Svg {...props}>
+      <path d="M6 4l4 4-4 4" />
+    </Svg>
+  )
+}
+
 /** Merge: two cells joined into one. */
 export function MergeIcon(props: IconProps): JSX.Element {
   return (
@@ -213,7 +231,7 @@ export function ShieldIcon(props: IconProps): JSX.Element {
   )
 }
 
-/** Save to storage (a floppy disk), for "Save for this View". */
+/** Save to storage (a floppy disk), for the fill picker's Save. */
 export function SaveIcon(props: IconProps): JSX.Element {
   return (
     <Svg {...props}>
@@ -228,6 +246,19 @@ export function PulseIcon(props: IconProps): JSX.Element {
   return (
     <Svg {...props}>
       <path d="M1.5 8h3l1.5-4 3 8 1.5-4h4" />
+    </Svg>
+  )
+}
+
+/**
+ * ZOOM-2's reset to 100%: a magnifier with a minus, "zoom back out". The control's tooltip says it
+ * resets to 100%.
+ */
+export function ZoomResetIcon(props: IconProps): JSX.Element {
+  return (
+    <Svg {...props}>
+      <circle cx="7" cy="7" r="4.75" />
+      <path d="M10.5 10.5l4 4M4.75 7h4.5" />
     </Svg>
   )
 }

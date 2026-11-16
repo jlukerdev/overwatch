@@ -10,9 +10,10 @@
 //    measured from the original arrival, not from mount; the rotation timer starts at mount with the
 //    first camera, however long the replay spans.
 //  - events reach only the schedulers whose cell they match; pin pins one key and unpins any other
-//    (switching the pinned key, leaving fill); nextWake is the minimum across the set; views and
+//    (switching the pinned key, leaving fill); a manual step (P4.3) moves only its own cell, wraps,
+//    dismisses the active trigger, and in fill changes the pinned camera without unpinning; nextWake is the minimum across the set; views and
 //    shown indices read back what each cell shows; `stableViews` hands back the previous map when no
-//    view changed and reuses unchanged view objects otherwise; the timer delay never goes negative,
+//    view changed (an event ending on the camera already shown included) and reuses unchanged view objects otherwise; the timer delay never goes negative,
 //    and a due tick that changed nothing re-checks after a floor, never at 0 ms.
 //  - the hook's render-time inputs: unchanged input → same object (no render loop); entries are
 //    compared by content; a scheduler created for the filled slot is pinned at once.
@@ -35,6 +36,7 @@ import {
   pinSchedulerSet,
   sameEntries,
   MAX_TIMER_MS,
+  stepSchedulerSet,
   schedulerTimerDelay,
   schedulerViews,
   shownIndices,
@@ -108,7 +110,7 @@ describe('createReplayedScheduler', () => {
   it('shows the camera of an event still running when the cell mounts', () => {
     const add = ev({ cameraId: 'c', start: T - 20_000 })
     const state = createReplayedScheduler(ENTRY_A.cell, [bus(add, T - 20_000)], T)
-    expect(schedulerView(state)).toMatchObject({ cameraId: 'c', reason: 'trigger', motion: true })
+    expect(schedulerView(state)).toMatchObject({ cameraId: 'c', reason: 'trigger' })
   })
 
   it('does not show an event as a trigger once its hold ran out before mount', () => {
@@ -122,7 +124,6 @@ describe('createReplayedScheduler', () => {
       cameraId: 'c',
       reason: 'rotation',
       trigger: null,
-      motion: false,
     })
     expect(nextWakeAt(state)).toBe(T + 10_000)
   })
@@ -288,6 +289,52 @@ describe('pinSchedulerSet (FILL-3)', () => {
   })
 })
 
+describe('stepSchedulerSet (P4.3; CELL-3)', () => {
+  const base = syncSchedulerSet(EMPTY_SCHEDULER_SET, [ENTRY_A, ENTRY_X], T, NO_REPLAY)
+
+  it('steps only the cell at the key', () => {
+    const next = stepSchedulerSet(base, ENTRY_A.key, 'next', T + 1_000)
+    expect(next).not.toBe(base)
+    expect(shown(next, ENTRY_A.key)).toBe('b')
+    expect(next.get(ENTRY_X.key)).toBe(base.get(ENTRY_X.key))
+  })
+
+  it('is the same set for a key with no scheduler', () => {
+    expect(stepSchedulerSet(base, SINGLE.key, 'next', T + 1_000)).toBe(base)
+    expect(stepSchedulerSet(base, 'cam:nobody#0', 'prev', T + 1_000)).toBe(base)
+  })
+
+  it('wraps around both ways', () => {
+    expect(shown(stepSchedulerSet(base, ENTRY_A.key, 'prev', T + 1_000), ENTRY_A.key)).toBe('c')
+    let set = base
+    for (const t of [1, 2, 3]) set = stepSchedulerSet(set, ENTRY_A.key, 'next', T + t)
+    expect(shown(set, ENTRY_A.key)).toBe('a')
+  })
+
+  it('restarts the interval from the step', () => {
+    const next = stepSchedulerSet(base, ENTRY_A.key, 'next', T + 7_000)
+    expect(nextWakeAt(next.get(ENTRY_A.key) ?? createScheduler(ENTRY_A.cell, T))).toBe(T + 17_000)
+  })
+
+  it('dismisses the active trigger and steps from the camera it showed', () => {
+    const triggered = applyBusEvent(base, bus(ev({ cameraId: 'b', start: T }), T + 1_000))
+    expect(shown(triggered, ENTRY_A.key)).toBe('b')
+    const next = stepSchedulerSet(triggered, ENTRY_A.key, 'next', T + 2_000)
+    const view = schedulerView(next.get(ENTRY_A.key) ?? createScheduler(ENTRY_A.cell, T))
+    expect(view).toMatchObject({ cameraId: 'c', reason: 'rotation', trigger: null })
+  })
+
+  it('in fill changes the pinned camera and stays pinned', () => {
+    const pinned = pinSchedulerSet(base, ENTRY_A.key, T)
+    const next = stepSchedulerSet(pinned, ENTRY_A.key, 'prev', T + 1_000)
+    const state = next.get(ENTRY_A.key)
+    expect(state?.pinned).toBe(true)
+    expect(shown(next, ENTRY_A.key)).toBe('c')
+    // Still frozen: rotation does not move it.
+    expect(shown(tickSchedulerSet(next, T + 60_000), ENTRY_A.key)).toBe('c')
+  })
+})
+
 describe('tickSchedulerSet and nextWakeOfSet', () => {
   it('is null for an empty set, or one with nothing to wait for', () => {
     expect(nextWakeOfSet(EMPTY_SCHEDULER_SET)).toBeNull()
@@ -358,6 +405,19 @@ describe('stableViews', () => {
     const next = applyBusEvent(set, bus(ev({ cameraId: 'y', start: T + 1 }), T + 1))
     expect(next).not.toBe(set)
     expect(stableViews(views, next)).toBe(views)
+  })
+
+  it('returns the previous map when an event ends on the camera already shown', () => {
+    const add = ev({ cameraId: 'y', start: T })
+    const set = applyBusEvent(
+      syncSchedulerSet(EMPTY_SCHEDULER_SET, [ENTRY_A, ENTRY_X], T, NO_REPLAY),
+      bus(add, T),
+    )
+    const views = stableViews(null, set)
+    // The end starts the hold: `x`'s cell still shows `y` for the same motion trigger.
+    const ended = applyBusEvent(set, bus({ ...add, end: T + 2_000 }, T + 2_000))
+    expect(ended).not.toBe(set)
+    expect(stableViews(views, ended)).toBe(views)
   })
 
   it('reuses unchanged view objects and replaces only the one that moved', () => {

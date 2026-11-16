@@ -42,6 +42,7 @@ function view(cols: number, rows: number, cells: Cell[] = uniformCells(cols, row
     gap: 0,
     gridQuality: null,
     fillQuality: 'high',
+    showNames: true,
     cells,
   }
 }

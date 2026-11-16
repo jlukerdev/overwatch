@@ -42,6 +42,7 @@ function configWithView(lastViewId = 'v1'): Config {
         gap: 0,
         gridQuality: null,
         fillQuality: 'high',
+        showNames: true,
         cells: Array.from({ length: 4 }, (_, i) => ({
           col: i % 2,
           row: Math.floor(i / 2),

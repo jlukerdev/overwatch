@@ -25,9 +25,14 @@
 //    the inputs, so a set change that moves no camera (most ticks, most events) hands the grid the
 //    same views map and it rebuilds no slot. State rather than a ref, because a ref read during
 //    render is exactly what the hooks lint forbids.
+//  - **Manual next / previous** (P4.3; CELL-3) is the returned `step(key, direction)`:
+//    `stepSchedulerSet` at the wall clock, through the same functional update as events and ticks,
+//    so it composes with them in whatever order they land. Stable for the hook's life (no deps), so
+//    the grid can hand it to its memoised cells as is. The step changes the set, so the timer effect
+//    re-arms from the restarted interval.
 //  - **The clock is `Date.now()`**, read through {@link wallClock}: the bus stamps arrivals with it,
 //    and the scheduler compares those stamps with the `now` of every action.
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { cameraEventBus, type BusEvent } from '../../state/eventBus'
 import type { SchedulerView } from './cellScheduler'
 import {
@@ -37,11 +42,13 @@ import {
   nextWakeOfSet,
   schedulerTimerDelay,
   stableViews,
+  stepSchedulerSet,
   tickSchedulerSet,
   updateSchedulerInputs,
   type SchedulerEntry,
   type SchedulerInputs,
   type SchedulerSet,
+  type StepDirection,
 } from './schedulerSet'
 
 /** The bus's clock (header). A function, so the render-time update reads it in one named place. */
@@ -53,14 +60,22 @@ function replayNow(): readonly BusEvent[] {
   return cameraEventBus().recent(wallClock())
 }
 
+/** What {@link useCellSchedulers} hands the grid. */
+export interface CellSchedulers {
+  /** What each multi-camera cell on screen shows, by slot key; stable while nothing shown changes. */
+  readonly views: ReadonlyMap<string, SchedulerView>
+  /** The user's next / previous on the cell at `key` (header). Stable; a no-op for other keys. */
+  readonly step: (key: string, direction: StepDirection) => void
+}
+
 /**
- * What each multi-camera cell on screen shows, by slot key. `entries` are the View's slots
- * (`schedulerEntries`); `pinnedKey` is the filled slot's key, or `null` in the grid (FILL-3).
+ * The multi-camera cells on screen: what each shows, and the manual step. `entries` are the View's
+ * slots (`schedulerEntries`); `pinnedKey` is the filled slot's key, or `null` in the grid (FILL-3).
  */
 export function useCellSchedulers(
   entries: readonly SchedulerEntry[],
   pinnedKey: string | null,
-): ReadonlyMap<string, SchedulerView> {
+): CellSchedulers {
   const [inputs, setInputs] = useState<SchedulerInputs>(() =>
     initialSchedulerInputs(entries, pinnedKey, wallClock(), replayNow),
   )
@@ -120,9 +135,19 @@ export function useCellSchedulers(
     }
   }, [set])
 
-  // Stable views (header): the same map until a shown camera, reason or badge changes.
+  // Manual next / previous (header). The time is read here, not in the updater, which stays pure.
+  const step = useCallback((key: string, direction: StepDirection): void => {
+    const now = wallClock()
+    setInputs((previous) => {
+      const next = stepSchedulerSet(previous.set, key, direction, now)
+      return next === previous.set ? previous : { ...previous, set: next }
+    })
+  }, [])
+
+  // Stable views (header): the same map until a shown camera, position or reason changes.
   const [views, setViews] = useState(() => stableViews(null, set))
   const currentViews = stableViews(views, set)
   if (currentViews !== views) setViews(currentViews)
-  return currentViews
+  // A fresh object each render is fine: callers destructure it, and both members are stable.
+  return { views: currentViews, step }
 }

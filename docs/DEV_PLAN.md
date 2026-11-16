@@ -136,7 +136,7 @@ CELL-2
 |---|---|
 | P4.1 | `cellScheduler.ts` pure reducer (rotate, triggers incl. `ring` priority, smart-type filter, hold measured from event `end`, 60 s stale-event timeout) + exhaustive unit tests |
 | P4.2 | Wire Protect events → renderer event bus → scheduler + View-editor inspector controls for the CELL-2 cell settings (rotate interval, motion switch, triggers, smart-type filter, hold) |
-| P4.3 | Overlay position indicator, manual next/prev, motion badge |
+| P4.3 | Overlay position indicator, manual next/prev (the motion badge moved to the MVP backlog, user decision 2026-11-15). Review changes (2026-11-16): back control into the strip and strip order, quality badge only where there is no picker, "Save" / "Default (X)" labels, per-View Show camera names (VIEW-8) |
 | P4.4 | Optional pre-warm of the next rotation camera |
 
 **Gate G4:** a cell with 4 cameras rotates every 10 s. Walking in front of camera 3 switches to it within 2 s and holds for 15 s after motion stops.
@@ -182,7 +182,7 @@ Things that can only be checked where the real Access hardware is. Run these bef
 ---
 
 ## MVP backlog (after prototype review)
-Code signing + notarization · import Protect Live Views · Cloud Connector remote control/unlock · badge-in camera pop-up · auto-update (electron-updater) · two-way talk · multi-monitor / kiosk / launch at login · view import/export · door-link auto-suggest · PTZ · smart-detect type filters for auto-switch (person/vehicle only).
+Code signing + notarization · import Protect Live Views · Cloud Connector remote control/unlock · badge-in camera pop-up · auto-update (electron-updater) · two-way talk · multi-monitor / kiosk / launch at login · view import/export · door-link auto-suggest · PTZ · smart-detect type filters for auto-switch (person/vehicle only) · motion badge on cells.
 
 ## Working agreements for agents
 - **One task per branch and PR** (`view-protect/<task-id>-<slug>`). Each task goes through: subagent implementation → `/code-review` → fixes (decisions needing the user go to the user) → commit, push, PR → user merges → next task. The full workflow is in `/CLAUDE.md`. Commits reference task and requirement IDs.

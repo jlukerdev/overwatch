@@ -4,8 +4,10 @@
  * the overlay sets on the cell. Tokens come from src/renderer/src/styles.css.
  *
  * Who takes the pointer (CellOverlay.tsx header): the name and the badge, for their `title`s; and
- * the controls in the strip's slot, while shown. Everything else here is `pointer-events: none`, so
- * the player under it, and the cell around it, still get the pointer.
+ * the controls in the strip's slot, while shown (a control group such as the position's as a whole,
+ * so its text's `title` works and a click between its buttons is not a cell click). Everything else
+ * here is `pointer-events: none`, so the player under it, and the cell around it, still get the
+ * pointer.
  */
 
 /* FILL-1 (P3.5): a camera cell in the grid is clicked to fill the window. Not once it is filled. */
@@ -87,6 +89,11 @@
   gap: 0.25rem;
 }
 
+/* A cell with no controls to offer (one camera, no picker) draws no slot, so no stray gap. */
+.cellOverlay__slot:empty {
+  display: none;
+}
+
 /* Only the controls themselves, and the badge, take the pointer, and only while they can be seen. */
 .cellOverlay--controlsShown .cellOverlay__slot > *,
 .cellOverlay--controlsShown .cellOverlay__badge {
@@ -94,9 +101,10 @@
 }
 
 /*
- * QUAL-7: the effective quality, e.g. `MED`. Information, not a control. Each quality has its own
- * colour (`data-quality`, CellOverlay.tsx), so a wall of cells reads at a glance: green for HIGH,
- * amber for MED, blue for LOW, violet for the doorbell's package channel.
+ * QUAL-7: the effective quality. Information, not a control, and only where no picker shows the
+ * quality — in practice the package channel's `PKG` (Cell.tsx). Each quality has its own colour
+ * (`data-quality`), shared with the pickers below, so a wall of cells reads at a glance: green for
+ * HIGH, amber for MED, blue for LOW, violet for the doorbell's package channel.
  */
 .cellOverlay__badge {
   --quality-colour: var(--muted);
@@ -113,44 +121,27 @@
   letter-spacing: 0.04em;
 }
 
-.cellOverlay__badge[data-quality='high'] {
+.cellOverlay__badge[data-quality='high'],
+.cellOverlay__select[data-quality='high'] {
   --quality-colour: var(--quality-high);
 }
 
-.cellOverlay__badge[data-quality='medium'] {
+.cellOverlay__badge[data-quality='medium'],
+.cellOverlay__select[data-quality='medium'] {
   --quality-colour: var(--quality-medium);
 }
 
-.cellOverlay__badge[data-quality='low'] {
+.cellOverlay__badge[data-quality='low'],
+.cellOverlay__select[data-quality='low'] {
   --quality-colour: var(--quality-low);
 }
 
-.cellOverlay__badge[data-quality='package'] {
+.cellOverlay__badge[data-quality='package'],
+.cellOverlay__select[data-quality='package'] {
   --quality-colour: var(--quality-package);
 }
 
-/*
- * The top-centre controls (CellOverlay `centerControls`): fill's back-to-grid control, apart from
- * the strip's quality picker. Faded with the strip, and like it lets the pointer through except on
- * the controls themselves while shown.
- */
-.cellOverlay__center {
-  position: absolute;
-  top: 0.35rem;
-  left: 50%;
-  display: flex;
-  opacity: 0;
-  pointer-events: none;
-  transform: translateX(-50%);
-  transition: opacity 150ms ease-out;
-}
-
-.cellOverlay--controlsShown .cellOverlay__center {
-  opacity: 1;
-}
-
-/* An icon-only chip, e.g. the 2×2 grid of fill's back control. */
-/* A chip button holding an icon: alone (the back control), or before a label (Save for this View). */
+/* A chip button holding an icon: the back control, the zoom reset, Save, next / previous. */
 .cellOverlay__iconButton {
   display: inline-flex;
   align-items: center;
@@ -158,11 +149,6 @@
   gap: 0.3rem;
   padding: 0.2rem 0.35rem;
   line-height: 0;
-}
-
-/* With a label beside the icon, the text needs its normal line height back. */
-.cellOverlay__iconButton--labelled {
-  line-height: normal;
 }
 
 /* The overlay's icons (ui/icons.tsx) at a fixed 14 px, whatever the chip's small font size. */
@@ -176,7 +162,7 @@
   padding: 0.1rem 0.45rem;
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  background: rgb(0 0 0 / 55%);
+  background: var(--bg-raised);
   color: var(--fg);
   font: inherit;
   font-size: 0.75rem;
@@ -184,8 +170,14 @@
   cursor: pointer;
 }
 
-.cellOverlay__back:hover {
+.cellOverlay__back:hover:not(:disabled) {
   border-color: var(--accent);
+}
+
+/* A control that would do nothing now (the zoom reset at 1×): still there, visibly inert. */
+.cellOverlay__back:disabled {
+  opacity: 0.45;
+  cursor: default;
 }
 
 .cellOverlay__back:focus-visible {
@@ -194,8 +186,31 @@
 }
 
 /*
+ * A multi-camera cell's previous / position / next (P4.3; CELL-3, CellStepControls.tsx): the back
+ * control's chips either side of the position, drawn like the name's chip. Tighter than the strip's
+ * own gap so the three read as one control.
+ */
+.cellOverlay__position {
+  display: flex;
+  align-items: center;
+  gap: 0.15rem;
+}
+
+.cellOverlay__positionText {
+  padding: 0.1rem 0.35rem;
+  border-radius: var(--radius);
+  background: rgb(0 0 0 / 55%);
+  color: var(--fg);
+  font-size: 0.75rem;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+/*
  * QUAL-4/5's quality picker (P3.7): a native select dressed as the chips around it (the dropdown
- * itself follows the app's `color-scheme: dark`, styles.css).
+ * itself follows the app's `color-scheme: dark`, styles.css). Opaque, unlike the other chips: its
+ * text carries the quality colour, which must read against any video behind it (user, 2026-11-16).
  */
 .cellOverlay__select {
   max-width: 11rem;
@@ -210,6 +225,20 @@
   cursor: pointer;
 }
 
+/*
+ * The select is the quality readout where there is no badge (QUAL-7, QualityPicker.tsx): text and
+ * border in the playing quality's colour. The open dropdown's options keep the normal text colour.
+ */
+.cellOverlay__select[data-quality] {
+  border-color: color-mix(in srgb, var(--quality-colour) 70%, transparent);
+  background: color-mix(in srgb, var(--quality-colour) 14%, var(--bg-raised));
+  color: var(--quality-colour);
+}
+
+.cellOverlay__select option {
+  color: var(--fg);
+}
+
 .cellOverlay__select:hover {
   border-color: var(--accent);
 }
@@ -220,8 +249,7 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .cellOverlay__controls,
-  .cellOverlay__center {
+  .cellOverlay__controls {
     transition: none;
   }
 }

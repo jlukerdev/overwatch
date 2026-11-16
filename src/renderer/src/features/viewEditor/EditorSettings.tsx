@@ -13,12 +13,14 @@
 //    to the stored View, which resets the mode.
 //  - Gap → a 0–MAX_GRID_GAP range plus a number input for an exact value.
 //  - Fit → contain / cover.
+//  - Show camera names (P4.3; VIEW-8) → `showNames`, a checkbox, on by default: whether the Live
+//    screen's cells draw their camera's name, in the grid and in fill.
 //  - Grid quality / Fill quality (P3.7; QUAL-2, QUAL-5) → `gridQuality` / `fillQuality`. The first
 //    option inherits (`null`) and names what that gives now, from `settings.streams` (QUAL-1):
 //    "App default (LOW)". Saved with the rest of the draft, like every setting here.
 //
 // The controls sit in three titled groups (P3.8): Grid (layout preset, columns, rows), Display (aspect,
-// gap, fit) and Quality (grid, fill). Each group is a `fieldset`, so its caption is read with the
+// gap, fit, show camera names) and Quality (grid, fill). Each group is a `fieldset`, so its caption is read with the
 // controls inside it.
 //
 // Layout changes report how many camera cells they dropped, so the editor can say so.
@@ -48,7 +50,7 @@ const GRID_SIZES = Array.from({ length: MAX_GRID_DIMENSION }, (_, i) => i + 1)
 
 export interface EditorSettingsProps {
   readonly draft: View
-  /** A setting that leaves the cells alone (aspect, gap, fit, the two qualities). */
+  /** A setting that leaves the cells alone (aspect, gap, fit, names, the two qualities). */
   readonly onEdit: (next: View) => void
   /** A change of layout: the selection no longer means anything, and `lost` camera cells went. */
   readonly onLayout: (next: View, lost: number) => void
@@ -64,6 +66,7 @@ export function EditorSettings({
 }: EditorSettingsProps): JSX.Element {
   const aspectId = useId()
   const gapId = useId()
+  const showNamesId = useId()
   const [customAspect, setCustomAspect] = useState(() => aspectChoiceLabel(draft.aspect) === null)
   const presetId = matchingPresetId(draft)
   const aspectLabel = aspectChoiceLabel(draft.aspect)
@@ -242,6 +245,18 @@ export function EditorSettings({
             <option value="cover">Cover (fill the cell)</option>
           </select>
         </label>
+
+        <div className="viewEditor__checkRow">
+          <input
+            id={showNamesId}
+            type="checkbox"
+            checked={draft.showNames}
+            onChange={(event) => {
+              onEdit({ ...draft, showNames: event.target.checked })
+            }}
+          />
+          <label htmlFor={showNamesId}>Show camera names</label>
+        </div>
       </fieldset>
 
       <fieldset className="viewEditor__group">

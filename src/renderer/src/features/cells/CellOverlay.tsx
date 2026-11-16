@@ -1,17 +1,23 @@
-// The overlay over a cell's player (P3.4; CELL-3, CELL-4, QUAL-7): the camera's name, always on
-// screen, and a controls strip that shows on hover and hides `ui.overlayAutoHideSec` after the last
-// movement, taking the idle cursor with it.
+// The overlay over a cell's player (P3.4; CELL-3, CELL-4, QUAL-7): the camera's name, top left
+// (unless the View hides names, VIEW-8), and a controls strip, top right, that shows on hover and
+// hides `ui.overlayAutoHideSec` after the last movement, taking the idle cursor with it.
 //
-// What is in the strip, and when the rest arrives. Today: the effective quality badge (QUAL-7, e.g.
-// `MED`); the quality picker (P3.7) — the cell's own in the grid (QUAL-4), the fill picker while
-// filled (QUAL-5), none on a package-channel cell; and while filled *and* zoomed, the zoom's "100%"
-// reset (P3.6, ZOOM-2) — all passed in by `<Cell>`. `children` is the slot for those controls, top
-// right next to the badge. Fill's back control (P3.5, FILL-1), a 2×2 grid icon, is the one control
-// apart from them: `centerControls`, top centre, so it is not mis-clicked for the quality picker. It
-// fades with the strip and keeps its presses the same way. Later tasks add the
-// position and next / previous plus the motion badge (P4.3, CELL-2/3), mute (P5.1, AUD) and unlock
-// (P5.3, DOOR). No placeholder buttons until then, and no control shown while it would do nothing
-// (the 100% control at 1×): a control that does nothing is a control someone presses.
+// What is in the strip, and when the rest arrives. Everything is passed in by `<Cell>` as `children`,
+// in its order — in fill, left to right: the zoom's reset to 100% (P3.6, ZOOM-2; disabled at 1×),
+// fill's back control (P3.5, FILL-1, a 2×2 grid icon), a multi-camera cell's previous / `2/4` / next
+// (P4.3, CELL-2/3, ./CellStepControls), and the fill quality picker with its Save after it (QUAL-5); in the grid, the
+// position group and the cell's own quality picker (QUAL-4). The quality badge (QUAL-7, e.g. `PKG`)
+// comes last, and only where no picker already shows the quality: a package-channel cell (the user's
+// call, 2026-11-16; the pickers carry the per-quality colour instead). The back control used to sit
+// apart, top centre; it is in the strip now, after "100%", by the same call. Later tasks add mute (P5.1,
+// AUD) and unlock (P5.3, DOOR); a per-cell motion badge was deferred to after the prototype (user
+// decision 2026-11-15). No placeholder buttons until then, and no control shown while it would do
+// nothing (the 100% control at 1×, next / previous on a one-camera cell): a control that does
+// nothing is a control someone presses. A strip with no controls draws no empty slot (cells.css).
+//
+// **Name and badge are optional.** No name when the View hides names (VIEW-8), or on a multi-camera
+// cell's "Camera not found" / "No package camera" placeholder (./MissingCell), whose centred label
+// already says what it is; no badge where a picker shows the quality, or where nothing streams.
 //
 // Thin on purpose (no jsdom here; CLAUDE.md). When the strip is shown is `reduceOverlayVisibility`
 // (./overlayVisibility), pure and tested; this file only feeds it events and draws its answer.
@@ -24,8 +30,19 @@
 // included, and `pointermove` bubbles up to it from anything inside. The idle cursor is hidden on
 // that element too, with `classList.toggle`, so hiding it never re-renders anything.
 //
-// **What takes the pointer.** The name and the badge do (`pointer-events: auto`), so their `title`s
-// work for a name cut off by the ellipsis and for what the badge means; they have no handlers, so a
+// **Mounted under a resting pointer, it starts shown.** A step between a camera and a missing camera
+// in a multi-camera cell (P4.3) swaps `<Cell>` for `<MissingCell>` or back, which mounts a new
+// overlay — hidden, since its state is new — under a pointer that has not moved, so no
+// `pointerenter` comes. The user's next click at the same spot, meant for next / previous, would then
+// land on the bare cell: in the grid it would fill it, in fill two of them could be a double-click
+// that leaves. So when the listeners are attached, a cell that already `matches(':hover')` gets the
+// `pointerEnter` it missed, and the strip shows for the usual delay as if the pointer had just come
+// in. That costs one selector match per mount (or auto-hide setting change), and covers any other
+// remount under the pointer too. Keyboard focus on the pressed button does not survive the swap; it
+// falls back to the page, and Tab reaches the strip again.
+//
+// **What takes the pointer.** The name and the badge (when present) do (`pointer-events: auto`), so
+// their `title`s work for a name cut off by the ellipsis and for what the badge means; they have no handlers, so a
 // click on them still bubbles to the cell like anywhere else. The controls in the `children` slot do
 // while the strip is shown. Everything else in the overlay, the empty space of the top row included,
 // lets the pointer through to the cell. While the strip is hidden nothing in it takes the pointer, so
@@ -53,7 +70,7 @@
 // losing focus is not focus leaving the overlay: focus comes back to the same control with the
 // window, so it is ignored. A select is held by *any* focus (`focusHoldsControls`): its native
 // dropdown takes the pointer while open, so no movement would keep the strip up under it. A pick from
-// a select (a `change` in the slot) counts as movement, so the strip — and the badge showing the new
+// a select (a `change` in the slot) counts as movement, so the strip — and the select showing the new
 // quality — stays up for a full delay after the dropdown closes rather than vanishing at once. A
 // select focused by the *mouse* lets go when the pointer leaves the cell: it is blurred there
 // (`releasesOnPointerLeave`), so a dropdown closed with no pick does not pin the strip for ever.
@@ -84,19 +101,14 @@ import {
 import './cells.css'
 
 export interface CellOverlayProps {
-  readonly name: string
-  /** The effective stream the cell plays, for the QUAL-7 badge. */
-  readonly quality: StreamQuality
+  /** The camera name, top left; absent when the View hides names or on a placeholder (header). */
+  readonly name?: string | undefined
+  /** The stream for the QUAL-7 badge; absent where a picker shows it or nothing streams (header). */
+  readonly quality?: StreamQuality | undefined
   /** `ui.overlayAutoHideSec` in ms, already sanitised by `overlayAutoHideMs`. */
   readonly autoHideMs: number
-  /** Controls for the strip, top right (see the header for which task adds which). */
+  /** Controls for the strip, top right, in order (see the header for which task adds which). */
   readonly children?: ReactNode
-  /**
-   * Controls shown top centre, apart from the strip — fill's back-to-grid control, kept away from
-   * the quality picker so the two are not mis-clicked for each other. Same rules as `children`:
-   * shown and hidden with the strip, and their presses never reach the cell.
-   */
-  readonly centerControls?: ReactNode
 }
 
 /** Set on the cell element while the idle cursor is hidden (cells.css). */
@@ -139,7 +151,6 @@ export function CellOverlay({
   quality,
   autoHideMs,
   children,
-  centerControls,
 }: CellOverlayProps): JSX.Element {
   const rootRef = useRef<HTMLDivElement | null>(null)
   /** The `.gridCell` around the overlay, once mounted. */
@@ -232,6 +243,8 @@ export function CellOverlay({
     cell.addEventListener('pointerenter', onEnter)
     cell.addEventListener('pointermove', onMove)
     cell.addEventListener('pointerleave', onLeave)
+    // Mounted under a resting pointer (header): the enter it will never get.
+    if (cell.matches(':hover')) onEnter()
     return () => {
       cell.removeEventListener('pointerenter', onEnter)
       cell.removeEventListener('pointermove', onMove)
@@ -300,9 +313,11 @@ export function CellOverlay({
       onKeyDown={onKeyDown}
     >
       <div className="cellOverlay__top">
-        <span className="cellOverlay__name" title={name}>
-          {name}
-        </span>
+        {name !== undefined ? (
+          <span className="cellOverlay__name" title={name}>
+            {name}
+          </span>
+        ) : null}
         <div className="cellOverlay__controls">
           {children !== undefined ? (
             <div
@@ -317,25 +332,13 @@ export function CellOverlay({
             </div>
           ) : null}
           {/* `data-quality` gives each quality its own colour (cells.css). */}
-          <span className="cellOverlay__badge" title="Stream quality" data-quality={quality}>
-            {qualityBadgeLabel(quality)}
-          </span>
+          {quality !== undefined ? (
+            <span className="cellOverlay__badge" title="Stream quality" data-quality={quality}>
+              {qualityBadgeLabel(quality)}
+            </span>
+          ) : null}
         </div>
       </div>
-      {centerControls !== undefined ? (
-        <div className="cellOverlay__center">
-          {/* `cellOverlay__slot` too, so ZoomPan skips presses here and the pointer rules apply. */}
-          <div
-            className="cellOverlay__slot"
-            onPointerDown={stopAtControls}
-            onPointerUp={stopAtControls}
-            onClick={stopAtControls}
-            onDoubleClick={stopAtControls}
-          >
-            {centerControls}
-          </div>
-        </div>
-      ) : null}
     </div>
   )
 }

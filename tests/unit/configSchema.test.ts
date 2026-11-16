@@ -1,6 +1,6 @@
 // P1.1/P3.1: the persisted config schema (src/main/config/schema.ts + src/shared/models.ts) against
 // SPEC §6 — the constraints the spec states (cells tile the grid, rotateIntervalSec >= 5, 4x4
-// maximum, gap 0..64), the defaults (QUAL-1, DOOR-0, CELL-2/4, VIEW-5's 16:9) and the `null` =
+// maximum, gap 0..64), the defaults (QUAL-1, DOOR-0, CELL-2/4, VIEW-5's 16:9, VIEW-8's names shown) and the `null` =
 // inherit rule (QUAL-2/3). The tiling rules themselves are tested in viewLayout.test.ts.
 import { describe, expect, it } from 'vitest'
 import { ConfigSchema, CONFIG_SCHEMA_VERSION, defaultConfig } from '../../src/main/config/schema'
@@ -107,6 +107,7 @@ describe('defaultConfig', () => {
       gap: 0,
       gridQuality: null,
       fillQuality: null,
+      showNames: true,
       cells: [
         {
           col: 0,
@@ -358,6 +359,12 @@ describe('ViewSchema', () => {
     )
     expect(ViewSchema.safeParse(view({ gridQuality: 'ultra' })).success).toBe(false)
     expect(ViewSchema.safeParse(view({ gridQuality: 'package' })).success).toBe(false)
+  })
+
+  it('shows camera names unless a View says otherwise; a file without the field needs no migration (VIEW-8)', () => {
+    expect(ViewSchema.parse(view()).showNames).toBe(true)
+    expect(ViewSchema.parse(view({ showNames: false })).showNames).toBe(false)
+    expect(ViewSchema.safeParse(view({ showNames: 'no' })).success).toBe(false)
   })
 
   it('needs an id and a name', () => {

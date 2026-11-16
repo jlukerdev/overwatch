@@ -13,8 +13,8 @@
 // on this cell's element while it is filled, and transforms `<ZoomPanLayer>`, which wraps the player
 // and nothing else, so the overlay is never scaled. The layer is rendered whether filled or not: the
 // player must never be re-parented, which would remount it and break FILL-2's "same player". While
-// zoomed the overlay's slot also gets the "100%" control (ZOOM-2); it is not there at 1×, where it
-// would do nothing. A drag's trailing click is stopped by the hook before `onClick` below sees it, so
+// filled the overlay's slot also has the zoom reset (ZOOM-2), an icon button that is always there
+// and disabled at 1×, where it would do nothing (the user's call, 2026-11-16). A drag's trailing click is stopped by the hook before `onClick` below sees it, so
 // panning never arms fill's double-click exit, and modifier + double-click — the reset — is one
 // `fillClickStep` ignores. The control's tooltip names the modifiers that work on this platform: on
 // macOS Ctrl+click is a context click, so it offers ⌘/⌥/⇧ there.
@@ -27,7 +27,7 @@
 // picks upward with the slot's key — saving a cell override, keeping fill's session pick and saving
 // it for the View are `<GridView>`'s.
 //
-// **Strip order.** In fill, left to right: "100%" (zoomed only), back, position, quality picker. In
+// **Strip order.** In fill, left to right: zoom reset (disabled at 1×), back, position, quality picker and its Save. In
 // the grid: position, quality picker. The badge, where there is one, comes last.
 //
 // **Name (VIEW-8).** The camera's name is drawn only when the View's `showNames` is on (`showName`);
@@ -49,6 +49,7 @@ import { memo, useMemo, type JSX } from 'react'
 import type { Fit } from '@shared/models'
 import type { Quality, StreamQuality } from '@shared/quality'
 import { LivePlayer } from '../../player/LivePlayer'
+import { ZoomResetIcon } from '../../ui/icons'
 import { toFillClick, type FillClickEvent } from '../fill/fillMode'
 import { useZoomPan, ZoomPanLayer } from '../zoom/ZoomPan'
 import { BackToGridButton } from './BackToGridButton'
@@ -184,18 +185,18 @@ export const Cell = memo(function Cell({
         }}
       />
     )
-  const zoomReset =
-    filled && zoomed ? (
-      <button
-        type="button"
-        className="cellOverlay__back"
-        aria-label="Reset zoom to 100%"
-        title={ZOOM_RESET_TITLE}
-        onClick={resetZoom}
-      >
-        100%
-      </button>
-    ) : null
+  const zoomReset = filled ? (
+    <button
+      type="button"
+      className="cellOverlay__back cellOverlay__iconButton"
+      aria-label="Reset zoom to 100%"
+      title={ZOOM_RESET_TITLE}
+      disabled={!zoomed}
+      onClick={resetZoom}
+    >
+      <ZoomResetIcon className="cellOverlay__icon" />
+    </button>
+  ) : null
 
   return (
     // A mouse target only: the cell is not focusable, and fill is left from the keyboard by `Esc`

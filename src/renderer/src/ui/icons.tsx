@@ -249,3 +249,16 @@ export function PulseIcon(props: IconProps): JSX.Element {
     </Svg>
   )
 }
+
+/**
+ * ZOOM-2's reset to 100%: a magnifier with a minus, "zoom back out". The control's tooltip says it
+ * resets to 100%.
+ */
+export function ZoomResetIcon(props: IconProps): JSX.Element {
+  return (
+    <Svg {...props}>
+      <circle cx="7" cy="7" r="4.75" />
+      <path d="M10.5 10.5l4 4M4.75 7h4.5" />
+    </Svg>
+  )
+}

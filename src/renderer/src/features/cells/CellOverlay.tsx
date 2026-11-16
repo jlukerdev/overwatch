@@ -3,9 +3,9 @@
 // hides `ui.overlayAutoHideSec` after the last movement, taking the idle cursor with it.
 //
 // What is in the strip, and when the rest arrives. Everything is passed in by `<Cell>` as `children`,
-// in its order — in fill, left to right: the zoom's "100%" reset while zoomed (P3.6, ZOOM-2),
+// in its order — in fill, left to right: the zoom's reset to 100% (P3.6, ZOOM-2; disabled at 1×),
 // fill's back control (P3.5, FILL-1, a 2×2 grid icon), a multi-camera cell's previous / `2/4` / next
-// (P4.3, CELL-2/3, ./CellStepControls), and the fill quality picker (QUAL-5); in the grid, the
+// (P4.3, CELL-2/3, ./CellStepControls), and the fill quality picker with its Save after it (QUAL-5); in the grid, the
 // position group and the cell's own quality picker (QUAL-4). The quality badge (QUAL-7, e.g. `PKG`)
 // comes last, and only where no picker already shows the quality: a package-channel cell (the user's
 // call, 2026-11-16; the pickers carry the per-quality colour instead). The back control used to sit

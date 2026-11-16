@@ -7,8 +7,8 @@
 //    A change is saved at once by the grid (`setCellQuality`); the cell's `quality` prop then
 //    changes and the player swaps seamlessly (QUAL-6).
 //  - **`FillQualityPicker`, while filled** (QUAL-5): the qualities, selected on what is playing, and
-//    to the left of the select (not in it — an action is not a quality) a "Save" button (tooltip
-//    "Save as this View's fill quality"), shown only once a pick has changed what plays
+//    to the right of the select (not in it — an action is not a quality) an icon-only Save button
+//    (tooltip "Save as this View's fill quality"), shown only once a pick has changed what plays
 //    (`canSaveFillQuality`). A pick lasts until fill ends (fillMode.ts, "session pick").
 //
 // **The select is the quality readout** (QUAL-7). A cell with a picker has no quality badge
@@ -130,18 +130,6 @@ export function FillQualityPicker({
   const blur = usePointerPickBlur()
   return (
     <>
-      {canSave ? (
-        <button
-          type="button"
-          className="cellOverlay__back cellOverlay__iconButton cellOverlay__iconButton--labelled"
-          aria-label="Save this quality as this View's fill quality"
-          title="Save as this View's fill quality"
-          onClick={onSave}
-        >
-          <SaveIcon className="cellOverlay__icon" />
-          Save
-        </button>
-      ) : null}
       <select
         className="cellOverlay__select"
         aria-label="Fill quality"
@@ -159,6 +147,17 @@ export function FillQualityPicker({
       >
         <QualityOptions />
       </select>
+      {canSave ? (
+        <button
+          type="button"
+          className="cellOverlay__back cellOverlay__iconButton"
+          aria-label="Save this quality as this View's fill quality"
+          title="Save as this View's fill quality"
+          onClick={onSave}
+        >
+          <SaveIcon className="cellOverlay__icon" />
+        </button>
+      ) : null}
     </>
   )
 }

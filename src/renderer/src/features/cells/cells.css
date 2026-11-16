@@ -141,7 +141,7 @@
   --quality-colour: var(--quality-package);
 }
 
-/* A chip button holding an icon: alone (the back control, next / previous), or before a label (Save). */
+/* A chip button holding an icon: the back control, the zoom reset, Save, next / previous. */
 .cellOverlay__iconButton {
   display: inline-flex;
   align-items: center;
@@ -149,11 +149,6 @@
   gap: 0.3rem;
   padding: 0.2rem 0.35rem;
   line-height: 0;
-}
-
-/* With a label beside the icon, the text needs its normal line height back. */
-.cellOverlay__iconButton--labelled {
-  line-height: normal;
 }
 
 /* The overlay's icons (ui/icons.tsx) at a fixed 14 px, whatever the chip's small font size. */
@@ -175,8 +170,14 @@
   cursor: pointer;
 }
 
-.cellOverlay__back:hover {
+.cellOverlay__back:hover:not(:disabled) {
   border-color: var(--accent);
+}
+
+/* A control that would do nothing now (the zoom reset at 1×): still there, visibly inert. */
+.cellOverlay__back:disabled {
+  opacity: 0.45;
+  cursor: default;
 }
 
 .cellOverlay__back:focus-visible {

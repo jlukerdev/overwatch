@@ -5,8 +5,8 @@
 // **Fill (P3.5; FILL-1/2).** The same cell is the filled view: `<GridView>` enlarges its box to the
 // grid area and hands it `filled`, the fill quality and the fill fit (features/fill/fillMode.ts). This
 // file only reports the cell's clicks and double-clicks upward, as plain data, and — while filled —
-// puts the back control (a 2×2 grid icon) top centre in the overlay (`centerControls`). Whether a click fills, unfills or does nothing is
-// `fillClickStep`'s call, not this file's. A click on a control never arrives here (CellOverlay stops
+// puts the back control (a 2×2 grid icon, ./BackToGridButton) first in the overlay's strip. Whether
+// a click fills, unfills or does nothing is `fillClickStep`'s call, not this file's. A click on a control never arrives here (CellOverlay stops
 // it at its slot), so a control press is never a cell click.
 //
 // **Zoom (P3.6; ZOOM-1/2/3), filled only.** `useZoomPan(filled)` (features/zoom/ZoomPan.tsx) listens
@@ -19,10 +19,19 @@
 // `fillClickStep` ignores. The control's tooltip names the modifiers that work on this platform: on
 // macOS Ctrl+click is a context click, so it offers ⌘/⌥/⇧ there.
 //
-// **Quality (P3.7; QUAL-4/5).** The slot also gets a quality picker (./QualityPicker): the cell's own
-// in the grid, the fill picker while filled, and none for a package-channel cell (`inheritedQuality`
-// is `null`). This file only reports picks upward with the slot's key — saving a cell override,
-// keeping fill's session pick and saving it for the View are `<GridView>`'s.
+// **Quality (P3.7; QUAL-4/5/7).** The slot also gets a quality picker (./QualityPicker): the cell's
+// own in the grid, the fill picker while filled, and none for a package-channel cell
+// (`inheritedQuality` is `null`). The picker's select already shows the quality playing, coloured
+// per quality, so a cell with a picker has no quality badge; only the package-channel cell, which
+// has no picker, keeps the badge (`PKG`) so it still says what it plays. This file only reports
+// picks upward with the slot's key — saving a cell override, keeping fill's session pick and saving
+// it for the View are `<GridView>`'s.
+//
+// **Strip order.** In fill, left to right: back, "100%" (zoomed only), position, quality picker. In
+// the grid: position, quality picker. The badge, where there is one, comes last.
+//
+// **Name (VIEW-8).** The camera's name is drawn only when the View's `showNames` is on (`showName`);
+// off, the overlay has no name chip, in the grid and in fill alike.
 //
 // **Position and next / previous (P4.3; CELL-2, CELL-3).** A cell with two or more cameras gets
 // `<CellStepControls>` first in the strip — previous, `2/4`, next — in the grid and while filled.
@@ -53,6 +62,8 @@ export interface CellProps {
   readonly slotKey: string
   readonly cameraId: string
   readonly name: string
+  /** VIEW-8: the View's `showNames`; `false` draws no name over the picture. */
+  readonly showName: boolean
   /** The effective stream, resolved by the caller (QUAL-3, or the package channel for CAM-4). */
   readonly quality: StreamQuality
   /** VIEW-5: the View's fit mode. */
@@ -71,17 +82,17 @@ export interface CellProps {
   /** QUAL-4: the cell's own quality override; `null` inherits. */
   readonly cellQuality: Quality | null
   /**
-   * What the cell plays in the grid with its override cleared (the picker's "View default (X)").
+   * What the cell plays in the grid with its override cleared (the picker's "Default (X)").
    * `null` means no picker at all: a package-channel cell (CAM-4).
    */
   readonly inheritedQuality: Quality | null
-  /** QUAL-5: while filled, show "Save for this View" (a pick changed what plays, `canSaveFillQuality`). */
+  /** QUAL-5: while filled, show the fill picker's Save (a pick changed what plays, `canSaveFillQuality`). */
   readonly canSaveFillQuality: boolean
   /** QUAL-4: a new override for this cell (`null` clears it). Stable, like `onClickEvent`. */
   readonly onQualityChange: (slotKey: string, quality: Quality | null) => void
   /** QUAL-5: a quality picked while filled, for this fill only. Stable. */
   readonly onFillQualityPick: (slotKey: string, quality: Quality) => void
-  /** QUAL-5: "Save for this View" with the quality shown. Stable. */
+  /** QUAL-5: the fill picker's Save, with the quality shown. Stable. */
   readonly onSaveFillQuality: (slotKey: string, quality: StreamQuality) => void
   /**
    * CELL-2/3: 0-based position of the camera shown in the cell's `cameraIds`, of `cameraCount`
@@ -118,6 +129,7 @@ export const Cell = memo(function Cell({
   slotKey,
   cameraId,
   name,
+  showName,
   quality,
   fit,
   overlayAutoHideMs,
@@ -166,6 +178,7 @@ export const Cell = memo(function Cell({
       <CellQualityPicker
         override={cellQuality}
         inherited={inheritedQuality}
+        playing={quality}
         onChange={(picked) => {
           onQualityChange(slotKey, picked)
         }}
@@ -200,13 +213,16 @@ export const Cell = memo(function Cell({
     >
       <ZoomPanLayer layerRef={layerRef}>{player}</ZoomPanLayer>
       <CellOverlay
-        name={name}
-        quality={quality}
+        name={showName ? name : undefined}
+        // The badge only where no picker already shows the quality: a package-channel cell (header).
+        quality={qualityPicker === null ? quality : undefined}
         autoHideMs={overlayAutoHideMs}
-        centerControls={filled ? <BackToGridButton onBack={onBack} /> : undefined}
       >
-        {/* Left to right: position, quality, 100%; the badge follows (CellOverlay header). The
-            step's zoom reset gives the next camera 1× (header); in the grid it is a no-op. */}
+        {/* Left to right (CellOverlay header). In fill: back, 100%, position, quality. In the grid:
+            position, quality. The step's zoom reset gives the next camera 1× (header); in the grid
+            it is a no-op. */}
+        {filled ? <BackToGridButton onBack={onBack} /> : null}
+        {zoomReset}
         <CellStepControls
           slotKey={slotKey}
           index={cameraIndex}
@@ -215,7 +231,6 @@ export const Cell = memo(function Cell({
           onBeforeStep={resetZoom}
         />
         {qualityPicker}
-        {zoomReset}
       </CellOverlay>
     </div>
   )

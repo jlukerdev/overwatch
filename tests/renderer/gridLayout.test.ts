@@ -75,6 +75,7 @@ function view(
     gap: 0,
     gridQuality: null,
     fillQuality: null,
+    showNames: true,
     cells: cells.map((cell, i) => {
       const entry = ids[i] ?? null
       return {

@@ -46,6 +46,7 @@ function view(id: string, cols = 2, rows = 2): View {
     gap: 0,
     gridQuality: null,
     fillQuality: null,
+    showNames: true,
     cells: uniformCells(cols, rows),
   }
 }

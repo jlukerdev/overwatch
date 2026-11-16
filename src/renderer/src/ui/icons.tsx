@@ -231,7 +231,7 @@ export function ShieldIcon(props: IconProps): JSX.Element {
   )
 }
 
-/** Save to storage (a floppy disk), for "Save for this View". */
+/** Save to storage (a floppy disk), for the fill picker's Save. */
 export function SaveIcon(props: IconProps): JSX.Element {
   return (
     <Svg {...props}>

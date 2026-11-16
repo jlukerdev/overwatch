@@ -16,7 +16,7 @@
 // **Filled, it stays filled** (features/fill/fillMode.ts, `filledSlotKey`; the user's decision,
 // 2026-11-15): a filled multi-camera cell whose shown camera is missing — a next / previous landed
 // on it, or it left the console — must not throw the user out of fill. So while `filled` it carries
-// fill's back control top centre, `Esc` leaves as everywhere (`<GridView>`'s listener), and its
+// fill's back control first in the strip, before the position, `Esc` leaves as everywhere (`<GridView>`'s listener), and its
 // clicks and double-clicks go to the grid's `onClickEvent` with `filled` true, so `fillClickStep`'s
 // plain double-click leaves exactly as on a filled camera. Only while filled: `fillClickStep` would
 // fill from a grid click, and a missing cell must never fill. The next step back onto a camera plays
@@ -92,10 +92,9 @@ export const MissingCell = memo(function MissingCell({
         {label}
       </span>
       {showsStepControls(cameraCount) ? (
-        <CellOverlay
-          autoHideMs={overlayAutoHideMs}
-          centerControls={filled ? <BackToGridButton onBack={onBack} /> : undefined}
-        >
+        <CellOverlay autoHideMs={overlayAutoHideMs}>
+          {/* Back first while filled, then the position, as on a camera cell (Cell.tsx). */}
+          {filled ? <BackToGridButton onBack={onBack} /> : null}
           <CellStepControls
             slotKey={slotKey}
             index={cameraIndex}

@@ -136,7 +136,7 @@ CELL-2
 |---|---|
 | P4.1 | `cellScheduler.ts` pure reducer (rotate, triggers incl. `ring` priority, smart-type filter, hold measured from event `end`, 60 s stale-event timeout) + exhaustive unit tests |
 | P4.2 | Wire Protect events → renderer event bus → scheduler + View-editor inspector controls for the CELL-2 cell settings (rotate interval, motion switch, triggers, smart-type filter, hold) |
-| P4.3 | Overlay position indicator, manual next/prev (the motion badge moved to the MVP backlog, user decision 2026-11-15) |
+| P4.3 | Overlay position indicator, manual next/prev (the motion badge moved to the MVP backlog, user decision 2026-11-15). Review changes (2026-11-16): back control into the strip and strip order, quality badge only where there is no picker, "Save" / "Default (X)" labels, per-View Show camera names (VIEW-8) |
 | P4.4 | Optional pre-warm of the next rotation camera |
 
 **Gate G4:** a cell with 4 cameras rotates every 10 s. Walking in front of camera 3 switches to it within 2 s and holds for 15 s after motion stops.

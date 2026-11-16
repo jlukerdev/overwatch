@@ -15,7 +15,7 @@
 //  - fill fits with `contain`.
 //  - (P3.7, QUAL-5) the fill picker's session pick applies only to the slot filled now in the View
 //    on screen, so every way out of fill and filling another slot drop it; it overrides the chain
-//    but never the package channel; "Save for this View" is offered only when it changes the View.
+//    but never the package channel; Save is offered only when it changes the View.
 import { PACKAGE_CHANNEL, QUALITIES } from '@shared/quality'
 import { describe, expect, it } from 'vitest'
 import {
@@ -315,14 +315,14 @@ describe('fill quality session pick (QUAL-5)', () => {
     expect(effectiveFillQuality(PACKAGE_CHANNEL, low)).toBe(PACKAGE_CHANNEL)
   })
 
-  it('offers "Save for this View" only once a pick changed what the View fills at', () => {
+  it('offers the fill picker’s Save only once a pick changed what the View fills at', () => {
     // shown (the pick, or the chain) vs. the chain's own answer
     expect(canSaveFillQuality(medium, high)).toBe(true)
     expect(canSaveFillQuality(high, high)).toBe(false)
     expect(canSaveFillQuality(PACKAGE_CHANNEL, PACKAGE_CHANNEL)).toBe(false)
   })
 
-  it('drops the pick a "Save for this View" saved once it lands', () => {
+  it('drops the pick a Save saved once it lands', () => {
     expect(pickAfterFillSave({ ...pick }, pick)).toBeNull()
     expect(pickAfterFillSave(null, pick)).toBeNull()
   })

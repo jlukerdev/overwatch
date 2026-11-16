@@ -150,6 +150,12 @@ export const ViewSchema = z
     gridQuality: InheritedQualitySchema,
     /** Overrides `streams.defaultFillQuality` in fill mode (QUAL-5). */
     fillQuality: InheritedQualitySchema,
+    /**
+     * Whether the cells draw their camera's name over the picture (VIEW-8), in the grid and in fill.
+     * Shown by default. Optional with a default, so a file written before it existed (P4.3) parses
+     * as "shown" and needs no `schemaVersion` bump or migration, like `gridQuality` / `fillQuality`.
+     */
+    showNames: z.boolean().default(true),
     cells: z.array(CellSchema),
   })
   // Runs only once the fields above are valid, so cols/rows and every placement are whole numbers.

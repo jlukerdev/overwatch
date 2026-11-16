@@ -1,15 +1,20 @@
 // The overlay's quality pickers (P3.7; QUAL-4, QUAL-5), two compact native selects for the strip's
 // controls slot (CellOverlay), styled as its chips (`cellOverlay__select`, cells.css):
 //
-//  - **`CellQualityPicker`, in the grid** (QUAL-4): "View default (X)" — X being what the cell plays
+//  - **`CellQualityPicker`, in the grid** (QUAL-4): "Default (X)" — X being what the cell plays
 //    with its override cleared — then the qualities. The value is the cell's own override, so a cell
 //    that inherits shows the default option even when the View default happens to equal a quality.
 //    A change is saved at once by the grid (`setCellQuality`); the cell's `quality` prop then
 //    changes and the player swaps seamlessly (QUAL-6).
 //  - **`FillQualityPicker`, while filled** (QUAL-5): the qualities, selected on what is playing, and
-//    to the left of the select (not in it — an action is not a quality) a "Save for this View"
-//    button, shown only once a pick has changed what plays (`canSaveFillQuality`). A pick lasts until fill ends (fillMode.ts,
-//    "session pick").
+//    to the left of the select (not in it — an action is not a quality) a "Save" button (tooltip
+//    "Save as this View's fill quality"), shown only once a pick has changed what plays
+//    (`canSaveFillQuality`). A pick lasts until fill ends (fillMode.ts, "session pick").
+//
+// **The select is the quality readout** (QUAL-7). A cell with a picker has no quality badge
+// (Cell.tsx), so each select carries `data-quality` for the quality actually playing — the cell's
+// effective one in the grid (an inheriting cell shows "Default (LOW)" and is coloured LOW), the
+// shown one in fill — and cells.css colours it like the badge it replaces.
 //
 // Thin on purpose: the option values, names and the edit are features/quality/qualityChoice.ts, the
 // fill rules features/fill/fillMode.ts, all pure and tested. Native selects, because the dropdown,
@@ -75,12 +80,15 @@ export interface CellQualityPickerProps {
   readonly override: Quality | null
   /** What the cell plays with the override cleared, named by the default option. */
   readonly inherited: Quality
+  /** What the cell plays now, for the select's colour (header). */
+  readonly playing: StreamQuality
   readonly onChange: (quality: Quality | null) => void
 }
 
 export function CellQualityPicker({
   override,
   inherited,
+  playing,
   onChange,
 }: CellQualityPickerProps): JSX.Element {
   const blur = usePointerPickBlur()
@@ -89,6 +97,7 @@ export function CellQualityPicker({
       className="cellOverlay__select"
       aria-label="Cell quality"
       title="Quality for this cell (saved)"
+      data-quality={playing}
       value={qualityOptionValue(override)}
       onPointerDown={blur.onPointerDown}
       onKeyDown={blur.onKeyDown}
@@ -98,7 +107,7 @@ export function CellQualityPicker({
         blur.afterPick(event)
       }}
     >
-      <QualityOptions inheritLabel={inheritOptionLabel('View default', inherited)} />
+      <QualityOptions inheritLabel={inheritOptionLabel('Default', inherited)} />
     </select>
   )
 }
@@ -106,7 +115,7 @@ export function CellQualityPicker({
 export interface FillQualityPickerProps {
   /** What the filled cell plays now (the pick, or QUAL-5's chain). */
   readonly shown: StreamQuality
-  /** Show "Save for this View": a pick changed what plays (`canSaveFillQuality`). */
+  /** Show Save: a pick changed what plays (`canSaveFillQuality`). */
   readonly canSave: boolean
   readonly onPick: (quality: Quality) => void
   readonly onSave: () => void
@@ -125,17 +134,19 @@ export function FillQualityPicker({
         <button
           type="button"
           className="cellOverlay__back cellOverlay__iconButton cellOverlay__iconButton--labelled"
-          title="Use this quality whenever a cell of this View fills"
+          aria-label="Save this quality as this View's fill quality"
+          title="Save as this View's fill quality"
           onClick={onSave}
         >
           <SaveIcon className="cellOverlay__icon" />
-          Save for this View
+          Save
         </button>
       ) : null}
       <select
         className="cellOverlay__select"
         aria-label="Fill quality"
         title="Quality while filled (until you return to the grid)"
+        data-quality={shown}
         value={shown}
         onPointerDown={blur.onPointerDown}
         onKeyDown={blur.onKeyDown}

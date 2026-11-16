@@ -44,7 +44,7 @@
 //    (View, then settings — fill has no per-cell level) for a camera, and the package channel again
 //    for a package ref, because that is a different source rather than a quality to upgrade.
 //  - **…and what its quality picker needs** (P3.7; QUAL-4): the cell's own override and what the
-//    cell gets with it cleared (`resolveGridQuality` with a `null` cell level — the "View default
+//    cell gets with it cleared (`resolveGridQuality` with a `null` cell level — the "Default
 //    (X)" option). The persisted cell is named by `placement`'s top-left slot (`setCellQuality`,
 //    features/quality/qualityChoice.ts). A package ref has no picker (`qualityChoice: null`): the
 //    package channel is a source, not a quality, so there is nothing to pick.
@@ -141,7 +141,7 @@ export interface SlotPosition {
 
 /** What a camera slot's quality picker shows (QUAL-3/4). */
 export interface SlotQualityChoice {
-  /** The cell's own `quality`: `null` when it inherits (the picker's "View default" option). */
+  /** The cell's own `quality`: `null` when it inherits (the picker's "Default" option). */
   readonly override: Quality | null
   /** What the cell plays with its override cleared: `view.gridQuality ?? streams.defaultGridQuality`. */
   readonly inherited: Quality

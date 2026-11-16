@@ -75,6 +75,7 @@ function view(cols = 2, rows = 2, cells: Cell[] = uniformCells(cols, rows)): Vie
     gap: 0,
     gridQuality: null,
     fillQuality: null,
+    showNames: true,
     cells,
   }
 }
@@ -898,6 +899,8 @@ describe('isDraftDirty', () => {
     expect(isDraftDirty(v, { ...v, gap: 2 })).toBe(true)
     expect(isDraftDirty(v, { ...v, aspect: { w: 4, h: 3 } })).toBe(true)
     expect(isDraftDirty(v, { ...v, fit: 'cover' })).toBe(true)
+    // P4.3 (VIEW-8): the Show camera names checkbox.
+    expect(isDraftDirty(v, { ...v, showNames: false })).toBe(true)
     // P3.7 (QUAL-2/3/5): the editor's quality selects.
     expect(isDraftDirty(v, { ...v, gridQuality: 'medium' })).toBe(true)
     expect(isDraftDirty(v, { ...v, fillQuality: 'medium' })).toBe(true)

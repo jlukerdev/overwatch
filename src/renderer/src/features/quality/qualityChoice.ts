@@ -9,12 +9,13 @@
 //
 //  - **No quality literal** (QUAL preamble). The options are {@link QUALITIES} in their order, best
 //    first, and the "inherit" option names what inheriting gives using `qualityBadgeLabel`, the same
-//    text the QUAL-7 badge shows — "View default (LOW)" reads as "you will see the LOW badge".
+//    short labels the QUAL-7 badge used — "Default (LOW)" (the overlay) or "View default (LOW)" (the
+//    editor's inspector) names the quality in the same words everywhere.
 //  - **`null` is the empty string.** A native select's value is a string, and `''` can never be a
 //    quality, so "inherit" round-trips without a sentinel that could one day collide with one. Any
 //    value that is not a quality reads back as `null`, i.e. inherit.
-//  - **The fill picker's "Save for this View" is a button beside the select**, not an option in it
-//    (the user's call on review): an action is not a quality, and a select whose value can be "an
+//  - **The fill picker's Save is a button beside the select**, not an option in it (the user's
+//    call on review): an action is not a quality, and a select whose value can be "an
 //    action" is one a keyboard user can trigger just by arrowing through it.
 //  - **A cell is addressed by its top-left slot.** That is unique in a tiled View, survives the
 //    canonical reordering a save does, and is what a grid slot's `placement` carries — so the

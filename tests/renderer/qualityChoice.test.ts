@@ -3,7 +3,7 @@
 //
 // What these tests protect:
 //  - the options are QUALITIES in order, each named, and no option value collides: "inherit" (`''`)
-//    and the fill picker's "Save for this View" are never read back as a quality.
+//    and the fill picker's Save are never read back as a quality.
 //  - a level round-trips through a select value, `null` included.
 //  - the inherit option names what inheriting gives with the QUAL-7 badge's text.
 //  - `setCellQuality` edits only the cell at that top-left slot, and hands back the same View when
@@ -33,6 +33,7 @@ function view(cells: Cell[]): View {
     gap: 0,
     gridQuality: null,
     fillQuality: null,
+    showNames: true,
     cells,
   }
 }
@@ -65,9 +66,8 @@ describe('quality options', () => {
 
   it('names what inheriting gives with the badge text, or only the prefix when unknown', () => {
     for (const quality of QUALITIES) {
-      expect(inheritOptionLabel('View default', quality)).toBe(
-        `View default (${qualityBadgeLabel(quality)})`,
-      )
+      // The grid cell picker's prefix (QualityPicker.tsx, QUAL-4).
+      expect(inheritOptionLabel('Default', quality)).toBe(`Default (${qualityBadgeLabel(quality)})`)
     }
     expect(inheritOptionLabel('App default', undefined)).toBe('App default')
     expect(inheritOptionLabel('App default', null)).toBe('App default')

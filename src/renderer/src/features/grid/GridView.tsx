@@ -46,7 +46,7 @@
 // override straight away (`viewsActions.updateView` + `setCellQuality`); the store's answer changes
 // the slot's `quality`, and the player's seamless swap does the rest (QUAL-6). The fill picker's pick
 // is *session* state here (`fillPick`), applied above QUAL-5's chain and dropped on every way out of
-// fill, or when another slot fills (`activeFillPick`, fillMode.ts); "Save for this View" writes the
+// fill, or when another slot fills (`activeFillPick`, fillMode.ts); the fill picker's Save writes the
 // shown quality to `view.fillQuality` and drops the pick once the store has it, so the picture does
 // not swap back and forth on the way. A save that fails is only logged: the picker snaps back to the
 // stored value on its own, because it always shows the store's (or the session's) state. A cell
@@ -217,7 +217,7 @@ export function GridView({ view, cameras, streams }: GridViewProps): JSX.Element
     [view.id, setFillPick],
   )
 
-  // QUAL-5's "Save for this View": the shown quality becomes `view.fillQuality`; the pick, now equal
+  // QUAL-5's fill-picker Save: the shown quality becomes `view.fillQuality`; the pick, now equal
   // to it, is dropped once the store has it — that pick only, so one made while the save was in
   // flight survives (`pickAfterFillSave`, header).
   const onSaveFillQuality = useCallback(
@@ -288,6 +288,7 @@ export function GridView({ view, cameras, streams }: GridViewProps): JSX.Element
               >
                 <SlotContent
                   slot={slot}
+                  showNames={view.showNames}
                   autoHideMs={autoHideMs}
                   filled={filled}
                   fillPick={filled ? pickedQuality : null}
@@ -334,6 +335,7 @@ function slotStyle(rect: Rect): {
 
 function SlotContent({
   slot,
+  showNames,
   autoHideMs,
   filled,
   fillPick,
@@ -345,6 +347,8 @@ function SlotContent({
   onStep,
 }: {
   readonly slot: GridSlot
+  /** VIEW-8: the View's `showNames`. */
+  readonly showNames: boolean
   readonly autoHideMs: number
   readonly filled: boolean
   /** QUAL-5's session pick, when this slot is the filled one and has one. */
@@ -367,6 +371,7 @@ function SlotContent({
           slotKey={slot.key}
           cameraId={slot.cameraId}
           name={slot.name}
+          showName={showNames}
           quality={filled ? fillQuality : slot.quality}
           fit={filled ? FILL_FIT : slot.fit}
           overlayAutoHideMs={autoHideMs}

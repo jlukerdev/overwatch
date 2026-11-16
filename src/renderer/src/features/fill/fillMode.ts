@@ -69,7 +69,7 @@
 //    pick that no longer counts, so filling the same cell again later starts from the persisted
 //    quality. A package-channel cell (CAM-4) has no picker and ignores any pick: the package channel
 //    is a source, not a quality.
-//  - **"Save for this View" writes only `view.fillQuality`** (the user's call, 2026-11-15): the
+//  - **The fill picker's Save writes only `view.fillQuality`** (the user's call, 2026-11-15): the
 //    app-wide default is Settings' (QUAL-1). It is offered only when it would change something
 //    ({@link canSaveFillQuality}): the quality on screen is not already the View's own.
 //    Once it lands the pick it saved is dropped, the View now giving the same quality — but only
@@ -143,7 +143,7 @@ export function effectiveFillQuality(
 }
 
 /**
- * The session pick once "Save for this View" has landed: dropped if it is still exactly the pick
+ * The session pick once the fill picker's Save has landed: dropped if it is still exactly the pick
  * that was saved (`saved`: the View, the slot and the quality that went out), because the View now
  * plays it by itself; kept otherwise. A pick made while the save was in flight — another quality,
  * or another slot after leaving and filling again — is the user's newer choice and survives it
@@ -162,7 +162,7 @@ export function pickAfterFillSave(
 }
 
 /**
- * Whether "Save for this View" is shown: only once the picker has changed what plays, i.e. the
+ * Whether the fill picker's Save is shown: only once the picker has changed what plays, i.e. the
  * quality shown (the session pick) differs from what this View fills at when nothing is picked
  * (`stored`: QUAL-5's chain, `view.fillQuality ?? streams.defaultFillQuality`). The user's call on
  * review: the button appears when the option changes, and not otherwise — so a View that inherits

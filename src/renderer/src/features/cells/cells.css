@@ -167,7 +167,7 @@
   padding: 0.1rem 0.45rem;
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  background: rgb(0 0 0 / 55%);
+  background: var(--bg-raised);
   color: var(--fg);
   font: inherit;
   font-size: 0.75rem;
@@ -208,7 +208,8 @@
 
 /*
  * QUAL-4/5's quality picker (P3.7): a native select dressed as the chips around it (the dropdown
- * itself follows the app's `color-scheme: dark`, styles.css).
+ * itself follows the app's `color-scheme: dark`, styles.css). Opaque, unlike the other chips: its
+ * text carries the quality colour, which must read against any video behind it (user, 2026-11-16).
  */
 .cellOverlay__select {
   max-width: 11rem;
@@ -229,6 +230,7 @@
  */
 .cellOverlay__select[data-quality] {
   border-color: color-mix(in srgb, var(--quality-colour) 70%, transparent);
+  background: color-mix(in srgb, var(--quality-colour) 14%, var(--bg-raised));
   color: var(--quality-colour);
 }
 

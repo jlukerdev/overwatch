@@ -27,7 +27,7 @@
 // picks upward with the slot's key — saving a cell override, keeping fill's session pick and saving
 // it for the View are `<GridView>`'s.
 //
-// **Strip order.** In fill, left to right: back, "100%" (zoomed only), position, quality picker. In
+// **Strip order.** In fill, left to right: "100%" (zoomed only), back, position, quality picker. In
 // the grid: position, quality picker. The badge, where there is one, comes last.
 //
 // **Name (VIEW-8).** The camera's name is drawn only when the View's `showNames` is on (`showName`);
@@ -218,11 +218,11 @@ export const Cell = memo(function Cell({
         quality={qualityPicker === null ? quality : undefined}
         autoHideMs={overlayAutoHideMs}
       >
-        {/* Left to right (CellOverlay header). In fill: back, 100%, position, quality. In the grid:
+        {/* Left to right (CellOverlay header). In fill: 100%, back, position, quality. In the grid:
             position, quality. The step's zoom reset gives the next camera 1× (header); in the grid
             it is a no-op. */}
-        {filled ? <BackToGridButton onBack={onBack} /> : null}
         {zoomReset}
+        {filled ? <BackToGridButton onBack={onBack} /> : null}
         <CellStepControls
           slotKey={slotKey}
           index={cameraIndex}

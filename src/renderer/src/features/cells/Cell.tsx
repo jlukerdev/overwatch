@@ -41,6 +41,26 @@
 // player below restarts for it. A step in fill also resets the zoom first: the zoom was on the
 // previous camera's picture, and the next camera starts at 1× like a freshly filled one (ZOOM-2).
 //
+// **Pre-warm (P4.4; ARCHITECTURE §3).** A rotating cell is handed, 2 s before its next rotation
+// step, the camera that step will show and the quality it will play at (`prewarmCameraId`,
+// `prewarmQuality`; features/cells/schedulerSet.ts, `prewarmTargets`). The cell then mounts a second
+// `<LivePlayer>` for it, hidden (`gridCell__player--prewarm`, cells.css: `opacity: 0`, no pointer,
+// `aria-hidden`, muted like every player here), so its stream is open and decoding before the
+// switch. At the switch that same player becomes the visible one, without a remount: the players
+// are a keyed list under `<ZoomPanLayer>` — the visible one first, in a wrapper keyed by its camera
+// id, then the pre-warmed one in a wrapper of the same element type keyed by *its* camera id — so
+// when the step hands the cell `cameraId` = the pre-warmed camera, React finds that key among the
+// old children and keeps its fiber (the old visible wrapper is the one removed). Being later in the
+// old list than the first new child, it is not even moved in the DOM. Only the wrapper's class and
+// `aria-hidden` change; the `<LivePlayer>` inside gets the same camera, quality (the grid's resolved
+// quality for that camera, computed the same way as the slot's own) and fit, so none of its effects
+// re-run — no reconnect, and no QUAL-6 swap unless the View's quality really changed meanwhile, in
+// which case the swap is the seamless one. A manual step onto the pre-warmed camera reuses it the
+// same way, and so does a trigger that brings up the pre-warmed camera; a trigger or a step onto any
+// other camera drops the hidden player. None in fill: a filled cell is pinned, so it has no upcoming
+// rotation; nor in a cell covered by the filled one or drawn at zero size (GridView's `canPrewarm`). A missing camera's placeholder (`<MissingCell>`)
+// has no players to hand over, so a step from it to a camera mounts that camera's player afresh.
+//
 // The cell owns no size: `<GridView>` positions a box for it from the View's layout (VIEW-5/7) and
 // the cell fills that box. The player then fits the camera inside it by the View's `fit` (contain or
 // cover, player.css), which is how a camera whose shape differs from the View's `aspect` — or a
@@ -54,6 +74,7 @@ import { toFillClick, type FillClickEvent } from '../fill/fillMode'
 import { useZoomPan, ZoomPanLayer } from '../zoom/ZoomPan'
 import { BackToGridButton } from './BackToGridButton'
 import { CellOverlay } from './CellOverlay'
+import { cellPlayers } from './cellPlayers'
 import { CellStepControls } from './CellStepControls'
 import { CellQualityPicker, FillQualityPicker } from './QualityPicker'
 import type { StepDirection } from './schedulerSet'
@@ -103,6 +124,12 @@ export interface CellProps {
   readonly cameraCount: number
   /** P4.3: the user's next / previous on this cell's scheduler. Stable, like `onClickEvent`. */
   readonly onStep: (slotKey: string, direction: StepDirection) => void
+  /**
+   * P4.4: the camera the next rotation step shows, to open hidden now (header), and the quality it
+   * will play at once shown; both `null` for none. Primitives, so the memo stays exact.
+   */
+  readonly prewarmCameraId: string | null
+  readonly prewarmQuality: StreamQuality | null
 }
 
 /**
@@ -146,12 +173,16 @@ export const Cell = memo(function Cell({
   cameraIndex,
   cameraCount,
   onStep,
+  prewarmCameraId,
+  prewarmQuality,
 }: CellProps): JSX.Element {
   const { cellRef, layerRef, zoomed, resetZoom } = useZoomPan(filled)
   // The same element object across renders that change nothing of the player's own, so a flip of
   // `zoomed` (or of `filled` alone) re-renders the overlay and never the player.
-  // Keyed by camera (P4.2; CELL-2): when a multi-camera cell rotates or a motion event switches it,
-  // this cell stays mounted and gets a new `cameraId`, and the key makes that a fresh player. The
+  // Keyed by camera (P4.2; CELL-2), on the wrapper: when a multi-camera cell rotates or a motion
+  // event switches it, this cell stays mounted and gets a new `cameraId`, and the key makes that a
+  // fresh player — unless that camera was pre-warmed, whose wrapper has the same key and so is the
+  // one kept (P4.4, header). The
   // controller is per camera anyway (LivePlayer rebuilds it on `cameraId`), so the key costs no
   // extra reconnect; what it buys is that everything a player sets up at mount — its placeholder,
   // its props ref — belongs to one camera, and the first frame after a switch is a clean
@@ -159,9 +190,22 @@ export const Cell = memo(function Cell({
   // rebuild's effect runs. Zoom lives in the cell and works only while filled; a filled cell is
   // pinned (FILL-3), so only the user's own step changes its camera there, and that resets the zoom
   // (header).
-  const player = useMemo(
-    () => <LivePlayer key={cameraId} cameraId={cameraId} quality={quality} muted fit={fit} />,
-    [cameraId, quality, fit],
+  // The shown player first, then the pre-warm, all one element type under one parent, so the step
+  // keeps the pre-warmed instance (header; the order is ./cellPlayers', tested there).
+  const players = useMemo(
+    () =>
+      cellPlayers(cameraId, quality, prewarmCameraId, prewarmQuality).map((entry) => (
+        <div
+          key={entry.cameraId}
+          className={
+            entry.hidden ? 'gridCell__player gridCell__player--prewarm' : 'gridCell__player'
+          }
+          aria-hidden={entry.hidden ? true : undefined}
+        >
+          <LivePlayer cameraId={entry.cameraId} quality={entry.quality} muted fit={fit} />
+        </div>
+      )),
+    [cameraId, quality, prewarmCameraId, prewarmQuality, fit],
   )
   const qualityPicker =
     inheritedQuality === null ? null : filled ? (
@@ -212,7 +256,8 @@ export const Cell = memo(function Cell({
         onClickEvent(slotKey, filled, toFillClick(event, 'dblclick'))
       }}
     >
-      <ZoomPanLayer layerRef={layerRef}>{player}</ZoomPanLayer>
+      {/* Always a list, visible player first (header): the pre-warmed one must sit after it. */}
+      <ZoomPanLayer layerRef={layerRef}>{players}</ZoomPanLayer>
       <CellOverlay
         name={showName ? name : undefined}
         // The badge only where no picker already shows the quality: a package-channel cell (header).

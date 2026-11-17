@@ -36,6 +36,15 @@
 //  - **Same object when nothing changed**, set and views alike, so React bails out. The views go
 //    further ({@link stableViews}): a set that changed (a tick, an event that moved no camera) still
 //    yields the previous views map when no shown camera, position or reason differs.
+//  - **Pre-warm** (P4.4; ARCHITECTURE §3). {@link prewarmTargets} names, per slot, the camera the
+//    next rotation step will show once that step is at most {@link PREWARM_LEAD_MS} away
+//    (`upcomingRotation`), so the grid can open its stream hidden and switch to a picture rather than
+//    to "Connecting…". Only timed rotation: a trigger cannot be foreseen, a manual step is the
+//    user's, and a filled cell is pinned, so none of them is ever a target. The targets depend on
+//    time as well as on the set, so the hook arms a timer at {@link nextPrewarmAt}; a target ends
+//    with the step itself (or whatever else changes the set: a trigger, a step, a pin), because the
+//    next `upcomingRotation` is a whole interval away. {@link stablePrewarm} keeps the map the same
+//    object while its contents are, like `stableViews`.
 import {
   createScheduler,
   eventMatchesCell,
@@ -43,6 +52,7 @@ import {
   reduceScheduler,
   sameSchedulerCell,
   schedulerView,
+  upcomingRotation,
   type SchedulerCell,
   type SchedulerState,
   type SchedulerView,
@@ -271,6 +281,70 @@ export function shownIndices(
   const shown = new Map<string, number>()
   for (const [key, view] of views) shown.set(key, view.index)
   return shown
+}
+
+// -------------------------------------------------------------------------------------------------
+// Pre-warm (P4.4)
+
+/**
+ * How long before a rotation step the next camera's stream is opened, hidden (header). Two seconds
+ * covers a fresh upstream's 0.3–0.5 s to first frame several times over, and most of a keyframe
+ * wait when joining a running one (docs/spikes/P0.5-video.md); it is well under the 5 s minimum
+ * interval (`MIN_ROTATE_INTERVAL_SEC`), so a rotating cell holds an extra stream for at most
+ * 2 s of every interval.
+ */
+export const PREWARM_LEAD_MS = 2000
+
+/** Slot key → the `cameraIds` entry (a ref) to pre-warm in that slot. */
+export type PrewarmTargets = ReadonlyMap<string, string>
+
+export const NO_PREWARM: PrewarmTargets = new Map()
+
+/** Each slot whose next rotation step is at most {@link PREWARM_LEAD_MS} after `now`, with its camera. */
+export function prewarmTargets(set: SchedulerSet, now: number): PrewarmTargets {
+  const targets = new Map<string, string>()
+  for (const [key, state] of set) {
+    const upcoming = upcomingRotation(state)
+    if (upcoming !== null && upcoming.at - now <= PREWARM_LEAD_MS) {
+      targets.set(key, upcoming.cameraId)
+    }
+  }
+  return targets
+}
+
+/**
+ * {@link prewarmTargets} kept stable against `previous`: `previous` itself when it has exactly the
+ * same entries, so the grid's slots — and the memoised cells — are not rebuilt by a set change
+ * (a tick, an event) that moves no target.
+ */
+export function stablePrewarm(
+  previous: PrewarmTargets | null,
+  set: SchedulerSet,
+  now: number,
+): PrewarmTargets {
+  const next = prewarmTargets(set, now)
+  if (previous === null) return next.size === 0 ? NO_PREWARM : next
+  if (previous.size !== next.size) return next.size === 0 ? NO_PREWARM : next
+  for (const [key, cameraId] of next) {
+    if (previous.get(key) !== cameraId) return next
+  }
+  return previous
+}
+
+/**
+ * When the next pre-warm starts — the earliest `upcomingRotation.at − PREWARM_LEAD_MS` still after
+ * `now` — or `null` when none is coming. Strictly after `now`, so a timer that fires on time finds
+ * the target already counted and moves on to the next one rather than firing again at 0 ms.
+ */
+export function nextPrewarmAt(set: SchedulerSet, now: number): number | null {
+  let start: number | null = null
+  for (const state of set.values()) {
+    const upcoming = upcomingRotation(state)
+    if (upcoming === null) continue
+    const at = upcoming.at - PREWARM_LEAD_MS
+    if (at > now && (start === null || at < start)) start = at
+  }
+  return start
 }
 
 // -------------------------------------------------------------------------------------------------

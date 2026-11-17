@@ -10,6 +10,23 @@
  * pointer.
  */
 
+/*
+ * The players inside the zoom layer (Cell.tsx): the visible one and, for P4.4's pre-warm, the next
+ * rotation camera's, stacked on the same box. The pre-warmed one is hidden the way the player's own
+ * pending layer is (player.css, `.livePlayer__layer--pending`): `opacity: 0`, not `display: none` or
+ * `visibility: hidden`, so Chromium keeps decoding it and it has a frame ready when it is shown. It
+ * is painted after the visible one, so it must also never take the pointer.
+ */
+.gridCell__player {
+  position: absolute;
+  inset: 0;
+}
+
+.gridCell__player--prewarm {
+  opacity: 0;
+  pointer-events: none;
+}
+
 /* FILL-1 (P3.5): a camera cell in the grid is clicked to fill the window. Not once it is filled. */
 .gridCell--fillable {
   cursor: pointer;

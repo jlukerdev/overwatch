@@ -30,6 +30,11 @@
 // call the hook's stable `step`, handed to every cell as `onStep` — a camera cell's `<Cell>` and a
 // multi-camera cell's missing-camera placeholder (`<MissingCell>`) alike, in the grid and in fill.
 // A filled multi-camera cell stays filled when a step lands on a missing camera (`filledSlotKey`).
+// **Pre-warm** (P4.4): the hook also names, per rotating slot, the camera its next rotation step
+// shows once that step is 2 s away; `buildViewSlots` resolves it to a camera and the quality it will
+// play at, and the slot's `<Cell>` opens it hidden, so the step lands on a picture that is already
+// decoding (Cell.tsx). Only for a slot on screen (`canPrewarm`): never the filled slot (pinned, so no
+// upcoming rotation), a slot covered by it, or a slot drawn at zero size.
 //
 // **Fill lives here too** (P3.5; FILL-1/2/3, QUAL-5/6). Clicking a camera cell fills the grid area with
 // it, and that is this component re-placing one slot, not another component appearing: the filled
@@ -138,12 +143,17 @@ export function GridView({ view, cameras, streams }: GridViewProps): JSX.Element
   // compares them by content anyway.
   const entries = useMemo(() => schedulerEntries(view), [view])
   const pinnedKey = fill !== null && fill.viewId === view.id ? fill.slotKey : null
-  const { views: schedulerViewsByKey, step: onStep } = useCellSchedulers(entries, pinnedKey)
+  const {
+    views: schedulerViewsByKey,
+    step: onStep,
+    prewarm,
+  } = useCellSchedulers(entries, pinnedKey)
   const shown = useMemo(() => shownIndices(schedulerViewsByKey), [schedulerViewsByKey])
 
+  // `prewarm` is stable while its targets are, so this rebuilds only when one starts or ends.
   const slots = useMemo(
-    () => buildViewSlots({ view, cameras, streams, shown }),
-    [view, cameras, streams, shown],
+    () => buildViewSlots({ view, cameras, streams, shown, prewarm }),
+    [view, cameras, streams, shown, prewarm],
   )
 
   const filledKey = filledSlotKey(fill, view.id, slots)
@@ -298,6 +308,10 @@ export function GridView({ view, cameras, streams }: GridViewProps): JSX.Element
                   onFillQualityPick={onFillQualityPick}
                   onSaveFillQuality={onSaveFillQuality}
                   onStep={onStep}
+                  // P4.4: only a cell someone can see warms its next camera. The filled one is
+                  // pinned anyway; a covered one or a zero-size one would open a stream for a
+                  // picture nobody is looking at.
+                  canPrewarm={!filled && !covered && drawable}
                 />
               </div>
             )
@@ -345,6 +359,7 @@ function SlotContent({
   onFillQualityPick,
   onSaveFillQuality,
   onStep,
+  canPrewarm,
 }: {
   readonly slot: GridSlot
   /** VIEW-8: the View's `showNames`. */
@@ -360,6 +375,8 @@ function SlotContent({
   readonly onSaveFillQuality: (slotKey: string, quality: StreamQuality) => void
   /** P4.3: a multi-camera cell's next / previous (`useCellSchedulers`' stable `step`). */
   readonly onStep: (slotKey: string, direction: StepDirection) => void
+  /** P4.4: whether this slot may pre-warm its next camera (visible, not filled, not covered). */
+  readonly canPrewarm: boolean
 }): JSX.Element {
   switch (slot.kind) {
     case 'camera': {
@@ -387,6 +404,10 @@ function SlotContent({
           cameraIndex={slot.position.index}
           cameraCount={slot.position.count}
           onStep={onStep}
+          // P4.4 (header). Never for the filled slot (pinned, and its quality is fill's), a covered
+          // one or a zero-size one (`canPrewarm`).
+          prewarmCameraId={canPrewarm ? (slot.prewarm?.cameraId ?? null) : null}
+          prewarmQuality={canPrewarm ? (slot.prewarm?.quality ?? null) : null}
         />
       )
     }

@@ -15,6 +15,10 @@
 //    shown indices read back what each cell shows; `stableViews` hands back the previous map when no
 //    view changed (an event ending on the camera already shown included) and reuses unchanged view objects otherwise; the timer delay never goes negative,
 //    and a due tick that changed nothing re-checks after a floor, never at 0 ms.
+//  - pre-warm (P4.4): a slot is a target from PREWARM_LEAD_MS before its rotation step until the
+//    step (which drops it); never while triggered, pinned, without rotation or for a one-camera
+//    cell; `stablePrewarm` keeps the same map while the targets are equal; `nextPrewarmAt` is the
+//    earliest start strictly after now, so a timer that fires on time moves on to the next.
 //  - the hook's render-time inputs: unchanged input → same object (no render loop); entries are
 //    compared by content; a scheduler created for the filled slot is pinned at once.
 import { CameraEventSchema, CellSchema, type CameraEvent } from '@shared/models'
@@ -32,14 +36,19 @@ import {
   createReplayedScheduler,
   EMPTY_SCHEDULER_SET,
   initialSchedulerInputs,
+  nextPrewarmAt,
   nextWakeOfSet,
+  NO_PREWARM,
   pinSchedulerSet,
+  PREWARM_LEAD_MS,
+  prewarmTargets,
   sameEntries,
   MAX_TIMER_MS,
   stepSchedulerSet,
   schedulerTimerDelay,
   schedulerViews,
   shownIndices,
+  stablePrewarm,
   stableViews,
   STALLED_TICK_RECHECK_MS,
   syncSchedulerSet,
@@ -482,5 +491,134 @@ describe('the hook’s render-time inputs', () => {
     expect(
       initialSchedulerInputs([ENTRY_A], ENTRY_A.key, T, NO_REPLAY).set.get(ENTRY_A.key)?.pinned,
     ).toBe(true)
+  })
+})
+
+describe('pre-warm (P4.4)', () => {
+  const LEAD = PREWARM_LEAD_MS
+  const synced = (entries: readonly SchedulerEntry[]): SchedulerSet =>
+    syncSchedulerSet(EMPTY_SCHEDULER_SET, entries, T, NO_REPLAY)
+
+  it('leads by 2 s, well inside the 5 s minimum interval', () => {
+    expect(PREWARM_LEAD_MS).toBe(2000)
+  })
+
+  it('names a slot from the lead before its step until the step, and drops it at the step', () => {
+    const set = synced([ENTRY_A, SINGLE])
+    expect([...prewarmTargets(set, T)]).toEqual([])
+    expect([...prewarmTargets(set, T + 10_000 - LEAD - 1)]).toEqual([])
+    expect([...prewarmTargets(set, T + 10_000 - LEAD)]).toEqual([[ENTRY_A.key, 'b']])
+    expect([...prewarmTargets(set, T + 9_999)]).toEqual([[ENTRY_A.key, 'b']])
+    // The step moves the cell to `b`; its next step is a whole interval away.
+    const stepped = tickSchedulerSet(set, T + 10_000)
+    expect(shown(stepped, ENTRY_A.key)).toBe('b')
+    expect([...prewarmTargets(stepped, T + 10_000)]).toEqual([])
+    expect([...prewarmTargets(stepped, T + 20_000 - LEAD)]).toEqual([[ENTRY_A.key, 'c']])
+  })
+
+  it('still names an overdue step until the tick lands', () => {
+    expect([...prewarmTargets(synced([ENTRY_A]), T + 60_000)]).toEqual([[ENTRY_A.key, 'b']])
+  })
+
+  it('names every slot in its lead, each with its own camera', () => {
+    const slow = { key: 'slow', cell: cell(['p', 'q'], { rotateIntervalSec: 11 }) }
+    const set = synced([ENTRY_A, slow])
+    expect([...prewarmTargets(set, T + 9_000)]).toEqual([
+      [ENTRY_A.key, 'b'],
+      ['slow', 'q'],
+    ])
+  })
+
+  it('never names a triggered, pinned or non-rotating cell', () => {
+    const still = { key: 'still', cell: cell(['p', 'q'], { rotateIntervalSec: undefined }) }
+    const base = synced([ENTRY_A, ENTRY_X, still])
+    const nearStep = T + 10_000 - LEAD
+    // `x`'s cell triggered on `y`, `a`'s pinned (filled).
+    const set = pinSchedulerSet(
+      applyBusEvent(base, bus(ev({ cameraId: 'y', start: T }), T)),
+      ENTRY_A.key,
+      T,
+    )
+    expect([...prewarmTargets(set, nearStep)]).toEqual([])
+    expect(nextPrewarmAt(set, T)).toBeNull()
+  })
+
+  it('drops the target when a trigger breaks in during the lead', () => {
+    const set = synced([ENTRY_A])
+    const lead = T + 10_000 - LEAD + 500
+    expect(prewarmTargets(set, lead).get(ENTRY_A.key)).toBe('b')
+    const triggered = applyBusEvent(set, bus(ev({ cameraId: 'c', start: lead }), lead))
+    expect(shown(triggered, ENTRY_A.key)).toBe('c')
+    expect(prewarmTargets(triggered, lead).size).toBe(0)
+  })
+
+  it('a manual step during the lead lands on the target and restarts the interval', () => {
+    const set = synced([ENTRY_A])
+    const lead = T + 10_000 - LEAD + 500
+    expect(prewarmTargets(set, lead).get(ENTRY_A.key)).toBe('b')
+    const stepped = stepSchedulerSet(set, ENTRY_A.key, 'next', lead)
+    expect(shown(stepped, ENTRY_A.key)).toBe('b')
+    expect(prewarmTargets(stepped, lead).size).toBe(0)
+    expect(nextPrewarmAt(stepped, lead)).toBe(lead + 10_000 - LEAD)
+  })
+
+  describe('stablePrewarm', () => {
+    it('is the shared empty map with nothing to pre-warm', () => {
+      const set = synced([ENTRY_A])
+      expect(stablePrewarm(null, set, T)).toBe(NO_PREWARM)
+      expect(stablePrewarm(NO_PREWARM, set, T)).toBe(NO_PREWARM)
+    })
+
+    it('keeps the previous map while the targets are the same, across set changes', () => {
+      const set = synced([ENTRY_A, ENTRY_X])
+      const lead = T + 10_000 - LEAD
+      const first = stablePrewarm(null, set, lead)
+      expect([...first]).toEqual([
+        [ENTRY_A.key, 'b'],
+        [ENTRY_X.key, 'y'],
+      ])
+      expect(stablePrewarm(first, set, lead + 1_000)).toBe(first)
+      // A new set — an event on another cell's camera — with the same targets keeps the map too.
+      const unrelated = { key: 'u', cell: cell(['u', 'v'], { rotateIntervalSec: undefined }) }
+      const withU = synced([ENTRY_A, ENTRY_X, unrelated])
+      const kept = stablePrewarm(null, withU, lead)
+      const moved = applyBusEvent(withU, bus(ev({ cameraId: 'v', start: lead }), lead))
+      expect(moved).not.toBe(withU)
+      expect(stablePrewarm(kept, moved, lead)).toBe(kept)
+    })
+
+    it('is a new map when a target starts, changes or ends', () => {
+      const set = synced([ENTRY_A])
+      const before = stablePrewarm(null, set, T)
+      const started = stablePrewarm(before, set, T + 10_000 - LEAD)
+      expect(started).not.toBe(before)
+      expect([...started]).toEqual([[ENTRY_A.key, 'b']])
+      const stepped = tickSchedulerSet(set, T + 10_000)
+      const ended = stablePrewarm(started, stepped, T + 10_000)
+      expect(ended).toBe(NO_PREWARM)
+      const changed = stablePrewarm(new Map([[ENTRY_A.key, 'c']]), set, T + 10_000 - LEAD)
+      expect([...changed]).toEqual([[ENTRY_A.key, 'b']])
+    })
+  })
+
+  describe('nextPrewarmAt', () => {
+    it('is null for an empty set and for one with no rotation coming', () => {
+      expect(nextPrewarmAt(EMPTY_SCHEDULER_SET, T)).toBeNull()
+      expect(nextPrewarmAt(synced([SINGLE]), T)).toBeNull()
+    })
+
+    it('is the earliest start strictly after now, so a timer that fires on time moves on', () => {
+      const slow = { key: 'slow', cell: cell(['p', 'q'], { rotateIntervalSec: 30 }) }
+      const set = synced([ENTRY_A, slow])
+      expect(nextPrewarmAt(set, T)).toBe(T + 10_000 - LEAD)
+      // Fired at (or after) the first start: that one is already a target, the next is `slow`'s.
+      expect(nextPrewarmAt(set, T + 10_000 - LEAD)).toBe(T + 30_000 - LEAD)
+      expect(nextPrewarmAt(set, T + 30_000 - LEAD)).toBeNull()
+    })
+
+    it('re-arms for the same start when it fires early', () => {
+      const set = synced([ENTRY_A])
+      expect(nextPrewarmAt(set, T + 10_000 - LEAD - 1)).toBe(T + 10_000 - LEAD)
+    })
   })
 })

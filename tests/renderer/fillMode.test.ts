@@ -49,6 +49,7 @@ const SLOTS: GridSlot[] = [
     fit: 'cover',
     qualityChoice: { override: null, inherited: 'low' },
     position: { index: 0, count: 1 },
+    prewarm: null,
   },
   {
     kind: 'missing',

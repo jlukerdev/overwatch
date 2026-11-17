@@ -63,6 +63,13 @@
 //    if the interval changed or rotation was switched on. A new `motionHoldSec` is re-applied to
 //    every ended, not dismissed, event from its local end, so the result does not depend on whether
 //    the old hold happened to have run out yet.
+//  - **The next rotation step is readable ahead of time** ({@link upcomingRotation}, P4.4): which
+//    camera the next step will show, and when, so the grid can open that camera's stream hidden a
+//    little before the switch (ARCHITECTURE §3, "pre-warm"). It answers only for a step that will
+//    really happen on the timer: none while pinned or a trigger shows (rotation is paused, and what
+//    comes next depends on events nobody can foresee), none without rotation, and none when the next
+//    entry is the camera already shown (a camera listed twice in a row). Rotation steps from
+//    `index`, which is the camera shown exactly when it applies (neither pinned nor triggered).
 //  - **Same object when nothing changed**, for React's bail-out; the input is never mutated. The
 //    state is plain, readonly, JSON-serialisable data, opaque to callers.
 import type { CameraEvent, Cell, MotionTrigger } from '@shared/models'
@@ -529,4 +536,30 @@ export function nextWakeAt(state: SchedulerState): number | null {
     consider(state.nextRotateAt)
   }
   return wake
+}
+
+/** The next rotation step (P4.4): the camera it will show, its position, and when it is due. */
+export interface UpcomingRotation {
+  /** Position in `cell.cameraIds` the step lands on. */
+  readonly index: number
+  /** The `cameraIds` entry there, as stored (a ref: may be `<id>:package`, CAM-4). */
+  readonly cameraId: string
+  /** `nextRotateAt`: local ms the step is due. May already be past if a tick is late. */
+  readonly at: number
+}
+
+/**
+ * What the next rotation step will show, and when (header, P4.4); `null` when no timed step is
+ * coming: rotation off, pinned, a trigger showing, fewer than two cameras, or the next entry is the
+ * camera already shown.
+ */
+export function upcomingRotation(state: SchedulerState): UpcomingRotation | null {
+  const at = state.nextRotateAt
+  if (rotationIntervalMs(state.cell) === null || at === null) return null
+  if (state.pinned || state.triggerIndex !== null) return null
+  const ids = state.cell.cameraIds
+  const index = (state.index + 1) % ids.length
+  const cameraId = ids[index]
+  if (cameraId === undefined || cameraId === ids[state.index]) return null
+  return { index, cameraId, at }
 }

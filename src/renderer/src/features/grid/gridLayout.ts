@@ -48,6 +48,14 @@
 //    (X)" option). The persisted cell is named by `placement`'s top-left slot (`setCellQuality`,
 //    features/quality/qualityChoice.ts). A package ref has no picker (`qualityChoice: null`): the
 //    package channel is a source, not a quality, so there is nothing to pick.
+//  - **…and the camera to pre-warm, if any** (P4.4; ARCHITECTURE §3): the ref the cell's next
+//    rotation step will show (`prewarm`, from `useCellSchedulers`), resolved by the same camera /
+//    missing / package rules, to the camera id and the quality it will play at once shown — the
+//    package channel for a package ref, else the cell's grid quality — so the hidden player is
+//    asked for exactly the stream the visible one will want, and the switch needs no swap. No
+//    pre-warm for a ref that would be a `missing` slot (it asks for no stream), nor for the camera
+//    already shown (`<id>` and `<id>:package` side by side: that switch is the player's own quality
+//    swap, QUAL-6). A missing slot carries none: its placeholder has no player to hand over.
 import type { Camera } from '@shared/ipc'
 import type { Fit, View } from '@shared/models'
 import {
@@ -116,6 +124,8 @@ export type GridSlot =
       readonly qualityChoice: SlotQualityChoice | null
       /** Which of the cell's cameras this is (CELL-2; the overlay's `2/4`, P4.3). */
       readonly position: SlotPosition
+      /** P4.4: the camera the next rotation step will show, to open hidden now; `null` for none. */
+      readonly prewarm: SlotPrewarm | null
     }
   | {
       /**
@@ -137,6 +147,13 @@ export type GridSlot =
 export interface SlotPosition {
   readonly index: number
   readonly count: number
+}
+
+/** A camera to open hidden in a slot ahead of its rotation step (P4.4, header). */
+export interface SlotPrewarm {
+  readonly cameraId: string
+  /** What it will play once shown in the grid: the cell's grid quality, or the package channel. */
+  readonly quality: StreamQuality
 }
 
 /** What a camera slot's quality picker shows (QUAL-3/4). */
@@ -214,8 +231,13 @@ export function buildViewSlots(input: {
    * not in it, or a position out of range, draws the first camera (header).
    */
   readonly shown?: ReadonlyMap<string, number>
+  /**
+   * P4.4: slot key → the ref its next rotation step shows (`useCellSchedulers`' `prewarm`). Absent,
+   * or a ref that cannot play, pre-warms nothing (header).
+   */
+  readonly prewarm?: ReadonlyMap<string, string>
 }): GridSlot[] {
-  const { view, cameras, streams, shown } = input
+  const { view, cameras, streams, shown, prewarm } = input
   const byId = new Map(cameras.map((camera) => [camera.id, camera]))
   const keys = cellSlotKeys(view)
   return view.cells.map((cell, i): GridSlot => {
@@ -237,6 +259,8 @@ export function buildViewSlots(input: {
 
     const ref = parseCameraRef(refText)
     const camera = byId.get(ref.cameraId)
+    const gridQuality = (r: CameraRef): StreamQuality =>
+      r.packageChannel ? PACKAGE_CHANNEL : resolveGridQuality({ cell, view, streams })
     if (camera === undefined) {
       return {
         kind: 'missing',
@@ -258,7 +282,7 @@ export function buildViewSlots(input: {
       placement,
       cameraId: ref.cameraId,
       name: slotName(camera, ref),
-      quality: ref.packageChannel ? PACKAGE_CHANNEL : resolveGridQuality({ cell, view, streams }),
+      quality: gridQuality(ref),
       fillQuality: ref.packageChannel ? PACKAGE_CHANNEL : resolveFillQuality({ view, streams }),
       fit: view.fit,
       qualityChoice: ref.packageChannel
@@ -268,6 +292,25 @@ export function buildViewSlots(input: {
             inherited: resolveGridQuality({ cell: { quality: null }, view, streams }),
           },
       position,
+      prewarm: slotPrewarm(prewarm?.get(key), ref.cameraId, byId, gridQuality),
     }
   })
+}
+
+/**
+ * The pre-warm of a camera slot showing `shownCameraId` (header): `wanted` resolved like a shown
+ * ref, or `null` when there is none, it would be a missing slot, or it is the camera already shown.
+ */
+function slotPrewarm(
+  wanted: string | undefined,
+  shownCameraId: string,
+  byId: ReadonlyMap<string, Camera>,
+  gridQuality: (ref: CameraRef) => StreamQuality,
+): SlotPrewarm | null {
+  if (wanted === undefined) return null
+  const ref = parseCameraRef(wanted)
+  if (ref.cameraId === shownCameraId) return null
+  const camera = byId.get(ref.cameraId)
+  if (camera === undefined || (ref.packageChannel && !camera.hasPackageCamera)) return null
+  return { cameraId: ref.cameraId, quality: gridQuality(ref) }
 }

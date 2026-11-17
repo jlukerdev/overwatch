@@ -30,6 +30,13 @@
 //    so it composes with them in whatever order they land. Stable for the hook's life (no deps), so
 //    the grid can hand it to its memoised cells as is. The step changes the set, so the timer effect
 //    re-arms from the restarted interval.
+//  - **Pre-warm** (P4.4; ARCHITECTURE §3) is the returned `prewarm`: slot key → the camera ref the
+//    next rotation step will show, once that step is `PREWARM_LEAD_MS` away (`stablePrewarm`). It
+//    depends on time as well as on the set, so it is brought in line during render like the views —
+//    reading the wall clock — and a second timer, armed at `nextPrewarmAt` and re-armed whenever the
+//    set changes, re-reads it when a pre-warm is due to start. Nothing has to end one: the rotation
+//    step (or a trigger, a step, a pin) changes the set, and the next step is a whole interval away.
+//    The timer only re-reads; it never ticks the schedulers, so it cannot move a camera.
 //  - **The clock is `Date.now()`**, read through {@link wallClock}: the bus stamps arrivals with it,
 //    and the scheduler compares those stamps with the `now` of every action.
 import { useCallback, useEffect, useState } from 'react'
@@ -39,12 +46,15 @@ import {
   applyBusEvent,
   applyBusEvents,
   initialSchedulerInputs,
+  nextPrewarmAt,
   nextWakeOfSet,
   schedulerTimerDelay,
+  stablePrewarm,
   stableViews,
   stepSchedulerSet,
   tickSchedulerSet,
   updateSchedulerInputs,
+  type PrewarmTargets,
   type SchedulerEntry,
   type SchedulerInputs,
   type SchedulerSet,
@@ -66,6 +76,11 @@ export interface CellSchedulers {
   readonly views: ReadonlyMap<string, SchedulerView>
   /** The user's next / previous on the cell at `key` (header). Stable; a no-op for other keys. */
   readonly step: (key: string, direction: StepDirection) => void
+  /**
+   * P4.4: slot key → the `cameraIds` entry (a ref, CAM-4) to open hidden in that slot, because the
+   * next rotation step shows it soon (header). Stable while the targets are the same.
+   */
+  readonly prewarm: PrewarmTargets
 }
 
 /**
@@ -148,6 +163,33 @@ export function useCellSchedulers(
   const [views, setViews] = useState(() => stableViews(null, set))
   const currentViews = stableViews(views, set)
   if (currentViews !== views) setViews(currentViews)
-  // A fresh object each render is fine: callers destructure it, and both members are stable.
-  return { views: currentViews, step }
+  // Pre-warm targets (header): brought in line during render, re-read by a timer when one starts.
+  const [prewarm, setPrewarm] = useState(() => stablePrewarm(null, set, wallClock()))
+  const currentPrewarm = stablePrewarm(prewarm, set, wallClock())
+  if (currentPrewarm !== prewarm) setPrewarm(currentPrewarm)
+
+  // `set` is the current set while this effect lives, as for the wake timer above. Each firing
+  // re-reads the targets and arms for the next start strictly after now, so it never spins.
+  useEffect(() => {
+    let timer: ReturnType<typeof setTimeout> | null = null
+    const arm = (): void => {
+      const now = wallClock()
+      const start = nextPrewarmAt(set, now)
+      if (start === null) return
+      timer = setTimeout(fire, schedulerTimerDelay(start, now, false))
+    }
+    const fire = (): void => {
+      timer = null
+      const now = wallClock()
+      setPrewarm((previous) => stablePrewarm(previous, set, now))
+      arm()
+    }
+    arm()
+    return () => {
+      if (timer !== null) clearTimeout(timer)
+    }
+  }, [set])
+
+  // A fresh object each render is fine: callers destructure it, and every member is stable.
+  return { views: currentViews, step, prewarm: currentPrewarm }
 }

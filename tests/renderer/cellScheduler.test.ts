@@ -22,6 +22,9 @@
 //  - missed intervals step once; `now` going backwards does not crash; nextWakeAt names the moment
 //    a tick changes something; the reducer is pure, returns the same reference when nothing
 //    changed, and prunes so its state stays bounded.
+//  - (P4.4) upcomingRotation names exactly the camera and time of the next timed rotation step —
+//    the same one a tick at that time shows — and nothing while rotation is off, pinned or
+//    triggered, with fewer than two cameras, or when the next entry is the camera already shown.
 import { CameraEventSchema, CellSchema, type CameraEvent } from '@shared/models'
 import { describe, expect, it } from 'vitest'
 import {
@@ -31,6 +34,7 @@ import {
   reduceScheduler,
   schedulerView,
   STALE_EVENT_MS,
+  upcomingRotation,
   type SchedulerAction,
   type SchedulerCell,
   type SchedulerState,
@@ -1158,5 +1162,89 @@ describe('non-finite times', () => {
     expect(reduceScheduler(s, at.event({ ...bad, end: Infinity }, T))).toBe(s)
     const running = run(s, at.event(bad, T))
     expect(reduceScheduler(running, at.event({ ...bad, end: Number.NaN }, T + 1_000))).toBe(running)
+  })
+})
+
+describe('upcomingRotation (P4.4)', () => {
+  it('names the next camera and when the step is due', () => {
+    const s = createScheduler(cell(), T)
+    expect(upcomingRotation(s)).toEqual({ index: 1, cameraId: 'c1', at: T + 10_000 })
+  })
+
+  it('is exactly what a tick at that time shows, through a whole cycle and its wrap', () => {
+    let s = createScheduler(cell(), T)
+    for (let i = 0; i < 6; i += 1) {
+      const upcoming = upcomingRotation(s)
+      if (upcoming === null) throw new Error('expected an upcoming rotation')
+      expect(reduceScheduler(s, at.tick(upcoming.at - 1))).toBe(s)
+      s = reduceScheduler(s, at.tick(upcoming.at))
+      expect(schedulerView(s)).toMatchObject({
+        index: upcoming.index,
+        cameraId: upcoming.cameraId,
+        reason: 'rotation',
+      })
+    }
+    // Six steps of four cameras: on c2, next is c3.
+    expect(upcomingRotation(s)).toMatchObject({ index: 3, cameraId: 'c3' })
+  })
+
+  it('wraps from the last camera to the first', () => {
+    const s = run(createScheduler(cell(), T), at.prev(T + 1_000))
+    expect(schedulerView(s).index).toBe(3)
+    expect(upcomingRotation(s)).toEqual({ index: 0, cameraId: 'c0', at: T + 11_000 })
+  })
+
+  it('is null without rotation, or with fewer than two cameras', () => {
+    expect(upcomingRotation(createScheduler(cell({ rotateIntervalSec: undefined }), T))).toBeNull()
+    expect(upcomingRotation(createScheduler(cell({ cameraIds: ['c0'] }), T))).toBeNull()
+    expect(upcomingRotation(createScheduler(cell({ cameraIds: [] }), T))).toBeNull()
+  })
+
+  it('is null while pinned, and back with a full interval on unpin', () => {
+    const pinned = run(createScheduler(cell(), T), at.pin(T + 1_000))
+    expect(upcomingRotation(pinned)).toBeNull()
+    expect(upcomingRotation(run(pinned, at.next(T + 2_000)))).toBeNull()
+    const unpinned = run(pinned, at.unpin(T + 3_000))
+    expect(upcomingRotation(unpinned)).toEqual({ index: 1, cameraId: 'c1', at: T + 13_000 })
+  })
+
+  it('is null while a trigger shows, and resumes from the held camera when it is over', () => {
+    const motion = ev({ cameraId: 'c2', start: T + 1_000 })
+    let s = run(createScheduler(cell(), T), at.event(motion, T + 1_000))
+    expect(shown(s)).toEqual({ cameraId: 'c2', reason: 'trigger' })
+    expect(upcomingRotation(s)).toBeNull()
+    s = run(s, at.event(ended(motion, T + 2_000), T + 2_000), at.tick(T + 17_000))
+    expect(shown(s)).toEqual({ cameraId: 'c2', reason: 'rotation' })
+    expect(upcomingRotation(s)).toEqual({ index: 3, cameraId: 'c3', at: T + 27_000 })
+  })
+
+  it('follows a manual step, which restarts the interval', () => {
+    const s = run(createScheduler(cell(), T), at.next(T + 4_000))
+    expect(upcomingRotation(s)).toEqual({ index: 2, cameraId: 'c2', at: T + 14_000 })
+  })
+
+  it('is null when the next entry is the camera already shown (listed twice in a row)', () => {
+    const twice = cell({ cameraIds: ['c0', 'c0', 'c1'] })
+    let s = createScheduler(twice, T)
+    expect(upcomingRotation(s)).toBeNull()
+    s = run(s, at.tick(T + 10_000))
+    expect(schedulerView(s).index).toBe(1)
+    expect(upcomingRotation(s)).toEqual({ index: 2, cameraId: 'c1', at: T + 20_000 })
+  })
+
+  it('names the ref as stored, a package entry included', () => {
+    const s = createScheduler(cell({ cameraIds: ['c0', 'c0:package'] }), T)
+    expect(upcomingRotation(s)).toMatchObject({ cameraId: 'c0:package' })
+  })
+
+  it('reports a step already overdue (a late tick) with its past time', () => {
+    const s = createScheduler(cell(), T)
+    // No tick has run: the step at T+10 s is still upcoming whatever the wall clock says.
+    expect(upcomingRotation(s)?.at).toBe(T + 10_000)
+  })
+
+  it('never mutates its input', () => {
+    const s = deepFreeze(createScheduler(cell(), T))
+    expect(() => upcomingRotation(s)).not.toThrow()
   })
 })

@@ -16,6 +16,9 @@
 //    switch keeps shared players mounted and React never sees two siblings with one key.
 //  - (P3.7, QUAL-4) a camera slot carries its picker's data: the cell's own override and what it
 //    gets with the override cleared (View, then settings); a package ref has no picker.
+//  - (P4.4) a camera slot carries the camera to pre-warm, resolved like a shown ref (camera id, and
+//    the grid quality or the package channel); none for a ref that would be missing, for the camera
+//    already shown, for a slot not in the map, and never on a missing slot.
 //  - a camera the inventory no longer has gets a `missing` slot, not a player; so does a package
 //    ref to a camera without `hasPackageCamera`.
 import type { Camera } from '@shared/ipc'
@@ -413,5 +416,70 @@ describe('schedulerEntries and cellSlotKeys (P4.2)', () => {
     const v = view(2, 1, [null, 'a'])
     expect(cellSlotKeys(v)).toEqual([null, cameraSlotKey('a', 0)])
     expect(schedulerEntries(v).map((e) => e.key)).toEqual([cameraSlotKey('a', 0)])
+  })
+})
+
+describe('buildViewSlots: pre-warm (P4.4)', () => {
+  const key = cameraSlotKey('a', 0)
+  const build = (
+    v: View,
+    prewarm: ReadonlyMap<string, string>,
+    shown?: ReadonlyMap<string, number>,
+  ): GridSlot[] =>
+    buildViewSlots({
+      view: v,
+      cameras: INVENTORY,
+      streams: STREAMS,
+      prewarm,
+      ...(shown ? { shown } : {}),
+    })
+
+  it('has none without a map, or for a slot the map does not name', () => {
+    const v = view(1, 1, [['a', 'b']])
+    expect(cameraSlot(slots(v)[0]).prewarm).toBeNull()
+    expect(cameraSlot(build(v, new Map([['cam:other#0', 'b']]))[0]).prewarm).toBeNull()
+  })
+
+  it('resolves the ref to its camera at the grid quality the cell will play it at', () => {
+    const v = view(1, 1, [['a', 'b']], { gridQuality: 'medium' })
+    const slot = cameraSlot(build(v, new Map([[key, 'b']]))[0])
+    expect(slot.prewarm).toEqual({ cameraId: 'b', quality: 'medium' })
+    // The same quality the slot has once the step shows `b`, so the switch needs no swap.
+    const after = cameraSlot(slots(v, INVENTORY, new Map([[key, 1]]))[0])
+    expect(after.quality).toBe(slot.prewarm?.quality)
+  })
+
+  it('follows the cell override, as the slot quality does', () => {
+    const cells = uniformCells(1, 1).map((c) => ({ ...c, quality: 'high' as const }))
+    const v = view(1, 1, [['a', 'b']], {}, cells)
+    expect(cameraSlot(build(v, new Map([[key, 'b']]))[0]).prewarm?.quality).toBe('high')
+  })
+
+  it('plays the package channel for a package ref with a package camera', () => {
+    const v = view(1, 1, [['a', `d:${PACKAGE_CHANNEL}`]])
+    expect(cameraSlot(build(v, new Map([[key, `d:${PACKAGE_CHANNEL}`]]))[0]).prewarm).toEqual({
+      cameraId: 'd',
+      quality: PACKAGE_CHANNEL,
+    })
+  })
+
+  it('has none for a ref that would be a missing slot', () => {
+    const v = view(1, 1, [['a', 'gone', `b:${PACKAGE_CHANNEL}`]])
+    expect(cameraSlot(build(v, new Map([[key, 'gone']]))[0]).prewarm).toBeNull()
+    expect(cameraSlot(build(v, new Map([[key, `b:${PACKAGE_CHANNEL}`]]))[0]).prewarm).toBeNull()
+  })
+
+  it('has none for the camera already shown, its package channel included', () => {
+    const k = cameraSlotKey('d', 0)
+    const v = view(1, 1, [['d', `d:${PACKAGE_CHANNEL}`]])
+    expect(cameraSlot(build(v, new Map([[k, `d:${PACKAGE_CHANNEL}`]]))[0]).prewarm).toBeNull()
+    expect(cameraSlot(build(v, new Map([[k, 'd']]), new Map([[k, 1]]))[0]).prewarm).toBeNull()
+  })
+
+  it('never puts one on a missing slot', () => {
+    const v = view(1, 1, [['a', 'gone', 'b']])
+    const slot = build(v, new Map([[key, 'b']]), new Map([[key, 1]]))[0]
+    expect(slot?.kind).toBe('missing')
+    expect(slot).not.toHaveProperty('prewarm')
   })
 })

@@ -80,6 +80,10 @@ This was a `low` run (`--label recovery`). The user killed go2rtc with `pkill -x
 
 Recovery is the only thing this run measured. Its CPU, RAM and dropped-frame numbers include the outage and are not part of the results above.
 
+### Rotation pre-warm (P4.4), 2026-11-16
+
+Not measured, and no re-run (user decision, 2026-11-16). The harness plays a fixed grid of one-camera cells, so it never rotates and never pre-warms; a re-run would repeat the numbers above. Pre-warm's cost is bounded by design: one extra stream per rotating cell on screen, for 2 s (`PREWARM_LEAD_MS`) of each rotation interval, and none for a filled cell, the cells under it, or a grid drawn at zero size (SPEC CELL-2, "Pre-warm"). At a 10 s interval that is 20 % more stream-time for each rotating cell, and 40 % at the 5 s minimum.
+
 ## Method
 
 ### What runs

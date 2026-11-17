@@ -10,11 +10,13 @@
 //  - the order the rows appear in, including that going offline does not move a row.
 //  - the refetch-on-recovery rule: a camera that comes back online gets a fresh thumbnail with no
 //    user action, and never shows the one taken before the outage.
-//  - the bounded concurrency that keeps a 15-camera refresh from spending the whole 10 req/s
-//    budget (SPEC R9).
-//  - QUAL-7's RTSPS qualities riding the thumbnail lifecycle (P3.7): same batch, same stale rules,
-//    dropped and refetched with the thumbnail, a failure that stays quiet, and no GET at all for a
-//    camera whose snapshot failed at list level.
+//  - QUAL-7's RTSPS qualities riding the thumbnail lifecycle (P3.7): same request, same stale
+//    rules, dropped and refetched with the thumbnail, a failure that stays quiet, and no GET at
+//    all for a camera whose snapshot failed at list level ("streams unknown" at once).
+//  - the list loading all at once (P4.5, CAM-1/QUAL-7): progress counted in cameras, shown from
+//    the first render, the grid swapped in only when all have settled (failures included), the
+//    old grid kept during a Refresh, a superseded load's replies dropped, and a load abandoned
+//    when the inventory empties.
 import type {
   Camera,
   EndpointStatus,
@@ -30,14 +32,15 @@ import {
   cameraListShowsSetupBanner,
   cameraPresentation,
   EMPTY_THUMBNAILS,
+  fetchesIncrementally,
+  gridCameras,
+  loadProgress,
   rtspsSummary,
-  runWithConcurrency,
   setupGaps,
   sortCameras,
-  streamsQueryPlan,
-  THUMBNAIL_CONCURRENCY,
   thumbnailPlan,
   thumbnailsReducer,
+  wantsLoad,
   wantsStreamsQuery,
   type ThumbnailEntry,
   type ThumbnailsState,
@@ -102,6 +105,14 @@ const REQ = 1
 /** Puts the given ids straight into `loading`, which is the only state a result may fill in. */
 function loadingState(...cameraIds: string[]): ThumbnailsState {
   return thumbnailsReducer(EMPTY_THUMBNAILS, { type: 'request', requestId: REQ, cameraIds })
+}
+
+/** The camera went offline (CAM-2), which drops both of its slots so a later request may re-ask. */
+function dropCamera(state: ThumbnailsState, cameraId: string): ThumbnailsState {
+  return thumbnailsReducer(state, {
+    type: 'sync',
+    cameras: [camera({ id: cameraId, state: 'DISCONNECTED' })],
+  })
 }
 
 describe('cameraDisplayName (CAM-1)', () => {
@@ -335,18 +346,17 @@ describe('thumbnailsReducer', () => {
     ).toBe(answered)
   })
 
-  it('drops a reply from a superseded batch, however it is interleaved', () => {
-    // Refresh while the first batch is still in flight: the two batches are both outstanding for
-    // the same camera. Without a request id the slot can only say "loading", so the first batch's
-    // bytes land in the second batch's slot and the second batch's reply is then thrown away as
-    // stale — Refresh showing exactly the image it was meant to replace.
+  it('drops a reply from a superseded request, however it is interleaved', () => {
+    // The camera dropped off and came back while the first request was still in flight: two
+    // requests are outstanding for the same camera. Without a request id the slot can only say
+    // "loading", so the first request's bytes land in the second's slot and the second's reply is
+    // then thrown away as stale — showing exactly the image the second was meant to replace.
     const first = thumbnailsReducer(EMPTY_THUMBNAILS, {
       type: 'request',
       requestId: 1,
       cameraIds: ['a'],
     })
-    const refreshed = thumbnailsReducer(first, { type: 'refresh' })
-    const second = thumbnailsReducer(refreshed, {
+    const second = thumbnailsReducer(dropCamera(first, 'a'), {
       type: 'request',
       requestId: 2,
       cameraIds: ['a'],
@@ -434,16 +444,6 @@ describe('thumbnailsReducer', () => {
     })
     expect(thumbnailsReducer(ready, { type: 'sync', cameras: [cam] })).toBe(ready)
   })
-
-  it('clears everything on refresh, problem included', () => {
-    const failed = thumbnailsReducer(loadingState('a'), {
-      type: 'result',
-      requestId: REQ,
-      cameraId: 'a',
-      result: { ok: false, error: ERROR },
-    })
-    expect(thumbnailsReducer(failed, { type: 'refresh' })).toEqual(EMPTY_THUMBNAILS)
-  })
 })
 
 describe('RTSPS qualities in the thumbnail cache (QUAL-7)', () => {
@@ -475,8 +475,8 @@ describe('RTSPS qualities in the thumbnail cache (QUAL-7)', () => {
     expect(next.error).toBeNull()
   })
 
-  it('drops a reply from a superseded batch or for a camera it is not waiting on', () => {
-    const second = thumbnailsReducer(thumbnailsReducer(loadingState('a'), { type: 'refresh' }), {
+  it('drops a reply from a superseded request or for a camera it is not waiting on', () => {
+    const second = thumbnailsReducer(dropCamera(loadingState('a'), 'a'), {
       type: 'request',
       requestId: REQ + 1,
       cameraIds: ['a'],
@@ -487,11 +487,9 @@ describe('RTSPS qualities in the thumbnail cache (QUAL-7)', () => {
     expect(streamsReply(answered, 'a', { ok: false, error: ERROR }, REQ + 1)).toBe(answered)
   })
 
-  it('is dropped with the thumbnail when the camera goes offline, and cleared by Refresh', () => {
+  it('is dropped with the thumbnail when the camera goes offline', () => {
     const known = streamsReply(loadingState('a'), 'a', { ok: true, value: AVAILABLE })
-    const offline = camera({ id: 'a', state: 'DISCONNECTED' })
-    expect(thumbnailsReducer(known, { type: 'sync', cameras: [offline] }).streams).toEqual({})
-    expect(thumbnailsReducer(known, { type: 'refresh' })).toEqual(EMPTY_THUMBNAILS)
+    expect(dropCamera(known, 'a').streams).toEqual({})
   })
 
   it('is asked for only after a snapshot that did not fail at list level', () => {
@@ -501,15 +499,41 @@ describe('RTSPS qualities in the thumbnail cache (QUAL-7)', () => {
     expect(wantsStreamsQuery({ ok: false, error: ERROR })).toBe(false)
   })
 
-  it('plans the second pass in batch order, skipping failed and unanswered snapshots', () => {
-    const snapshots = new Map<string, IpcResult<SnapshotResult>>([
-      ['c', okSnapshot(3)],
-      ['a', okSnapshot(1)],
-      ['b', { ok: false, error: ERROR }],
-      ['d', UNAVAILABLE],
-    ])
-    expect(streamsQueryPlan(['a', 'b', 'c', 'd', 'e'], snapshots)).toEqual(['a', 'c', 'd'])
-    expect(streamsQueryPlan([], snapshots)).toEqual([])
+  it('reads "unknown" even if a feed state answers after a list-level snapshot failure', () => {
+    // Defensive: the component sends no GET after such a failure, but a reply that arrives anyway
+    // must not turn the row into "known".
+    const failed = thumbnailsReducer(loadingState('a'), {
+      type: 'result',
+      requestId: REQ,
+      cameraId: 'a',
+      result: { ok: false, error: ERROR },
+    })
+    expect(failed.streams.a).toEqual({ status: 'unknown' })
+    expect(streamsReply(failed, 'a', { ok: true, value: AVAILABLE })).toBe(failed)
+  })
+
+  it('reads "unknown" when a list-level snapshot failure lands after a feed state (defensive)', () => {
+    const known = streamsReply(loadingState('a'), 'a', { ok: true, value: AVAILABLE })
+    const failed = thumbnailsReducer(known, {
+      type: 'result',
+      requestId: REQ,
+      cameraId: 'a',
+      result: { ok: false, error: ERROR },
+    })
+    expect(failed.streams.a).toEqual({ status: 'unknown' })
+  })
+
+  it('keeps the feed state beside a camera-specific "no image" (CAM-3)', () => {
+    const unavailable = thumbnailsReducer(loadingState('a'), {
+      type: 'result',
+      requestId: REQ,
+      cameraId: 'a',
+      result: UNAVAILABLE,
+    })
+    expect(streamsReply(unavailable, 'a', { ok: true, value: AVAILABLE }).streams.a).toEqual({
+      status: 'known',
+      available: AVAILABLE,
+    })
   })
 
   it('settles the streams slot as "unknown" when the snapshot failed at list level', () => {
@@ -532,7 +556,7 @@ describe('RTSPS qualities in the thumbnail cache (QUAL-7)', () => {
   })
 
   it('leaves a newer batch’s streams slot alone on a stale failed snapshot', () => {
-    const second = thumbnailsReducer(thumbnailsReducer(loadingState('a'), { type: 'refresh' }), {
+    const second = thumbnailsReducer(dropCamera(loadingState('a'), 'a'), {
       type: 'request',
       requestId: REQ + 1,
       cameraIds: ['a'],
@@ -596,81 +620,6 @@ describe('rtspsSummary (QUAL-7)', () => {
 
   it('says "none yet" when no quality exists', () => {
     expect(rtspsSummary(doorbell, { status: 'known', available: none })).toEqual({ kind: 'none' })
-  })
-})
-
-describe('runWithConcurrency (SPEC R9)', () => {
-  /** A promise per id that the test resolves by hand, so timing is not involved. */
-  function deferred(): { promise: Promise<void>; resolve: () => void } {
-    let resolve = (): void => undefined
-    const promise = new Promise<void>((res) => {
-      resolve = () => {
-        res()
-      }
-    })
-    return { promise, resolve }
-  }
-
-  it('never has more than `limit` calls outstanding, and makes every call once', async () => {
-    const ids = ['a', 'b', 'c', 'd', 'e', 'f', 'g']
-    const gates = new Map<string, { promise: Promise<void>; resolve: () => void }>()
-    const started: string[] = []
-    let inFlight = 0
-    let peak = 0
-
-    const run = runWithConcurrency(ids, 2, async (id) => {
-      started.push(id)
-      inFlight += 1
-      peak = Math.max(peak, inFlight)
-      const gate = deferred()
-      gates.set(id, gate)
-      await gate.promise
-      inFlight -= 1
-    })
-
-    // Only the first two may have started before anything finished.
-    await Promise.resolve()
-    expect(started).toEqual(['a', 'b'])
-
-    // Release them one at a time; each release lets exactly one more start.
-    for (const id of ids) {
-      gates.get(id)?.resolve()
-      await Promise.resolve()
-      await Promise.resolve()
-    }
-    await run
-
-    expect(peak).toBe(2)
-    expect(started).toEqual(ids)
-  })
-
-  it('does nothing for an empty list', async () => {
-    let calls = 0
-    await runWithConcurrency([], THUMBNAIL_CONCURRENCY, async () => {
-      calls += 1
-      await Promise.resolve()
-    })
-    expect(calls).toBe(0)
-  })
-
-  it('still runs with a limit below one, and with a limit above the list', async () => {
-    const seen: number[] = []
-    await runWithConcurrency([1, 2, 3], 0, async (n) => {
-      seen.push(n)
-      await Promise.resolve()
-    })
-    await runWithConcurrency([4], 50, async (n) => {
-      seen.push(n)
-      await Promise.resolve()
-    })
-    expect(seen).toEqual([1, 2, 3, 4])
-  })
-
-  it('caps a 15-camera refresh well below the console budget', () => {
-    // 10 requests per second per key (SPEC R9): three at a time leaves most of each second for
-    // the live device feed and whatever the user is doing.
-    expect(THUMBNAIL_CONCURRENCY).toBeGreaterThanOrEqual(2)
-    expect(THUMBNAIL_CONCURRENCY).toBeLessThanOrEqual(3)
   })
 })
 
@@ -746,4 +695,241 @@ describe('cameraListBody', () => {
       expect(cameraListShowsSetupBanner(cameraCount, gaps)).toBe(banner)
     })
   }
+
+  it('shows the loading body during the first load, banner or not (P4.5)', () => {
+    expect(cameraListBody(3, [], true)).toBe('loading')
+    expect(cameraListBody(0, ['host'], true)).toBe('loading')
+    expect(cameraListShowsSetupBanner(3, ['credential'], true)).toBe(false)
+  })
+})
+
+describe('loading the list all at once (P4.5, CAM-1/QUAL-7)', () => {
+  const AVAILABLE: RtspsAvailability = { high: true, medium: true, low: false, package: false }
+  const LOAD = 10
+
+  function start(
+    state: ThumbnailsState,
+    requestId = LOAD,
+    shownIds: readonly string[] = [],
+  ): ThumbnailsState {
+    return thumbnailsReducer(state, { type: 'loadStart', requestId, shownIds })
+  }
+
+  function plan(state: ThumbnailsState, cameraIds: string[], requestId = LOAD): ThumbnailsState {
+    return thumbnailsReducer(state, { type: 'loadPlan', requestId, cameraIds })
+  }
+
+  function snap(
+    state: ThumbnailsState,
+    cameraId: string,
+    result: IpcResult<SnapshotResult>,
+    requestId = LOAD,
+  ): ThumbnailsState {
+    return thumbnailsReducer(state, { type: 'result', requestId, cameraId, result })
+  }
+
+  function feed(
+    state: ThumbnailsState,
+    cameraId: string,
+    result: IpcResult<RtspsAvailability> = { ok: true, value: AVAILABLE },
+    requestId = LOAD,
+  ): ThumbnailsState {
+    return thumbnailsReducer(state, { type: 'streams', requestId, cameraId, result })
+  }
+
+  /** A load of `ids` that has completed with a snapshot `byte` and the feed state for each. */
+  function loaded(ids: string[], byte = 1, requestId = LOAD): ThumbnailsState {
+    let state = plan(start(EMPTY_THUMBNAILS, requestId), ids, requestId)
+    for (const id of ids) {
+      state = feed(snap(state, id, okSnapshot(byte), requestId), id, undefined, requestId)
+    }
+    return state
+  }
+
+  it('shows indeterminate progress from the first render of a load about to start', () => {
+    // Cameras in hand and nothing loaded yet: the loading card shows before any dispatch, so the
+    // bare grid never flashes (the component starts the load from an effect).
+    const pending = { settled: 0, total: null, label: 'Loading cameras…' }
+    expect(loadProgress(EMPTY_THUMBNAILS, 3)).toEqual(pending)
+    expect(loadProgress(EMPTY_THUMBNAILS, 0)).toBeNull()
+    // Started, inventory not answered yet: still indeterminate.
+    expect(loadProgress(start(EMPTY_THUMBNAILS), 3)).toEqual(pending)
+    expect(loadProgress(start(EMPTY_THUMBNAILS), 0)).toEqual(pending)
+    // Done: nothing.
+    expect(loadProgress(loaded(['a']), 1)).toBeNull()
+  })
+
+  it('counts cameras, each settling when its snapshot and its feed state have answered', () => {
+    let state = plan(start(EMPTY_THUMBNAILS), ['a', 'b', 'c'])
+    expect(loadProgress(state, 3)).toEqual({
+      settled: 0,
+      total: 3,
+      label: 'Loading 0 / 3 cameras',
+    })
+    state = snap(state, 'a', okSnapshot(1))
+    // The snapshot alone does not settle it: its feed state follows.
+    expect(loadProgress(state, 3)).toMatchObject({ settled: 0, total: 3 })
+    state = feed(state, 'a')
+    expect(loadProgress(state, 3)).toMatchObject({ settled: 1, label: 'Loading 1 / 3 cameras' })
+  })
+
+  it('fills nothing on screen until every camera has settled, then swaps it in at once', () => {
+    let state = plan(start(EMPTY_THUMBNAILS), ['a', 'b'])
+    state = snap(state, 'a', okSnapshot(1))
+    state = feed(state, 'a')
+    state = snap(state, 'b', okSnapshot(2))
+    expect(state.entries).toEqual({})
+    expect(state.loaded).toBe(false)
+
+    state = feed(state, 'b')
+    expect(state.load).toBeNull()
+    expect(state.loaded).toBe(true)
+    expect(state.entries.a).toMatchObject({ status: 'ready', bytes: new Uint8Array([1]) })
+    expect(state.entries.b).toMatchObject({ status: 'ready', bytes: new Uint8Array([2]) })
+    expect(state.streams.b).toEqual({ status: 'known', available: AVAILABLE })
+  })
+
+  it('settles a camera on a list-level snapshot failure, with no feed-state request', () => {
+    // A bad key costs no second request per camera: the component sends no GET
+    // (`wantsStreamsQuery`), and the reducer does not wait for one.
+    let state = plan(start(EMPTY_THUMBNAILS), ['a', 'b'])
+    state = snap(state, 'a', { ok: false, error: ERROR })
+    expect(loadProgress(state, 2)).toMatchObject({ settled: 1, total: 2 })
+    state = snap(state, 'b', { ok: false, error: ERROR })
+    expect(state.loaded).toBe(true)
+    expect(state.entries.a).toEqual({ status: 'failed', error: ERROR })
+    expect(state.streams.a).toEqual({ status: 'unknown' })
+    expect(state.streams.b).toEqual({ status: 'unknown' })
+    expect(state.error).toBe(ERROR)
+  })
+
+  it('completes with camera-specific failures too: the camera still shows', () => {
+    let state = plan(start(EMPTY_THUMBNAILS), ['b'])
+    state = snap(state, 'b', UNAVAILABLE)
+    expect(state.loaded).toBe(false)
+    state = feed(state, 'b', { ok: false, error: ERROR })
+    expect(state.loaded).toBe(true)
+    expect(state.entries.b).toEqual({ status: 'unavailable', reason: 'Camera is offline' })
+    expect(state.streams.b).toEqual({ status: 'unknown' })
+    expect(state.error).toBeNull()
+  })
+
+  it('completes at once when there is no online camera to ask about', () => {
+    const state = plan(start(EMPTY_THUMBNAILS), [])
+    expect(state.load).toBeNull()
+    expect(state.loaded).toBe(true)
+  })
+
+  it('keeps the previous grid during a Refresh and replaces all of it, problem included', () => {
+    const first = snap(
+      plan(start(EMPTY_THUMBNAILS, 1), ['a'], 1),
+      'a',
+      { ok: false, error: ERROR },
+      1,
+    )
+    expect(first.loaded).toBe(true)
+    expect(first.error).toBe(ERROR)
+
+    let state = plan(start(first, 2, ['a']), ['a'], 2)
+    state = snap(state, 'a', okSnapshot(5), 2)
+    // Still the old grid, old problem and all.
+    expect(state.entries.a).toEqual({ status: 'failed', error: ERROR })
+    expect(state.error).toBe(ERROR)
+    state = feed(state, 'a', undefined, 2)
+    expect(state.entries.a).toMatchObject({ status: 'ready', bytes: new Uint8Array([5]) })
+    expect(state.streams.a).toEqual({ status: 'known', available: AVAILABLE })
+    expect(state.error).toBeNull()
+  })
+
+  it('drops the replies of a superseded load (a Refresh during a load), without counting them', () => {
+    let state = plan(start(EMPTY_THUMBNAILS, 1), ['a'], 1)
+    state = plan(start(state, 2), ['a'], 2)
+    const stale = feed(snap(state, 'a', okSnapshot(1), 1), 'a', undefined, 1)
+    expect(stale).toBe(state)
+    // A plan from the superseded load cannot overwrite the new one either.
+    expect(plan(state, ['x', 'y'], 1)).toBe(state)
+    const done = feed(snap(state, 'a', okSnapshot(2), 2), 'a', undefined, 2)
+    expect(done.entries.a).toMatchObject({ status: 'ready', bytes: new Uint8Array([2]) })
+  })
+
+  it('ignores a reply for a camera the load did not plan', () => {
+    const state = plan(start(EMPTY_THUMBNAILS), ['a'])
+    expect(snap(state, 'z', okSnapshot(1))).toBe(state)
+  })
+
+  it('counts a reply for a camera that went offline mid-load, but does not apply it (CAM-3)', () => {
+    let state = plan(start(EMPTY_THUMBNAILS), ['a', 'b'])
+    state = thumbnailsReducer(state, {
+      type: 'sync',
+      cameras: [camera({ id: 'a', state: 'DISCONNECTED' }), camera({ id: 'b' })],
+    })
+    state = feed(snap(state, 'a', okSnapshot(1)), 'a')
+    state = feed(snap(state, 'b', okSnapshot(2)), 'b')
+    expect(state.loaded).toBe(true)
+    expect(state.entries.a).toBeUndefined()
+    expect(state.streams.a).toBeUndefined()
+    // When the devices feed says CONNECTED again, the incremental path asks for it on its own.
+    const back = [camera({ id: 'a', name: 'A' }), camera({ id: 'b', name: 'B' })]
+    expect(fetchesIncrementally(state)).toBe(true)
+    expect(thumbnailPlan(back, state.entries)).toEqual(['a'])
+  })
+
+  it('abandons a load when the inventory empties, so returning cameras load all at once', () => {
+    const inFlight = snap(
+      plan(start(loaded(['a'], 1, 1), 2, ['a']), ['a'], 2),
+      'a',
+      okSnapshot(2),
+      2,
+    )
+    const emptied = thumbnailsReducer(inFlight, { type: 'sync', cameras: [] })
+    expect(emptied).toEqual(EMPTY_THUMBNAILS)
+    // The abandoned load's late replies match nothing.
+    expect(feed(emptied, 'a', undefined, 2)).toBe(emptied)
+    expect(wantsLoad(emptied, 2)).toBe(true)
+    expect(fetchesIncrementally(emptied)).toBe(false)
+  })
+
+  it('lets incremental replies land in the grid while a load is in flight', () => {
+    const grid = thumbnailsReducer(loaded(['a'], 1, 1), {
+      type: 'request',
+      requestId: 2,
+      cameraIds: ['b'],
+    })
+    const refreshing = start(grid, 3, ['a', 'b'])
+    const next = snap(refreshing, 'b', okSnapshot(9), 2)
+    expect(next.entries.b).toMatchObject({ status: 'ready' })
+    expect(next.load).toEqual(refreshing.load)
+  })
+
+  it('shows the grid it had during a Refresh, with live state; everything otherwise', () => {
+    const a = camera({ id: 'a', name: 'A' })
+    const b = camera({ id: 'b', name: 'B', state: 'DISCONNECTED' })
+    const added = camera({ id: 'c', name: 'C' })
+    const sorted = [a, b, added]
+    const grid = loaded(['a'])
+    expect(gridCameras(sorted, grid)).toBe(sorted)
+    // The first load shows no grid at all (the progress replaces it), so nothing is filtered.
+    expect(gridCameras(sorted, start(EMPTY_THUMBNAILS))).toBe(sorted)
+    // A Refresh: the camera the new inventory adds waits for the swap; `b` keeps its live state.
+    expect(gridCameras(sorted, start(grid, LOAD + 1, ['a', 'b']))).toEqual([a, b])
+  })
+
+  it('starts a load by itself only with cameras in hand, never loaded, and none in flight', () => {
+    expect(wantsLoad(EMPTY_THUMBNAILS, 0)).toBe(false)
+    expect(wantsLoad(EMPTY_THUMBNAILS, 3)).toBe(true)
+    expect(wantsLoad(start(EMPTY_THUMBNAILS), 3)).toBe(false)
+    expect(wantsLoad(loaded(['a']), 3)).toBe(false)
+    expect(fetchesIncrementally(EMPTY_THUMBNAILS)).toBe(false)
+    expect(fetchesIncrementally(start(loaded(['a']), LOAD + 1))).toBe(false)
+  })
+
+  it('forgets a completed load when the inventory empties', () => {
+    const emptied = thumbnailsReducer(loaded(['a']), { type: 'sync', cameras: [] })
+    expect(emptied).toEqual(EMPTY_THUMBNAILS)
+    expect(wantsLoad(emptied, 2)).toBe(true)
+    // Already empty: the same object back, so React does not re-render.
+    expect(thumbnailsReducer(EMPTY_THUMBNAILS, { type: 'sync', cameras: [] })).toBe(
+      EMPTY_THUMBNAILS,
+    )
+  })
 })

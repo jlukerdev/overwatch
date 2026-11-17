@@ -594,7 +594,7 @@ export const IPC = {
    * QUAL-7: which RTSPS qualities exist on the console for one camera, as booleans — never the
    * URLs (rule 1). A plain `GET rtsps-stream` through the shared rate limiter; it creates nothing
    * (QUAL-8's POST belongs to `ensureStream` alone). The camera list asks with its thumbnails: on
-   * demand, a few at a time, again on Refresh, never on a timer.
+   * demand, alongside them in one all-at-once load (P4.5), again on Refresh, never on a timer.
    */
   cameraStreamQualities: call('vp:cameras/rtsps', CameraIdInputSchema, RtspsAvailabilitySchema),
 } as const

@@ -163,3 +163,73 @@
   opacity: 0.6;
   text-decoration: line-through;
 }
+
+/* P4.5: the list loads all at once. The first load shows this card in place of the grid; a
+   Refresh shows the compact version in the header, beside the button it disables, while the old
+   grid stays up. */
+.cameras__loading {
+  max-width: 28rem;
+}
+
+.cameras__progress {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.cameras__progress--compact {
+  flex-direction: row;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.cameras__bar {
+  overflow: hidden;
+  position: relative;
+  height: 0.4rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-sunken);
+}
+
+.cameras__progress--compact .cameras__bar {
+  width: 8rem;
+}
+
+.cameras__barFill {
+  height: 100%;
+  background: var(--accent);
+  transition: width 150ms ease-out;
+}
+
+/* Before the inventory has answered there is no total yet: a sliding segment, not a 0 % bar. */
+.cameras__bar--indeterminate .cameras__barFill {
+  position: absolute;
+  width: 30%;
+  animation: cameras-bar-slide 1.1s ease-in-out infinite;
+}
+
+@keyframes cameras-bar-slide {
+  from {
+    left: -30%;
+  }
+  to {
+    left: 100%;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .cameras__barFill {
+    transition: none;
+  }
+
+  .cameras__bar--indeterminate .cameras__barFill {
+    left: 0;
+    animation: none;
+  }
+}
+
+.cameras__progressLabel {
+  font-size: 0.8rem;
+  font-variant-numeric: tabular-nums;
+}

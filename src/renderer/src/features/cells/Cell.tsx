@@ -1,6 +1,15 @@
 // One grid cell with a camera in it (CELL-1): the live player and, over it, the overlay with the
-// camera's name and the auto-hiding controls (CellOverlay, P3.4; CELL-3/4, QUAL-7). Audio policy is
-// Phase 5's (AUD-1), so the player is always muted here.
+// camera's name and the auto-hiding controls (CellOverlay, P3.4; CELL-3/4, QUAL-7).
+//
+// **Audio (P5.1; AUD-1/2/3).** A cell whose camera has audio (`audio`: `hasMic && micEnabled`) gets
+// a mute toggle in its strip, in the grid and in fill, and while filled a volume slider after it
+// (./AudioControls). Whether this cell is the one heard (`audible`) is decided above, by
+// state/audioStore.ts through `<GridView>`: the single active source is a slot of the View *with the
+// camera it showed when unmuted*, so a cell whose camera changes is muted. This file only reports a
+// press upward with the slot key and the camera on screen, and hands `!audible` to the visible
+// player alone. The pre-warmed player is always muted, like an incoming layer inside the player
+// (LivePlayer), so nothing hidden is ever heard; it gets the same `volume`, so the step that shows it
+// changes only its `muted`.
 //
 // **Fill (P3.5; FILL-1/2).** The same cell is the filled view: `<GridView>` enlarges its box to the
 // grid area and hands it `filled`, the fill quality and the fill fit (features/fill/fillMode.ts). This
@@ -27,8 +36,10 @@
 // picks upward with the slot's key — saving a cell override, keeping fill's session pick and saving
 // it for the View are `<GridView>`'s.
 //
-// **Strip order.** In fill, left to right: zoom reset (disabled at 1×), back, position, quality picker and its Save. In
-// the grid: position, quality picker. The badge, where there is one, comes last.
+// **Strip order.** In fill, left to right: zoom reset (disabled at 1×), back, position, mute, volume,
+// quality picker and its Save. In the grid: position, mute, quality picker. The badge, where there
+// is one, comes last. Mute and volume sit together just before the picker: the camera's own
+// controls, after the ones that move between cameras.
 //
 // **Name (VIEW-8).** The camera's name is drawn only when the View's `showNames` is on (`showName`);
 // off, the overlay has no name chip, in the grid and in fill alike.
@@ -70,6 +81,7 @@ import type { Fit } from '@shared/models'
 import type { Quality, StreamQuality } from '@shared/quality'
 import { LivePlayer } from '../../player/LivePlayer'
 import { ZoomResetIcon } from '../../ui/icons'
+import { MuteToggle, VolumeSlider } from './AudioControls'
 import { toFillClick, type FillClickEvent } from '../fill/fillMode'
 import { useZoomPan, ZoomPanLayer } from '../zoom/ZoomPan'
 import { BackToGridButton } from './BackToGridButton'
@@ -130,6 +142,19 @@ export interface CellProps {
    */
   readonly prewarmCameraId: string | null
   readonly prewarmQuality: StreamQuality | null
+  /** AUD-1: the camera has a mic and it is on; shows the mute toggle (and, filled, the volume). */
+  readonly audio: boolean
+  /** AUD-2: this cell, with this camera, is the one heard (state/audioStore.ts). */
+  readonly audible: boolean
+  /** AUD-3: the app-wide level, 0…1, for the visible player and the slider (header). */
+  readonly volume: number
+  /**
+   * AUD-2: the mute toggle, with the camera on screen when it was pressed; `unmute` false mutes.
+   * Stable, like `onClickEvent`.
+   */
+  readonly onAudioToggle: (slotKey: string, cameraId: string, unmute: boolean) => void
+  /** AUD-3: the volume slider. Stable. */
+  readonly onVolumeChange: (volume: number) => void
 }
 
 /**
@@ -175,6 +200,11 @@ export const Cell = memo(function Cell({
   onStep,
   prewarmCameraId,
   prewarmQuality,
+  audio,
+  audible,
+  volume,
+  onAudioToggle,
+  onVolumeChange,
 }: CellProps): JSX.Element {
   const { cellRef, layerRef, zoomed, resetZoom } = useZoomPan(filled)
   // The same element object across renders that change nothing of the player's own, so a flip of
@@ -202,10 +232,17 @@ export const Cell = memo(function Cell({
           }
           aria-hidden={entry.hidden ? true : undefined}
         >
-          <LivePlayer cameraId={entry.cameraId} quality={entry.quality} muted fit={fit} />
+          {/* Only the visible player can be heard (header); the pre-warm is always muted. */}
+          <LivePlayer
+            cameraId={entry.cameraId}
+            quality={entry.quality}
+            muted={entry.hidden || !audible}
+            volume={volume}
+            fit={fit}
+          />
         </div>
       )),
-    [cameraId, quality, prewarmCameraId, prewarmQuality, fit],
+    [cameraId, quality, prewarmCameraId, prewarmQuality, fit, audible, volume],
   )
   const qualityPicker =
     inheritedQuality === null ? null : filled ? (
@@ -242,6 +279,19 @@ export const Cell = memo(function Cell({
     </button>
   ) : null
 
+  // AUD-1: only on a camera with audio. The camera pressed for is the one on screen now, so a press
+  // that lands after a switch names the new camera (header).
+  const muteToggle = audio ? (
+    <MuteToggle
+      audible={audible}
+      onToggle={(unmute) => {
+        onAudioToggle(slotKey, cameraId, unmute)
+      }}
+    />
+  ) : null
+  const volumeSlider =
+    audio && filled ? <VolumeSlider volume={volume} onChange={onVolumeChange} /> : null
+
   return (
     // A mouse target only: the cell is not focusable, and fill is left from the keyboard by `Esc`
     // or the back control. `gridCell--fillable` is the pointer cursor (cells.css); `gridCell--filled`
@@ -264,9 +314,9 @@ export const Cell = memo(function Cell({
         quality={qualityPicker === null ? quality : undefined}
         autoHideMs={overlayAutoHideMs}
       >
-        {/* Left to right (CellOverlay header). In fill: 100%, back, position, quality. In the grid:
-            position, quality. The step's zoom reset gives the next camera 1× (header); in the grid
-            it is a no-op. */}
+        {/* Left to right (CellOverlay header). In fill: 100%, back, position, mute, volume,
+            quality. In the grid: position, mute, quality. The step's zoom reset gives the next
+            camera 1× (header); in the grid it is a no-op. */}
         {zoomReset}
         {filled ? <BackToGridButton onBack={onBack} /> : null}
         <CellStepControls
@@ -276,6 +326,8 @@ export const Cell = memo(function Cell({
           onStep={onStep}
           onBeforeStep={resetZoom}
         />
+        {muteToggle}
+        {volumeSlider}
         {qualityPicker}
       </CellOverlay>
     </div>

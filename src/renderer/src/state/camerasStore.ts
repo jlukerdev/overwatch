@@ -42,6 +42,7 @@
 // unknown" straight away. What differs from a thumbnail is the failure: not knowing which streams exist is not
 // worth an error, so it is a quiet "streams unknown" on the row and never the list-level `error`.
 import { isCameraOnline } from '@shared/models'
+import { cameraHasAudio } from '../features/audio/cameraAudio'
 import { QUALITIES, PACKAGE_CHANNEL, qualityBadgeLabel, type StreamQuality } from '@shared/quality'
 import type {
   Camera,
@@ -81,7 +82,9 @@ export interface CameraPresentation {
  * "Offline" — while still refusing to treat it as streamable.
  */
 export function cameraPresentation(camera: Camera): CameraPresentation {
-  const audio = camera.hasMic && camera.micEnabled
+  // AUD-1's predicate, shared with the grid (features/audio/cameraAudio.ts). Mic-capable, online or
+  // not: the badge says what the camera can do, not whether it plays now.
+  const audio = cameraHasAudio(camera)
   if (isCameraOnline(camera.state)) {
     return { online: true, placeholder: null, audio, stateLabel: 'Online' }
   }

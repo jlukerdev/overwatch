@@ -56,6 +56,15 @@
 //    pre-warm for a ref that would be a `missing` slot (it asks for no stream), nor for the camera
 //    already shown (`<id>` and `<id>:package` side by side: that switch is the player's own quality
 //    swap, QUAL-6). A missing slot carries none: its placeholder has no player to hand over.
+//  - **…and whether it can be heard** (P5.1; AUD-1): the camera has a mic, it is on and the camera
+//    is connected (`cameraCanBeHeard`, features/audio/cameraAudio.ts; user decision 2026-11-16), which
+//    is what shows the cell's mute toggle — and a heard cell whose camera drops is muted. Never for a
+//    package ref: the package channel is a picture source (like its missing quality picker says),
+//    the mic flags belong to the doorbell's main camera, and whether the package stream carries that
+//    audio at all is unverified — so the doorbell is heard from its own cell. This also keeps the
+//    audio rule's identity (slot + camera id) exact, since a package ref shares its camera's id: a
+//    switch between `<id>` and `<id>:package` in one cell still mutes, because the package side is
+//    never an audio source.
 import type { Camera } from '@shared/ipc'
 import type { Fit, View } from '@shared/models'
 import {
@@ -68,6 +77,7 @@ import {
 } from '@shared/quality'
 import type { CellPlacement } from '@shared/viewLayout'
 import { cameraDisplayName } from '../../state/camerasStore'
+import { cameraCanBeHeard } from '../audio/cameraAudio'
 import type { SchedulerEntry } from '../cells/schedulerSet'
 
 // -------------------------------------------------------------------------------------------------
@@ -126,6 +136,8 @@ export type GridSlot =
       readonly position: SlotPosition
       /** P4.4: the camera the next rotation step will show, to open hidden now; `null` for none. */
       readonly prewarm: SlotPrewarm | null
+      /** AUD-1: a mic, on, and the camera connected; never for a package ref (header). */
+      readonly audio: boolean
     }
   | {
       /**
@@ -293,6 +305,7 @@ export function buildViewSlots(input: {
           },
       position,
       prewarm: slotPrewarm(prewarm?.get(key), ref.cameraId, byId, gridQuality),
+      audio: !ref.packageChannel && cameraCanBeHeard(camera),
     }
   })
 }

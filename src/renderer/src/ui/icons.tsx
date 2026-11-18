@@ -262,3 +262,26 @@ export function ZoomResetIcon(props: IconProps): JSX.Element {
     </Svg>
   )
 }
+
+/**
+ * AUD-2's mute toggle while the cell is heard: a speaker with sound waves. The button's label says
+ * what a press does ("Mute").
+ */
+export function SpeakerIcon(props: IconProps): JSX.Element {
+  return (
+    <Svg {...props}>
+      <path d="M2 6h2.5L8 3v10L4.5 10H2z" />
+      <path d="M10.5 6a2.75 2.75 0 0 1 0 4M12.25 4.25a5.25 5.25 0 0 1 0 7.5" />
+    </Svg>
+  )
+}
+
+/** AUD-1/2's mute toggle while the cell is muted (every cell starts so): the speaker, crossed out. */
+export function SpeakerMutedIcon(props: IconProps): JSX.Element {
+  return (
+    <Svg {...props}>
+      <path d="M2 6h2.5L8 3v10L4.5 10H2z" />
+      <path d="M10.5 6l4 4M14.5 6l-4 4" />
+    </Svg>
+  )
+}

@@ -122,6 +122,14 @@ export class MsePlayer extends VideoRTC {
   }
 
   /**
+   * AUD-3's app-wide level, 0…1 (state/audioStore.ts clamps it). Only a property of the element:
+   * changing it never touches the stream. Heard only on the visible, unmuted layer.
+   */
+  setVolume(volume: number): void {
+    if (this.video !== null) this.video.volume = volume
+  }
+
+  /**
    * Stops the stream but **keeps the element and its last frame on screen** — the machine's "a dead
    * `current` keeps its last frame" rule, so a reconnect shows a still picture rather than a flash
    * of placeholder. Deliberately not upstream's `ondisconnect()`, which clears `video.src` and
@@ -195,7 +203,8 @@ export class MsePlayer extends VideoRTC {
     video.disablePictureInPicture = true
     // Muted until the machine says otherwise: an unmuted autoplay is blocked by Chromium, and
     // upstream's `play()` would then mute it anyway. The visible layer's `muted` comes from the
-    // prop right after attach (AUD-1 — the single-active-audio policy itself is Phase 5).
+    // prop right after attach (AUD-1/2: the single-active-audio policy is state/audioStore.ts; a
+    // click's unmute is a user gesture, so Chromium lets it play).
     video.muted = true
     this.watchFirstFrame(video)
   }

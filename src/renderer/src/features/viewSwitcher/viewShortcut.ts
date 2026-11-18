@@ -40,16 +40,17 @@ const TEXT_ENTRY_TAGS = new Set(['INPUT', 'TEXTAREA', 'SELECT'])
 
 /**
  * Whether keystrokes on this target are text: a text field, a select or a contentEditable. Shared
- * with fill's `Esc` (features/fill/fillMode.ts), so the two keyboard rules agree on what typing is.
+ * with fill's `Esc` (features/fill/fillMode.ts) and the mute-all `M` (features/audio/muteShortcut.ts),
+ * so the keyboard rules agree on what typing is.
  */
 export function isTextEntryTarget(target: ViewShortcutTarget | null): boolean {
   return target !== null && (target.isContentEditable || TEXT_ENTRY_TAGS.has(target.tagName))
 }
 
 /**
- * A DOM event's target as the two keyboard rules read it (this file's and fill's `Esc`); anything
- * that is not an HTML element is `null`. One adapter for both listeners (ViewSwitcher, GridView), so
- * they cannot drift apart on what a target is. Touches the DOM only when called, so this module still
+ * A DOM event's target as the keyboard rules read it (this file's, fill's `Esc` and the mute-all
+ * `M`); anything that is not an HTML element is `null`. One adapter for every listener (ViewSwitcher,
+ * GridView), so they cannot drift apart on what a target is. Touches the DOM only when called, so this module still
  * loads in the node test environment.
  */
 export function keyEventTarget(target: EventTarget | null): ViewShortcutTarget | null {

@@ -57,12 +57,27 @@
 // stored value on its own, because it always shows the store's (or the session's) state. A cell
 // pick that would not change the stored View sends nothing; a save that lands drops only the pick
 // it saved, never a newer one made meanwhile.
+//
+// **Audio is wired here too** (P5.1; AUD-1/2/3). The rules are state/audioStore.ts's: one active
+// source, a slot of this View *with the camera it showed when unmuted*. This component reads it and
+// tells each camera cell whether it is that source (`audible`, by the store's one rule
+// `isSlotAudible`), and hands every cell the app-wide volume, so a cell that becomes audible already
+// has the right level (a volume drag re-renders the cells; their players only set a property).
+// After every render that rebuilds the slots or changes the filled one, the same rule lets the store
+// drop a source no longer heard (`syncSlots`: a rotation, a step, a trigger switch, the camera gone,
+// offline or its mic off, a View switch, or another cell filled — filling mutes every other cell,
+// user decision 2026-11-16), so audio never follows a cell onto another camera, even one that rotates
+// back. Unmounting — leaving the Live screen or opening the View editor — mutes everything. `M` mutes
+// all (features/audio/muteShortcut.ts), heard only while a cell is unmuted, like `Esc` only while
+// filled.
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type JSX } from 'react'
 import type { Camera } from '@shared/ipc'
 import type { View } from '@shared/models'
 import { isQuality, type Quality, type QualityDefaults, type StreamQuality } from '@shared/quality'
 import { cellRect, layoutGrid, type Rect } from '@shared/viewLayout'
 import { useAppStore } from '../../state/appStore'
+import { audioActions, isSlotAudible, useAudioStore } from '../../state/audioStore'
+import { isMuteAllKey } from '../audio/muteShortcut'
 import { viewsActions, type ViewResult } from '../../state/viewsStore'
 import { Cell } from '../cells/Cell'
 import { MissingCell } from '../cells/MissingCell'
@@ -244,6 +259,46 @@ export function GridView({ view, cameras, streams }: GridViewProps): JSX.Element
     [view.id, setFillPick],
   )
 
+  // AUD-2/3 (header): the source, and the level.
+  const activeAudio = useAudioStore((state) => state.active)
+  const volume = useAudioStore((state) => state.volume)
+  const viewId = view.id
+  // After the slots are drawn, a source no longer heard — or not the filled slot — is dropped.
+  useLayoutEffect(() => {
+    audioActions.syncSlots(viewId, slots, filledKey)
+  }, [viewId, slots, filledKey])
+  // Leaving the Live screen, or the editor replacing the grid: nothing stays audible.
+  useEffect(
+    () => () => {
+      audioActions.muteAll()
+    },
+    [],
+  )
+
+  const onAudioToggle = useCallback(
+    (slotKey: string, cameraId: string, unmute: boolean): void => {
+      const source = { viewId: view.id, slotKey, cameraId }
+      if (unmute) audioActions.unmute(source)
+      else audioActions.mute(source)
+    },
+    [view.id],
+  )
+
+  // AUD-3's `M`: listening only while a cell is unmuted, so the key is free otherwise.
+  const anyAudible = activeAudio !== null
+  useEffect(() => {
+    if (!anyAudible) return undefined
+    const onKeyDown = (event: KeyboardEvent): void => {
+      if (!isMuteAllKey(event, keyEventTarget(event.target))) return
+      event.preventDefault()
+      audioActions.muteAll()
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => {
+      window.removeEventListener('keydown', onKeyDown)
+    }
+  }, [anyAudible])
+
   // FILL-1's `Esc`: listening only while something is filled, so the key is free otherwise.
   useEffect(() => {
     if (!isFilled) return undefined
@@ -281,6 +336,8 @@ export function GridView({ view, cameras, streams }: GridViewProps): JSX.Element
             const filled = slot.key === filledKey
             // Under the filled cell: still playing, not reachable (header).
             const covered = isFilled && !filled
+            // The same rule the store syncs by (header).
+            const audible = isSlotAudible(activeAudio, view.id, slot, filledKey)
             return (
               <div
                 key={slot.key}
@@ -312,6 +369,9 @@ export function GridView({ view, cameras, streams }: GridViewProps): JSX.Element
                   // pinned anyway; a covered one or a zero-size one would open a stream for a
                   // picture nobody is looking at.
                   canPrewarm={!filled && !covered && drawable}
+                  audible={audible}
+                  volume={volume}
+                  onAudioToggle={onAudioToggle}
                 />
               </div>
             )
@@ -360,6 +420,9 @@ function SlotContent({
   onSaveFillQuality,
   onStep,
   canPrewarm,
+  audible,
+  volume,
+  onAudioToggle,
 }: {
   readonly slot: GridSlot
   /** VIEW-8: the View's `showNames`. */
@@ -377,6 +440,11 @@ function SlotContent({
   readonly onStep: (slotKey: string, direction: StepDirection) => void
   /** P4.4: whether this slot may pre-warm its next camera (visible, not filled, not covered). */
   readonly canPrewarm: boolean
+  /** AUD-2: this slot, with the camera it shows, is the one heard. */
+  readonly audible: boolean
+  /** AUD-3: the app-wide level (header). */
+  readonly volume: number
+  readonly onAudioToggle: (slotKey: string, cameraId: string, unmute: boolean) => void
 }): JSX.Element {
   switch (slot.kind) {
     case 'camera': {
@@ -408,6 +476,11 @@ function SlotContent({
           // one or a zero-size one (`canPrewarm`).
           prewarmCameraId={canPrewarm ? (slot.prewarm?.cameraId ?? null) : null}
           prewarmQuality={canPrewarm ? (slot.prewarm?.quality ?? null) : null}
+          audio={slot.audio}
+          audible={audible}
+          volume={volume}
+          onAudioToggle={onAudioToggle}
+          onVolumeChange={audioActions.setVolume}
         />
       )
     }

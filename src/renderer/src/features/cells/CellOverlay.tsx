@@ -5,12 +5,14 @@
 // What is in the strip, and when the rest arrives. Everything is passed in by `<Cell>` as `children`,
 // in its order — in fill, left to right: the zoom's reset to 100% (P3.6, ZOOM-2; disabled at 1×),
 // fill's back control (P3.5, FILL-1, a 2×2 grid icon), a multi-camera cell's previous / `2/4` / next
-// (P4.3, CELL-2/3, ./CellStepControls), and the fill quality picker with its Save after it (QUAL-5); in the grid, the
-// position group and the cell's own quality picker (QUAL-4). The quality badge (QUAL-7, e.g. `PKG`)
+// (P4.3, CELL-2/3, ./CellStepControls), the mute toggle and the volume slider (P5.1, AUD-1/2/3,
+// ./AudioControls; only on a camera with audio, the slider only in fill), and the fill quality
+// picker with its Save after it (QUAL-5); in the grid, the position group, the mute toggle and the
+// cell's own quality picker (QUAL-4). The quality badge (QUAL-7, e.g. `PKG`)
 // comes last, and only where no picker already shows the quality: a package-channel cell (the user's
 // call, 2026-11-16; the pickers carry the per-quality colour instead). The back control used to sit
-// apart, top centre; it is in the strip now, after "100%", by the same call. Later tasks add mute (P5.1,
-// AUD) and unlock (P5.3, DOOR); a per-cell motion badge was deferred to after the prototype (user
+// apart, top centre; it is in the strip now, after "100%", by the same call. A later task adds
+// unlock (P5.3, DOOR); a per-cell motion badge was deferred to after the prototype (user
 // decision 2026-11-15). No placeholder buttons until then, and no control shown while it would do
 // nothing (the 100% control at 1×, next / previous on a one-camera cell): a control that does
 // nothing is a control someone presses. A strip with no controls draws no empty slot (cells.css).

@@ -1,4 +1,4 @@
-// `<LivePlayer cameraId quality muted fit? />` — one camera, one quality, live (P2.3; QUAL-6, FILL-2,
+// `<LivePlayer cameraId quality muted volume? fit? />` — one camera, one quality, live (P2.3; QUAL-6, FILL-2,
 // CAM-3, NFR-5/7, R1/R7, gate G2).
 //
 // The shell around `playerMachine.ts`. It does three jobs and holds no rules of its own: turn props
@@ -25,6 +25,12 @@
 // incoming one underneath it with `--pending` (attached, decoding, hidden and muted). The machine
 // promotes it on its first frame and drops the old one in the same step, which is what QUAL-6's
 // "keeps playing until the new one renders its first frame" means in DOM terms.
+//
+// **Audio** (P5.1; AUD-1/2/3). `muted` and `volume` are the caller's — the single-active-audio rule
+// is state/audioStore.ts, applied by `<GridView>` / `<Cell>` — and both are element properties set by
+// the controller, never effect dependencies of the stream: a mute or a volume drag never reconnects.
+// Whatever `muted` says, only the visible layer can be heard: an incoming (`--pending`) layer is
+// always muted (`applyLayerRoles`).
 import { useEffect, useRef, useState, type JSX } from 'react'
 import type { IpcError } from '@shared/ipc'
 import type { Fit } from '@shared/models'
@@ -56,8 +62,10 @@ export interface LivePlayerProps {
   readonly cameraId: string
   /** The **effective** quality, resolved by the caller (QUAL-2/3/5). Changing it swaps seamlessly. */
   readonly quality: StreamQuality
-  /** Phase 5 owns the single-active-audio policy (AUD-1); this is just the element's state. */
+  /** The single-active-audio policy is the caller's (AUD-1/2, header); this is just the element's state. */
   readonly muted: boolean
+  /** AUD-3: 0…1, already clamped (state/audioStore.ts). Default 1. Never rebuilds the player. */
+  readonly volume?: number
   /**
    * VIEW-5: how a picture whose shape is not the box's sits in it — letterboxed (`contain`, the
    * default: never hide part of a camera unless asked) or cropped to fill (`cover`). Pure CSS on the
@@ -70,6 +78,7 @@ export function LivePlayer({
   cameraId,
   quality,
   muted,
+  volume = 1,
   fit = 'contain',
 }: LivePlayerProps): JSX.Element {
   // CAM-3 comes from the inventory's `state`, never from whether a stream started: `camerasStore`
@@ -85,11 +94,11 @@ export function LivePlayer({
 
   // Props for the controller's construction only. A ref rather than effect dependencies: the
   // controller owns DOM elements and a WebSocket, so it must be built once per camera and not torn
-  // down because `muted` changed (every rebuild is a reconnect the viewer sees).
-  const propsRef = useRef({ quality, muted, availability })
+  // down because `muted` or `volume` changed (every rebuild is a reconnect the viewer sees).
+  const propsRef = useRef({ quality, muted, volume, availability })
   useEffect(() => {
-    propsRef.current = { quality, muted, availability }
-  }, [quality, muted, availability])
+    propsRef.current = { quality, muted, volume, availability }
+  }, [quality, muted, volume, availability])
 
   useEffect(() => {
     const container = containerRef.current
@@ -99,6 +108,7 @@ export function LivePlayer({
       cameraId,
       quality: propsRef.current.quality,
       muted: propsRef.current.muted,
+      volume: propsRef.current.volume,
       onPlaceholder: setPlaceholder,
     })
     controllerRef.current = controller
@@ -131,9 +141,11 @@ export function LivePlayer({
     controllerRef.current?.dispatch({ type: 'sync', quality, camera: availability })
   }, [cameraId, quality, availability])
 
+  // One update for both, so an unmute never plays a moment at the old level: the volume is on the
+  // element before, or with, `muted` turning off.
   useEffect(() => {
-    controllerRef.current?.setMuted(muted)
-  }, [muted])
+    controllerRef.current?.setAudio(muted, volume)
+  }, [muted, volume])
 
   return (
     <div className={fit === 'cover' ? 'livePlayer livePlayer--cover' : 'livePlayer'}>
@@ -159,7 +171,8 @@ export function LivePlayer({
 interface PlayerController {
   dispatch: (event: PlayerEvent) => void
   pollStalls: () => void
-  setMuted: (muted: boolean) => void
+  /** The visible layer's audio: volume applied first, then `muted` (header). */
+  setAudio: (muted: boolean, volume: number) => void
   dispose: () => void
 }
 
@@ -186,6 +199,7 @@ function createPlayerController(input: {
   readonly cameraId: string
   readonly quality: StreamQuality
   readonly muted: boolean
+  readonly volume: number
   readonly onPlaceholder: (placeholder: PlayerPlaceholder | null) => void
 }): PlayerController {
   let state: PlayerState = initialPlayerState({
@@ -193,6 +207,7 @@ function createPlayerController(input: {
     quality: input.quality,
   })
   let muted = input.muted
+  let volume = input.volume
   let disposed = false
   const layers = new Map<number, ControllerLayer>()
   /** At most one `ensureStream` is ever scheduled (see the `ensure` command), so one slot. */
@@ -292,7 +307,10 @@ function createPlayerController(input: {
       layer.element.classList.toggle(PENDING_LAYER_CLASS, !visible)
       // A layer that is not the one on screen is always muted, whatever `muted` says: a swap would
       // otherwise play two copies of the same camera's audio for as long as it takes to render a
-      // frame. The single-active-audio policy across cells is Phase 5's (AUD-1).
+      // frame. The single-active-audio policy across cells is the caller's (AUD-2, header). The
+      // volume is the same on every layer, so a promoted layer is already at it, and it is set
+      // before `muted` so an unmute starts at the right level.
+      layer.element.setVolume(volume)
       layer.element.setMuted(visible ? muted : true)
     }
   }
@@ -332,8 +350,9 @@ function createPlayerController(input: {
         if (paint.overdue) dispatch({ type: 'firstFrameTimeout', id })
       }
     },
-    setMuted: (next: boolean) => {
-      muted = next
+    setAudio: (nextMuted: boolean, nextVolume: number) => {
+      muted = nextMuted
+      volume = nextVolume
       applyLayerRoles()
     },
     dispose: () => {

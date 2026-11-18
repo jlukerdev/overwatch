@@ -50,6 +50,7 @@ const SLOTS: GridSlot[] = [
     qualityChoice: { override: null, inherited: 'low' },
     position: { index: 0, count: 1 },
     prewarm: null,
+    audio: false,
   },
   {
     kind: 'missing',

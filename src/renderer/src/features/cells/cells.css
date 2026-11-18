@@ -203,6 +203,35 @@
 }
 
 /*
+ * AUD-2's mute toggle (P5.1, AudioControls.tsx): the back control's chip. While the cell is the one
+ * heard it takes the accent, so the one audible cell on a wall is easy to find.
+ */
+.cellOverlay__back[data-audible='true'] {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+/*
+ * AUD-3's volume slider, filled only: a compact native range on the chips' dark backing, the
+ * accent for its track and thumb.
+ */
+.cellOverlay__volume {
+  width: 5.5rem;
+  height: 1.25rem;
+  margin: 0;
+  padding: 0 0.35rem;
+  border-radius: var(--radius);
+  background: rgb(0 0 0 / 55%);
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+.cellOverlay__volume:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+/*
  * A multi-camera cell's previous / position / next (P4.3; CELL-3, CellStepControls.tsx): the back
  * control's chips either side of the position, drawn like the name's chip. Tighter than the strip's
  * own gap so the three read as one control.

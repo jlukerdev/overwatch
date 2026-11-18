@@ -149,7 +149,7 @@ AUD-1…3, DOOR-0…5
 
 | # | Task |
 |---|---|
-| P5.1 | Single-active-audio controller, volume in fill mode, `M` mute-all |
+| P5.1 | Single-active-audio controller, volume in fill mode, `M` mute-all. User decisions (2026-11-16): a camera change in the unmuted cell (rotation, step, trigger, camera missing) mutes it, so audio never follows a cell onto another camera; one app-wide volume, session only, 100% on launch, slider only while filled; `M` mutes all and is not a toggle (no-op with nothing unmuted), ignored while typing, with Ctrl/Cmd/Alt and on repeat, Live screen only. Review decisions (2026-11-16): the mute toggle shows only while the camera is connected, and a heard camera going offline is muted; filling a cell mutes every other cell; no mute on package-channel cells; switching off the heard camera's mic mutes it. Audio/video offset seen in-app matches Protect's own web app (camera-side), not pursued |
 | P5.2 | "Enable UniFi Access" switch (DOOR-0) + token field + Access base URL override, then door link settings (camera → door), all hidden while disabled |
 | P5.3 | Press-and-hold unlock control + result toast + `unlock.log` |
 

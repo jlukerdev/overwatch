@@ -21,6 +21,8 @@
 //    already shown, for a slot not in the map, and never on a missing slot.
 //  - a camera the inventory no longer has gets a `missing` slot, not a player; so does a package
 //    ref to a camera without `hasPackageCamera`.
+//  - (P5.1, AUD-1) a camera slot has audio only when its camera has a mic and it is on, and never
+//    for a package ref.
 import type { Camera } from '@shared/ipc'
 import type { Cell, View } from '@shared/models'
 import { PACKAGE_CHANNEL, type QualityDefaults } from '@shared/quality'
@@ -481,5 +483,32 @@ describe('buildViewSlots: pre-warm (P4.4)', () => {
     const slot = build(v, new Map([[key, 'b']]), new Map([[key, 1]]))[0]
     expect(slot?.kind).toBe('missing')
     expect(slot).not.toHaveProperty('prewarm')
+  })
+})
+
+describe('buildViewSlots: audio (P5.1, AUD-1)', () => {
+  const cameras: Camera[] = [
+    camera({ id: 'on', hasMic: true, micEnabled: true, hasPackageCamera: true }),
+    camera({ id: 'off', hasMic: true, micEnabled: false }),
+    camera({ id: 'none', hasMic: false, micEnabled: true }),
+  ]
+
+  it('has audio only for a camera with a mic that is switched on', () => {
+    const result = slots(view(3, 1, ['on', 'off', 'none']), cameras)
+    expect(result.map((s) => cameraSlot(s).audio)).toEqual([true, false, false])
+  })
+
+  it('has no audio while the camera is offline or connecting (user decision 2026-11-16)', () => {
+    const states: Camera[] = [
+      camera({ id: 'up', hasMic: true, micEnabled: true }),
+      camera({ id: 'down', hasMic: true, micEnabled: true, state: 'DISCONNECTED' }),
+      camera({ id: 'wait', hasMic: true, micEnabled: true, state: 'CONNECTING' }),
+    ]
+    const result = slots(view(3, 1, ['up', 'down', 'wait']), states)
+    expect(result.map((s) => cameraSlot(s).audio)).toEqual([true, false, false])
+  })
+
+  it('never has audio on a package ref', () => {
+    expect(cameraSlot(slots(view(1, 1, [`on:${PACKAGE_CHANNEL}`]), cameras)[0]).audio).toBe(false)
   })
 })

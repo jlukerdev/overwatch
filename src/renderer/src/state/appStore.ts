@@ -10,6 +10,7 @@
 // failure next to the control the user just used without reading an error out of global state.
 import { create } from 'zustand'
 import {
+  emptyDoorsScreenState,
   ipcFail,
   type AcceptCertInput,
   type AppState,
@@ -17,8 +18,12 @@ import {
   type CameraStateChange,
   type ConnectionStatus,
   type ConsoleInput,
-  type Door,
+  type DoorActionInput,
+  type DoorActionResult,
+  type DoorEmergencyInput,
+  type DoorEmergencyResult,
   type DoorStates,
+  type DoorsScreenState,
   type IpcError,
   type IpcResult,
   type PinCheck,
@@ -26,6 +31,7 @@ import {
   type SecretInput,
   type SecretKeyInput,
   type SecretsStored,
+  type SetAccessPollingInput,
   type SetDoorLinksInput,
   type SetStreamsInput,
   type SetViewsInput,
@@ -58,11 +64,19 @@ export interface AppStoreState {
    * `{}` while the Live screen is not watching ({@link AppStoreState.watchDoors}).
    */
   doorStates: DoorStates
+  /**
+   * P5.6: everything the Doors screen draws that comes from the console (the door list, their
+   * rules, the emergency status, why the list cannot be read), as main last sent it. Everything
+   * unknown (`emptyDoorsScreenState()`) while the screen is not open
+   * ({@link AppStoreState.watchDoorsScreen}).
+   */
+  doorsScreen: DoorsScreenState
 
   /** Load (or reload) everything. Safe to call again; the UI calls it once on mount. */
   load: () => Promise<void>
   /**
-   * Subscribes to main's pushes (status, inventory, camera state, door states). Returns the unsubscribe, so the
+   * Subscribes to main's pushes (status, inventory, camera state, door states, the Doors screen's
+   * state). Returns the unsubscribe, so the
    * caller is an effect in the app shell — not every screen, or a reconnect would fan out.
    */
   subscribe: () => () => void
@@ -91,12 +105,6 @@ export interface AppStoreState {
   setViews: (input: SetViewsInput) => Promise<IpcResult<AppState>>
   /** VIEW-4/6: switch the active View. */
   setLastView: (viewId: string | null) => Promise<IpcResult<AppState>>
-  /**
-   * DOOR-1: read the Access doors. Not folded into the store: the list belongs to Settings'
-   * door-link card, which reads it once per visit (SPEC §5.2). The Access status it moves arrives
-   * as the usual `connection` push.
-   */
-  listDoors: () => Promise<IpcResult<Door[]>>
   /** DOOR-2: persist the whole camera → door map. */
   setDoorLinks: (input: SetDoorLinksInput) => Promise<IpcResult<AppState>>
   /**
@@ -116,12 +124,35 @@ export interface AppStoreState {
    * never unlocks anything (DOOR-4).
    */
   watchDoors: (watching: boolean) => Promise<IpcResult<DoorStates>>
+  /**
+   * P5.6: tell main whether the Doors screen is open (features/doors/useDoorsScreenWatch.ts is the
+   * only caller). `true` makes main read every door, their rules and the emergency status, and
+   * folds what it knows now into `doorsScreen`; later changes arrive as `doorsScreen` pushes.
+   * `false` ends that. The same guards as {@link AppStoreState.watchDoors}: `doorsScreen` is
+   * emptied at once when closing and when a call fails, pushes are dropped while closed, only the
+   * **latest** call's answer is folded in, and an answer a push overtook does not undo the push.
+   * A read only: it never changes a door (DOOR-4).
+   */
+  watchDoorsScreen: (open: boolean) => Promise<IpcResult<DoorsScreenState>>
+  /**
+   * DOOR-3 (P5.6): one action on one door, once — only from the Doors screen after its confirm
+   * dialog, never from a timer, a shortcut alone or a retry (DOOR-4). Not folded into the store:
+   * the result is the toast's, and the door's new state arrives as a `doorsScreen` push.
+   */
+  doorAction: (input: DoorActionInput) => Promise<IpcResult<DoorActionResult>>
+  /** DOOR-3 (P5.6): lockdown / evacuation of every door, once, under the same rules. */
+  setDoorEmergency: (input: DoorEmergencyInput) => Promise<IpcResult<DoorEmergencyResult>>
+  /** DOOR-6 (P5.6): persist the Access read intervals; main applies them without a restart. */
+  setAccessPolling: (input: SetAccessPollingInput) => Promise<IpcResult<AppState>>
 }
 
 const NO_SECRETS: SecretsStored = { protectApiKey: false, accessToken: false }
 
 /** One object for "no door state known", so emptying an empty map re-renders nothing. */
 const NO_DOOR_STATES: DoorStates = {}
+
+/** One object for "the Doors screen knows nothing", for the same reason. */
+const NO_DOORS_SCREEN: DoorsScreenState = emptyDoorsScreenState()
 
 /**
  * The bridge, read per call rather than captured at module load. That is not a style choice: this
@@ -150,6 +181,11 @@ export const useAppStore = create<AppStoreState>()((set, get) => {
   let doorWatchCalls = 0
   let doorPushes = 0
 
+  // P5.6 (`watchDoorsScreen`): the same three, for the Doors screen's state.
+  let doorsScreenOpen = false
+  let doorsScreenCalls = 0
+  let doorsScreenPushes = 0
+
   /** Folds a mutating call's `AppState` into the store and passes the result through unchanged. */
   const fold = (result: IpcResult<AppState>): IpcResult<AppState> => {
     if (result.ok) set(fromAppState(result.value))
@@ -166,6 +202,7 @@ export const useAppStore = create<AppStoreState>()((set, get) => {
     connection: null,
     cameras: [],
     doorStates: NO_DOOR_STATES,
+    doorsScreen: NO_DOORS_SCREEN,
 
     load: async () => {
       const before = pushes
@@ -214,11 +251,19 @@ export const useAppStore = create<AppStoreState>()((set, get) => {
         doorPushes += 1
         set({ doorStates })
       })
+      // P5.6: always the whole state, so it replaces ours; dropped while the screen is closed, as
+      // above. Like the door states it is no part of the `AppState` snapshot.
+      const offDoorsScreen = bridge().onDoorsScreen((doorsScreen: DoorsScreenState) => {
+        if (!doorsScreenOpen) return
+        doorsScreenPushes += 1
+        set({ doorsScreen })
+      })
       return () => {
         offConnection()
         offCameras()
         offCameraState()
         offDoorStates()
+        offDoorsScreen()
       }
     },
 
@@ -248,7 +293,6 @@ export const useAppStore = create<AppStoreState>()((set, get) => {
     setStreams: async (input) => fold(await bridge().setStreams(input)),
     setViews: async (input) => fold(await bridge().setViews(input)),
     setLastView: async (viewId) => fold(await bridge().setLastView({ viewId })),
-    listDoors: async () => bridge().listDoors(),
     setDoorLinks: async (input) => fold(await bridge().setDoorLinks(input)),
     unlockDoor: async (input) => bridge().unlockDoor(input),
 
@@ -273,6 +317,33 @@ export const useAppStore = create<AppStoreState>()((set, get) => {
       else if (doorPushes === pushesBefore) set({ doorStates: result.value })
       return result
     },
+
+    watchDoorsScreen: async (open) => {
+      doorsScreenCalls += 1
+      const call = doorsScreenCalls
+      const pushesBefore = doorsScreenPushes
+      doorsScreenOpen = open
+      // Closing: nothing is known from here on, whatever main answers and whenever.
+      if (!open) set({ doorsScreen: NO_DOORS_SCREEN })
+      let result: IpcResult<DoorsScreenState>
+      try {
+        result = await bridge().watchDoorsScreen({ open })
+      } catch {
+        // The bridge itself failed (not an `IpcResult`): the same as a failed call.
+        result = ipcFail('internal', 'The app could not ask for the doors.')
+      }
+      // A later call owns the state now.
+      if (call !== doorsScreenCalls) return result
+      if (!open || !result.ok) set({ doorsScreen: NO_DOORS_SCREEN })
+      // A push that landed while the call was out is newer than its answer.
+      else if (doorsScreenPushes === pushesBefore) set({ doorsScreen: result.value })
+      return result
+    },
+
+    // DOOR-3/4: passed straight through. Nothing here repeats, queues or times either call.
+    doorAction: async (input) => bridge().doorAction(input),
+    setDoorEmergency: async (input) => bridge().setDoorEmergency(input),
+    setAccessPolling: async (input) => fold(await bridge().setAccessPolling(input)),
   }
 })
 

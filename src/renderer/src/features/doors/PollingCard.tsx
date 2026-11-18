@@ -1,0 +1,141 @@
+// The Doors screen's Polling card (P5.6; DOOR-6): how often main reads the Access door API. Four
+// whole-second fields, each with its allowed range, a Save button and "Reset to defaults".
+//
+// This one *is* a form, unlike the rest of the screen: nothing is saved as you type (a half-typed
+// `1` of `15` would be an interval main starts using at once), field validation sits under its
+// field as `.field__error`, and Save's outcome is a `StatusLine`, not a toast. "Reset to defaults"
+// only fills the fields; it still needs Save. The rules are ./pollingForm.ts's, and main validates
+// the payload again and applies it without a restart.
+import { useState, type JSX } from 'react'
+import type { IpcError } from '@shared/ipc'
+import { ACCESS_POLLING_FIELDS, type AccessPolling } from '@shared/models'
+import { useAppStore } from '../../state/appStore'
+import { SaveIcon, UndoIcon } from '../../ui/icons'
+import { StatusLine } from '../../ui/StatusLine'
+import {
+  defaultPollingDraft,
+  POLLING_LABELS,
+  pollingCanSave,
+  pollingDraftFrom,
+  pollingFieldError,
+  pollingInputFrom,
+  pollingRangeText,
+  type PollingDraft,
+} from './pollingForm'
+
+type Outcome = { readonly ok: true } | { readonly ok: false; readonly error: IpcError }
+
+export function PollingCard({ polling }: { polling: AccessPolling }): JSX.Element {
+  const setAccessPolling = useAppStore((s) => s.setAccessPolling)
+  const [draft, setDraft] = useState<PollingDraft>(() => pollingDraftFrom(polling))
+  const [saving, setSaving] = useState(false)
+  const [outcome, setOutcome] = useState<Outcome | null>(null)
+
+  const canSave = pollingCanSave(draft, polling) && !saving
+  const defaults = defaultPollingDraft()
+  const atDefaults = ACCESS_POLLING_FIELDS.every((field) => draft[field] === defaults[field])
+
+  const save = async (): Promise<void> => {
+    const input = pollingInputFrom(draft)
+    if (input === null || !canSave) return
+    setSaving(true)
+    setOutcome(null)
+    try {
+      const result = await setAccessPolling(input)
+      setOutcome(result.ok ? { ok: true } : { ok: false, error: result.error })
+      // What was saved, as main normalised it ("05" becomes "5").
+      if (result.ok) setDraft(pollingDraftFrom(result.value.settings.accessPolling))
+    } catch (err) {
+      setOutcome({
+        ok: false,
+        error: {
+          kind: 'internal',
+          message: err instanceof Error ? err.message : 'An unexpected error occurred.',
+          endpoint: null,
+          retryable: true,
+        },
+      })
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <section className="card doors__polling" aria-labelledby="doors-polling-title">
+      <h3 className="card__title" id="doors-polling-title">
+        Polling
+      </h3>
+      <p className="card__hint">
+        How often the app checks the console. Shorter intervals show changes sooner and ask the
+        console more often.
+      </p>
+      <form
+        noValidate
+        onSubmit={(event) => {
+          event.preventDefault()
+          void save()
+        }}
+      >
+        <div className="doors__pollingFields">
+          {ACCESS_POLLING_FIELDS.map((field) => {
+            const id = `doors-polling-${field}`
+            const error = pollingFieldError(field, draft[field])
+            return (
+              <div key={field} className="field">
+                <label className="field__label" htmlFor={id}>
+                  {POLLING_LABELS[field]}
+                </label>
+                <input
+                  id={id}
+                  className="field__input doors__pollingInput"
+                  type="number"
+                  inputMode="numeric"
+                  step={1}
+                  value={draft[field]}
+                  aria-invalid={error === null ? undefined : true}
+                  aria-describedby={`${id}-hint`}
+                  onChange={(event) => {
+                    setDraft({ ...draft, [field]: event.target.value })
+                    // The line is about the last save, not about what is being typed now.
+                    setOutcome(null)
+                  }}
+                />
+                <span id={`${id}-hint`} className={error === null ? 'field__hint' : 'field__error'}>
+                  {error ?? pollingRangeText(field)}
+                </span>
+              </div>
+            )
+          })}
+        </div>
+        <div className="row doors__pollingActions">
+          <button type="submit" className="button button--primary" disabled={!canSave}>
+            <SaveIcon />
+            {saving ? 'Saving…' : 'Save'}
+          </button>
+          <button
+            type="button"
+            className="button"
+            disabled={atDefaults || saving}
+            title={atDefaults ? 'The fields already hold the defaults.' : undefined}
+            onClick={() => {
+              setDraft(defaults)
+              setOutcome(null)
+            }}
+          >
+            <UndoIcon />
+            Reset to defaults
+          </button>
+          {outcome === null ? null : outcome.ok ? (
+            <StatusLine kind="ok" role="status">
+              Saved. The new intervals are in use.
+            </StatusLine>
+          ) : (
+            <StatusLine kind="error" role="alert">
+              {outcome.error.message}
+            </StatusLine>
+          )}
+        </div>
+      </form>
+    </section>
+  )
+}

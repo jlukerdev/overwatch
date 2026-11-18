@@ -23,18 +23,21 @@
 //     patch its own copy and drift from main.
 import { z } from 'zod'
 import {
+  ACCESS_POLLING_BOUNDS,
   CameraEventSchema,
   CameraSchema,
   CameraStateChangeSchema,
+  DoorEmergencySchema,
   DoorLinksSchema,
+  DoorRuleSchema,
   DoorSchema,
   DoorStatesSchema,
   SettingsSchema,
   ViewSchema,
+  type AccessPollingField,
   type Camera,
   type CameraEvent,
   type CameraStateChange,
-  type Door,
   type DoorStates,
 } from './models'
 import { PACKAGE_CHANNEL, QualitySchema, StreamQualitySchema } from './quality'
@@ -593,6 +596,199 @@ export const WatchDoorsInputSchema = z.object({ watching: z.boolean() })
 export type WatchDoorsInput = z.infer<typeof WatchDoorsInputSchema>
 
 // -------------------------------------------------------------------------------------------------
+// The Doors screen (P5.6)
+
+/**
+ * P5.6: the Doors screen says whether it is open. `true` makes main's door-state monitor run for
+ * it (whether or not the Live screen is watching too) and track **every** door `GET /doors`
+ * returns; `false` ends that. The two watchers are independent flags: the renderer unmounts one
+ * screen and mounts the other in either order. Nothing is read while Access is off (DOOR-0).
+ */
+export const WatchDoorsScreenInputSchema = z.object({ open: z.boolean() })
+export type WatchDoorsScreenInput = z.infer<typeof WatchDoorsScreenInputSchema>
+
+/**
+ * P5.6: everything the Doors screen draws that comes from the console, always as one whole object
+ * (the answer of `watchDoorsScreen` and the payload of `IPC_EVENTS.doorsScreen`).
+ *
+ *  - `doors`: the door list main last read successfully from the **current** Access endpoint
+ *    (`DoorSchema`: name, hub, relay, position), or `null` until the first read works, and again
+ *    after the screen closes, the reading stops or halts, or the console, its certificate or the
+ *    token changes. This list is also what `doorAction` checks a door id against.
+ *  - `stale`: `true` once two reads in a row have failed. The list (the names) is kept, but every
+ *    `relay` and `position` in it is then old and **must be drawn as unknown**, never as locked or
+ *    unlocked. Back to `false` with the next read that works.
+ *  - `rules`: `{ "<doorId>": rule }` from `GET /doors/{id}/lock_rule`. A door **missing** from the
+ *    map has an unknown rule (not read yet, the read failed, or the console is older than Access
+ *    1.24.6 and has no such endpoint). `type: ''` is the console saying there is no rule.
+ *  - `emergency`: lockdown / evacuation of all doors, or `null` when unknown (not read yet, the
+ *    read failed, or an older console).
+ *  - `error`: why the door list cannot be read, while it cannot — the last failed read, or the
+ *    reason nothing is being read at all (`disabled`, `not-configured`, `auth` for a missing or
+ *    rejected token, `pin-required`, `pin-mismatch`, a network kind, …) — so the screen can say
+ *    what to fix. `null` once a read works. While there is a list, a failing read is reported
+ *    **only together with `stale`**, from the second failure in a row (user decision 2026-11-18:
+ *    one lost poll is not news); with `doors: null` the reason is set at once, since it is all
+ *    the screen has to show.
+ *
+ * No secret is in here (rule 1): ids, names and states only.
+ */
+export const DoorsScreenStateSchema = z.object({
+  doors: z.array(DoorSchema).nullable(),
+  stale: z.boolean(),
+  rules: z.record(z.string().min(1), DoorRuleSchema),
+  emergency: DoorEmergencySchema.nullable(),
+  error: IpcErrorSchema.nullable(),
+})
+export type DoorsScreenState = z.infer<typeof DoorsScreenStateSchema>
+
+/** What the Doors screen is told while nothing is known: closed, not started, or stopped. */
+export function emptyDoorsScreenState(): DoorsScreenState {
+  return { doors: null, stale: false, rules: {}, emergency: null, error: null }
+}
+
+/**
+ * What the Doors screen may ask of one door (DOOR-3, P5.6):
+ *  - `unlock`: release the door once, as the cell's unlock control does (`PUT …/unlock`).
+ *  - `lock`: lock it now. Main picks the lock rule that undoes what is holding it unlocked
+ *    (`DoorActionResult.sent` says which).
+ *  - `keep_unlock` / `keep_lock`: hold it unlocked / locked until changed.
+ *  - `custom`: hold it unlocked for `minutes`.
+ *  - `reset`: end a temporary rule (`keep_unlock`, `keep_lock`, `custom`).
+ */
+export const DOOR_ACTIONS = [
+  'unlock',
+  'lock',
+  'keep_unlock',
+  'keep_lock',
+  'custom',
+  'reset',
+] as const
+export const DoorActionSchema = z.enum(DOOR_ACTIONS)
+export type DoorAction = z.infer<typeof DoorActionSchema>
+
+/** Longest `custom` unlock the app will ask for: 24 hours, in minutes. */
+export const MAX_DOOR_CUSTOM_MINUTES = 1440
+
+/**
+ * Longest door id `vp:doors/action` accepts. An Access id is a UUID (36 characters); the cap is
+ * there because an id main refuses is still written, whole, to `unlock.log` (DOOR-5), and a line
+ * of that file must not be as long as a renderer bug cares to make it.
+ */
+export const MAX_DOOR_ID_LENGTH = 200
+
+/**
+ * DOOR-3/4/5 (P5.6): one action on one door, from the Doors screen, after its `ConfirmDialog`.
+ *
+ * **This call names a door id**, which the cell's unlock deliberately does not (`UnlockDoorInput`).
+ * It has to: a door with no linked camera has nothing else to be named by. What replaces the
+ * saved-link check is that main only acts on an id **it has itself read from the current console**
+ * while the Doors screen is open (`DoorsScreenState.doors`); any other id is `not-found` with no
+ * Access call, so a renderer bug cannot reach a door the console did not list to this app.
+ *
+ * `minutes` is required for `custom` and refused for every other action (so a stray number cannot
+ * ride along on a `keep_unlock`): whole minutes, 1 to {@link MAX_DOOR_CUSTOM_MINUTES}.
+ *
+ * `doorId` is 1 to {@link MAX_DOOR_ID_LENGTH} characters: compared against main's list, never
+ * interpreted, and bounded because a refused one is logged as received.
+ */
+export const DoorActionInputSchema = z
+  .object({
+    doorId: z.string().min(1).max(MAX_DOOR_ID_LENGTH),
+    action: DoorActionSchema,
+    minutes: z.int().min(1).max(MAX_DOOR_CUSTOM_MINUTES).optional(),
+  })
+  .refine((input) => (input.action === 'custom') === (input.minutes !== undefined), {
+    path: ['minutes'],
+    message: 'minutes is required for the custom action and not allowed for any other',
+  })
+export type DoorActionInput = z.infer<typeof DoorActionInputSchema>
+
+/**
+ * What main actually sent for a door action: `unlock` is `PUT /doors/{id}/unlock`, the rest are the
+ * `type` of a `PUT /doors/{id}/lock_rule` (reference §7.10). A `lock` request is **always**
+ * `lock_now` (user decision 2026-11-18), which the reference says ends both an unlock schedule and
+ * any temporary unlock at once: choosing `reset` or `lock_early` from the rule main last read
+ * could be a silent no-op when that rule was out of date. `reset` is only ever the explicit
+ * "Back to normal" action, and the app never sends `lock_early`.
+ */
+export const DOOR_ACTIONS_SENT = [
+  'unlock',
+  'lock_now',
+  'reset',
+  'keep_lock',
+  'keep_unlock',
+  'custom',
+] as const
+export const DoorActionSentSchema = z.enum(DOOR_ACTIONS_SENT)
+export type DoorActionSent = z.infer<typeof DoorActionSentSchema>
+
+/**
+ * `done`: the console accepted it. `unknown`: the PUT may have reached the console but no answer
+ * came back (a timeout, or a connection lost after it was made), so **the door may have changed**;
+ * not a failure, which would invite a second try (see `UnlockOutcomeSchema`).
+ */
+export const DoorActionOutcomeSchema = z.enum(['done', 'unknown'])
+export type DoorActionOutcome = z.infer<typeof DoorActionOutcomeSchema>
+
+/**
+ * The answer of a door action that sent its PUT and was not plainly refused. `doorName` is the
+ * door's `fullName` (falling back to `name`, then the id) from the list main read; `minutes` is the
+ * `custom` duration, else `null`; `reason` is the error's safe message for `unknown`, else `null`.
+ */
+export const DoorActionResultSchema = z.object({
+  doorId: z.string(),
+  doorName: z.string(),
+  action: DoorActionSchema,
+  sent: DoorActionSentSchema,
+  minutes: z.number().nullable(),
+  outcome: DoorActionOutcomeSchema,
+  reason: z.string().nullable(),
+})
+export type DoorActionResult = z.infer<typeof DoorActionResultSchema>
+
+/**
+ * DOOR-3/4/5 (P5.6): set the emergency status of **every** door, after a `ConfirmDialog` that says
+ * so. `lockdown: true` keeps all doors locked, `evacuation: true` keeps them all unlocked, both
+ * `false` restores normal operation. Both `true` is refused here: the reference does not say what
+ * it would mean, and no dialog offers it.
+ */
+export const DoorEmergencyInputSchema = z
+  .object({ lockdown: z.boolean(), evacuation: z.boolean() })
+  .refine((input) => !(input.lockdown && input.evacuation), {
+    message: 'lockdown and evacuation cannot both be on',
+  })
+export type DoorEmergencyInput = z.infer<typeof DoorEmergencyInputSchema>
+
+/** The flags as sent, with the same `outcome` / `reason` as {@link DoorActionResultSchema}. */
+export const DoorEmergencyResultSchema = z.object({
+  lockdown: z.boolean(),
+  evacuation: z.boolean(),
+  outcome: DoorActionOutcomeSchema,
+  reason: z.string().nullable(),
+})
+export type DoorEmergencyResult = z.infer<typeof DoorEmergencyResultSchema>
+
+/**
+ * DOOR-6 (P5.6): the four Access read intervals, in whole seconds, each inside its range in
+ * `ACCESS_POLLING_BOUNDS` (./models). All four together, like `SetStreamsInputSchema` and for the
+ * same reason: written out **without defaults**, because the persisted schema forgives a missing
+ * or out-of-range field (an older or hand-edited file) while here either is a bug on the
+ * renderer's side, and defaulting it would silently reset a setting the user did not touch.
+ */
+function pollingSec(field: AccessPollingField) {
+  const bounds = ACCESS_POLLING_BOUNDS[field]
+  return z.int().min(bounds.min).max(bounds.max)
+}
+export const SetAccessPollingInputSchema = z.object({
+  withSocketSec: pollingSec('withSocketSec'),
+  withoutSocketSec: pollingSec('withoutSocketSec'),
+  unlockedSec: pollingSec('unlockedSec'),
+  detailsSec: pollingSec('detailsSec'),
+})
+export type SetAccessPollingInput = z.infer<typeof SetAccessPollingInputSchema>
+
+// -------------------------------------------------------------------------------------------------
 // The channel table
 //
 // One entry per channel: the request schema main validates and the value schema the preload
@@ -668,14 +864,6 @@ export const IPC = {
    */
   cameraStreamQualities: call('vp:cameras/rtsps', CameraIdInputSchema, RtspsAvailabilitySchema),
   /**
-   * DOOR-1 (P5.3): `GET /doors`, for Settings' door-link card. DOOR-0 first: while Access is off main
-   * makes **no** Access call and answers `disabled`. Otherwise one request through the pinned client
-   * (no pacing of its own, SPEC §5.2), and the Access endpoint status follows it the way Test
-   * connection's probe does. The card reads it once per Settings visit and on its Refresh button,
-   * never on a timer.
-   */
-  listDoors: call('vp:doors/list', NoInput, z.array(DoorSchema)),
-  /**
    * DOOR-2 (P5.3): replace the camera → door links and persist them to `config.json`. Local config
    * only — no Access call — and allowed whether Access is on or off, because the links are kept
    * while it is off (DOOR-0); the UI only shows the editor while it is on.
@@ -701,6 +889,41 @@ export const IPC = {
    * shows as doors missing from the map, and as the Access status (CON-5).
    */
   watchDoors: call('vp:doors/watch', WatchDoorsInputSchema, DoorStatesSchema),
+  /**
+   * P5.6: the Doors screen opened or closed. Answers the {@link DoorsScreenState} main has right
+   * now (everything unknown when closing, and usually on the first call); later changes arrive as
+   * `IPC_EVENTS.doorsScreen`. Like `watchDoors` it never fails for a console reason: why the list
+   * cannot be read is `DoorsScreenState.error`. While Access is off no Access call is made and the
+   * state carries a `disabled` error (DOOR-0). A reload or loss of the renderer closes it.
+   */
+  watchDoorsScreen: call('vp:doors/screen', WatchDoorsScreenInputSchema, DoorsScreenStateSchema),
+  /**
+   * DOOR-3/4/5 (P5.6): **changes a physical door.** Only ever sent by the Doors screen after its
+   * `ConfirmDialog` naming the door and the action; never from a timer, an event, a keyboard
+   * shortcut alone or a retry (DOOR-4). Main's refusals, in order, each with **no Access call**:
+   * `disabled` while Access is off (DOOR-0); `not-found` for a door id main has not itself read
+   * from the current console while the Doors screen is open; `bad-request` for a door with no hub
+   * (`boundToHub: false`). Otherwise exactly **one** PUT (`DoorActionResult.sent` says which),
+   * never retried, every failure `retryable: false`, and a PUT that may have reached the console
+   * with no answer is ok with `outcome: 'unknown'`. Every attempt, these three refusals included,
+   * gets a line in `unlock.log` (DOOR-5).
+   */
+  doorAction: call('vp:doors/action', DoorActionInputSchema, DoorActionResultSchema),
+  /**
+   * DOOR-3/4/5 (P5.6): **changes every door at once** (lockdown / evacuation, or back to normal).
+   * Only ever sent after the Doors screen's `ConfirmDialog` that says it applies to every door.
+   * `disabled` with no call while Access is off (DOOR-0); otherwise exactly **one**
+   * `PUT /doors/settings/emergency`, never retried, every failure `retryable: false`, unknown
+   * outcome as for `doorAction`, and a line in `unlock.log` either way (DOOR-5).
+   */
+  setDoorEmergency: call('vp:doors/emergency', DoorEmergencyInputSchema, DoorEmergencyResultSchema),
+  /**
+   * DOOR-6 (P5.6): persist the Access read intervals and apply them **without a restart**: the
+   * door-state monitor reads them at every scheduling decision and re-arms its pending timers, so
+   * a shorter interval takes effect now. Local config only — no Access call — and allowed while
+   * Access is off, like `setDoorLinks`.
+   */
+  setAccessPolling: call('vp:doors/polling', SetAccessPollingInputSchema, AppStateSchema),
 } as const
 
 /**
@@ -748,6 +971,14 @@ export const IPC_EVENTS = {
    * with `{}` when the monitor stops.
    */
   doorStates: { channel: 'vp:event/doorStates', payload: DoorStatesSchema },
+  /**
+   * P5.6: what the Doors screen shows changed. Always the **whole** {@link DoorsScreenState}, sent
+   * only on a change and only while the screen is open (`watchDoorsScreen`). When the reading stops
+   * while the screen is still open (Access switched off, the token cleared, a rejected token or
+   * certificate) one last state says so: `doors: null` and the reason in `error`. Closing the
+   * screen sends nothing: the `watchDoorsScreen({ open: false })` answer is the reset.
+   */
+  doorsScreen: { channel: 'vp:event/doorsScreen', payload: DoorsScreenStateSchema },
 } as const
 
 // What Phase 2 deliberately does **not** add to this contract:
@@ -804,14 +1035,20 @@ export interface ViewProtectApi {
   setStreams(input: SetStreamsInput): Promise<IpcResult<AppState>>
   /** QUAL-7: which RTSPS qualities exist for a camera. Booleans only. */
   cameraStreamQualities(input: CameraIdInput): Promise<IpcResult<RtspsAvailability>>
-  /** DOOR-1: the Access doors, or `disabled` with no call made while Access is off (DOOR-0). */
-  listDoors(): Promise<IpcResult<Door[]>>
   /** DOOR-2: the whole camera → door map, persisted. */
   setDoorLinks(input: SetDoorLinksInput): Promise<IpcResult<AppState>>
   /** DOOR-3: unlock the door linked to a camera ref, once. Never retried, never automated. */
   unlockDoor(input: UnlockDoorInput): Promise<IpcResult<UnlockResult>>
   /** DOOR-6: start or stop watching the linked doors' lock state; answers what is known now. */
   watchDoors(input: WatchDoorsInput): Promise<IpcResult<DoorStates>>
+  /** P5.6: the Doors screen opened or closed; answers what is known now. */
+  watchDoorsScreen(input: WatchDoorsScreenInput): Promise<IpcResult<DoorsScreenState>>
+  /** DOOR-3 (P5.6): one confirmed action on one door, sent once. Never retried, never automated. */
+  doorAction(input: DoorActionInput): Promise<IpcResult<DoorActionResult>>
+  /** DOOR-3 (P5.6): lockdown / evacuation of every door, sent once after a confirmation. */
+  setDoorEmergency(input: DoorEmergencyInput): Promise<IpcResult<DoorEmergencyResult>>
+  /** DOOR-6 (P5.6): the Access read intervals, persisted and applied at once. */
+  setAccessPolling(input: SetAccessPollingInput): Promise<IpcResult<AppState>>
 
   onConnection(listener: (status: ConnectionStatus) => void): Unsubscribe
   onCameras(listener: (cameras: Camera[]) => void): Unsubscribe
@@ -821,18 +1058,24 @@ export interface ViewProtectApi {
   onStreamRuntime(listener: (runtime: StreamRuntime) => void): Unsubscribe
   /** DOOR-6: the whole map of known linked-door states, on every change. */
   onDoorStates(listener: (states: DoorStates) => void): Unsubscribe
+  /** P5.6: the whole Doors screen state, on every change while the screen is open. */
+  onDoorsScreen(listener: (state: DoorsScreenState) => void): Unsubscribe
 }
 
 // Imported for the signatures above; re-exported so the renderer can take the whole contract plus
 // the domain types it carries from one module.
 export type {
+  AccessPolling,
+  AccessPollingField,
   Camera,
   CameraEvent,
   CameraStateChange,
   Cell,
   Door,
+  DoorEmergency,
   DoorLinks,
   DoorLockState,
+  DoorRule,
   DoorStates,
   Settings,
   View,

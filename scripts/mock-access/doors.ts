@@ -11,7 +11,7 @@
 //     2. emergency evacuation          -> unlock (every door)
 //     3. rule keep_lock                -> lock
 //     4. a momentary unlock is running -> unlock (PUT /unlock, or the mock-only "card tap")
-//     5. rule keep_unlock or custom    -> unlock
+//     5. rule keep_unlock, custom or schedule -> unlock
 //     6. otherwise                     -> lock   (no rule, or lock_early)
 //
 //   - unlock: momentary, `unlockMs` long, then back to whatever 1–6 give. Refused during lockdown
@@ -19,10 +19,16 @@
 //   - keep_unlock / keep_lock: until reset, lock_now or another rule. `ended_time` is a far-future
 //     constant. keep_lock also cancels a running momentary unlock.
 //   - custom: unlock for `interval` minutes, `ended_time` = now + interval, then no rule.
-//   - reset: ends keep_lock / keep_unlock / custom. It does not touch lock_early (the reference
-//     says reset is not for schedules) nor a running momentary unlock.
-//   - lock_early: the mock has no unlock schedules. It reads as: relay lock, rule
-//     `{ type: 'lock_early', ended_time: next UTC midnight }`, gone at that time.
+//   - reset: ends keep_lock / keep_unlock / custom. It does not touch schedule or lock_early (the
+//     reference says reset is not for schedules) nor a running momentary unlock.
+//   - schedule (P5.6): the reference has no API to create an unlock schedule (it is configured in
+//     the Access app), so the mock has a mock-only control for "this door is inside its unlock
+//     schedule for the next N minutes" (`startSchedule`, `POST /__mock/doors/{id}/schedule`). It
+//     reads as: relay unlock, rule `{ type: 'schedule', ended_time: now + N minutes }`, gone at
+//     that time. Any rule set through the API replaces it (the mock keeps one rule per door).
+//   - lock_early: relay lock, rule `{ type: 'lock_early', ended_time }`, gone at that time.
+//     `ended_time` is the end of the schedule it cut short when the door was inside one, and the
+//     next UTC midnight otherwise.
 //   - lock_now: ends everything (rule and momentary unlock).
 //   - no rule: `{ type: '', ended_time: 0 }`. UNDOCUMENTED, a guess (the reference does not say
 //     what GET lock_rule answers for a door without a rule).
@@ -149,6 +155,11 @@ export interface DoorStore {
   lock(id: string): void
   setPosition(id: string, position: 'open' | 'close'): void
   setLockRule(id: string, request: AccessLockRuleRequest): void
+  /**
+   * Mock-only (P5.6): puts the door inside an unlock schedule that ends in `minutes`. Relay
+   * `unlock`, rule `schedule`. Replaces any rule the door had. Throws for an unknown id.
+   */
+  startSchedule(id: string, minutes: number): void
   lockRule(id: string): AccessLockRule
   emergency(): AccessEmergencyStatus
   setEmergency(status: AccessEmergencyStatus): void
@@ -168,7 +179,8 @@ export interface DoorStoreOptions {
 }
 
 type Rule =
-  { type: 'keep_lock' | 'keep_unlock' } | { type: 'custom' | 'lock_early'; endedTime: number }
+  | { type: 'keep_lock' | 'keep_unlock' }
+  | { type: 'custom' | 'lock_early' | 'schedule'; endedTime: number }
 
 interface DoorState {
   door: AccessDoor
@@ -207,7 +219,11 @@ export function createDoorStore(options: DoorStoreOptions = {}): DoorStore {
     if (emergency.evacuation) return 'unlock'
     if (s.rule?.type === 'keep_lock') return 'lock'
     if (s.pulseTimer !== undefined) return 'unlock'
-    return s.rule?.type === 'keep_unlock' || s.rule?.type === 'custom' ? 'unlock' : 'lock'
+    return s.rule?.type === 'keep_unlock' ||
+      s.rule?.type === 'custom' ||
+      s.rule?.type === 'schedule'
+      ? 'unlock'
+      : 'lock'
   }
 
   /** Reports every door whose relay reading changed since the last call. */
@@ -317,17 +333,34 @@ export function createDoorStore(options: DoorStoreOptions = {}): DoorStore {
           setRule(s, { type: 'custom', endedTime: nowS + (request.interval ?? 0) * 60 })
           break
         case 'reset':
-          if (s.rule !== undefined && s.rule.type !== 'lock_early') setRule(s, undefined)
+          // Not for schedules (§7.10): a door inside one, or one whose schedule was ended early,
+          // is left as it is.
+          if (s.rule !== undefined && s.rule.type !== 'lock_early' && s.rule.type !== 'schedule')
+            setRule(s, undefined)
           break
         case 'lock_early':
           clearPulse(s)
-          setRule(s, { type: 'lock_early', endedTime: (Math.floor(nowS / DAY_S) + 1) * DAY_S })
+          setRule(s, {
+            type: 'lock_early',
+            // "End today's scheduled unlock now": until the schedule would have ended, when the
+            // door is inside one; the mock's stand-in (next UTC midnight) otherwise.
+            endedTime:
+              s.rule?.type === 'schedule'
+                ? s.rule.endedTime
+                : (Math.floor(nowS / DAY_S) + 1) * DAY_S,
+          })
           break
         case 'lock_now':
           clearPulse(s)
           setRule(s, undefined)
           break
       }
+      emit({ kind: 'rule', doorId: id, rule: ruleOf(s) })
+      sync()
+    },
+    startSchedule(id, minutes) {
+      const s = need(id)
+      setRule(s, { type: 'schedule', endedTime: Math.floor(now() / 1000) + minutes * 60 })
       emit({ kind: 'rule', doorId: id, rule: ruleOf(s) })
       sync()
     },

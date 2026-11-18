@@ -419,6 +419,88 @@ describe("PUT/GET /doors/{id}/lock_rule (interactions are the mock's own choice)
     expect(relay(FRONT.id)).toBe('lock')
   })
 
+  describe('an unlock schedule (P5.6, started by the mock-only control)', () => {
+    it('reads as relay unlock and rule schedule until it ends, then no rule', () => {
+      mock.store.startSchedule(FRONT.id, 90)
+      expect(relay(FRONT.id)).toBe('unlock')
+      expect(getRule(FRONT.id)).toEqual({ type: 'schedule', ended_time: T0_S + 90 * 60 })
+      // Only that door.
+      expect(relay(OFFICE.id)).toBe('lock')
+      vi.advanceTimersByTime(90 * 60_000 - 1)
+      expect(relay(FRONT.id)).toBe('unlock')
+      vi.advanceTimersByTime(1)
+      expect(relay(FRONT.id)).toBe('lock')
+      expect(getRule(FRONT.id)).toEqual(NO_LOCK_RULE)
+    })
+
+    it('lock_early ends it now and reads as lock_early until the schedule would have ended', () => {
+      mock.store.startSchedule(FRONT.id, 120)
+      expect(putRule(FRONT.id, { type: 'lock_early' }).status).toBe(200)
+      expect(relay(FRONT.id)).toBe('lock')
+      expect(getRule(FRONT.id)).toEqual({ type: 'lock_early', ended_time: T0_S + 120 * 60 })
+      vi.advanceTimersByTime(120 * 60_000)
+      expect(getRule(FRONT.id)).toEqual(NO_LOCK_RULE)
+      expect(relay(FRONT.id)).toBe('lock')
+    })
+
+    it('reset leaves it alone: reset is not for schedules (§7.10)', () => {
+      mock.store.startSchedule(FRONT.id, 60)
+      expect(putRule(FRONT.id, { type: 'reset' }).status).toBe(200)
+      expect(relay(FRONT.id)).toBe('unlock')
+      expect(getRule(FRONT.id).type).toBe('schedule')
+    })
+
+    it('lock_now ends it and locks', () => {
+      mock.store.startSchedule(FRONT.id, 60)
+      putRule(FRONT.id, { type: 'lock_now' })
+      expect(relay(FRONT.id)).toBe('lock')
+      expect(getRule(FRONT.id)).toEqual(NO_LOCK_RULE)
+      expect(vi.getTimerCount()).toBe(0)
+    })
+
+    it('a rule set through the API replaces it, and a momentary unlock falls back to it', () => {
+      mock.store.startSchedule(FRONT.id, 60)
+      mock.handle(req('PUT', `/doors/${FRONT.id}/unlock`))
+      vi.advanceTimersByTime(DEFAULT_UNLOCK_MS)
+      // The pulse ended; the schedule still holds the door unlocked.
+      expect(relay(FRONT.id)).toBe('unlock')
+      putRule(FRONT.id, { type: 'keep_lock' })
+      expect(relay(FRONT.id)).toBe('lock')
+      expect(getRule(FRONT.id).type).toBe('keep_lock')
+      // The schedule's own expiry timer went with it.
+      vi.advanceTimersByTime(60 * 60_000)
+      expect(getRule(FRONT.id).type).toBe('keep_lock')
+    })
+
+    it('reads lock under lockdown and comes back when it is lifted', () => {
+      mock.store.startSchedule(FRONT.id, 60)
+      putEmergency({ lockdown: true, evacuation: false })
+      expect(relay(FRONT.id)).toBe('lock')
+      expect(getRule(FRONT.id).type).toBe('schedule')
+      putEmergency({ lockdown: false, evacuation: false })
+      expect(relay(FRONT.id)).toBe('unlock')
+    })
+
+    it('reports the rule and the relay change, and pushes nothing (no documented event)', () => {
+      const changes: DoorChange[] = []
+      const frames: MockNotification[] = []
+      mock.store.onChange((change) => changes.push(change))
+      mock.onNotification((frame) => frames.push(frame))
+      mock.store.startSchedule(FRONT.id, 30)
+      expect(changes).toEqual([
+        { kind: 'rule', doorId: FRONT.id, rule: { type: 'schedule', ended_time: T0_S + 1800 } },
+        { kind: 'relay', doorId: FRONT.id, relay: 'unlock' },
+      ])
+      expect(frames).toEqual([])
+    })
+
+    it('throws for an unknown door', () => {
+      expect(() => {
+        mock.store.startSchedule('nope', 10)
+      }).toThrow()
+    })
+  })
+
   it('lock_now ends the rule and a running unlock', () => {
     putRule(FRONT.id, { type: 'lock_early' })
     mock.handle(req('PUT', `/doors/${FRONT.id}/unlock`))
@@ -730,6 +812,43 @@ describe('mock-only control routes (/__mock)', () => {
     expect(AccessDoorResponseSchema.parse(res.body).data.door_lock_relay_status).toBe('lock')
     expect(getRule(FRONT.id)).toEqual(NO_LOCK_RULE)
     expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('schedule puts the door inside an unlock schedule, for an hour unless told otherwise (P5.6)', () => {
+    const res = mock.handle(admin(`/doors/${FRONT.id}/schedule`))
+    expect(res.status).toBe(200)
+    expect(res.headers[MOCK_HEADER]).toBe('1')
+    expect(AccessDoorResponseSchema.parse(res.body).data.door_lock_relay_status).toBe('unlock')
+    expect(getRule(FRONT.id)).toEqual({ type: 'schedule', ended_time: T0_S + 3600 })
+    mock.handle(admin(`/doors/${OFFICE.id}/schedule?minutes=5`))
+    expect(getRule(OFFICE.id)).toEqual({ type: 'schedule', ended_time: T0_S + 300 })
+    // It happens "at the door": no frame, like a card tap.
+    expect(frames).toEqual([])
+    // And the app's Lock for it (lock_early) is the documented API.
+    expect(putRule(FRONT.id, { type: 'lock_early' }).status).toBe(200)
+    expect(relay(FRONT.id)).toBe('lock')
+  })
+
+  it('schedule needs a whole number of minutes from 1 to 1440', () => {
+    for (const q of [
+      '?minutes=0',
+      '?minutes=-5',
+      '?minutes=1441',
+      '?minutes=1.5',
+      '?minutes=soon',
+      '?minutes=',
+    ]) {
+      const bad = mock.handle(admin(`/doors/${FRONT.id}/schedule${q}`))
+      expect(bad.status, q).toBe(400)
+      expect(bad.body.code).toBe('CODE_PARAMS_INVALID')
+    }
+    expect(getRule(FRONT.id)).toEqual(NO_LOCK_RULE)
+    expect(mock.handle(admin(`/doors/${FRONT.id}/schedule?minutes=1440`)).status).toBe(200)
+    expect(mock.handle(admin(`/doors/${FRONT.id}/schedule`, { method: 'GET' })).status).toBe(405)
+    expect(mock.handle(admin(`/doors/${FRONT.id}/schedule`, { headers: {} })).status).toBe(401)
+    expect(
+      mock.handle(admin('/doors/00000000-0000-4000-8000-000000000000/schedule')).body.code,
+    ).toBe('CODE_NOT_EXISTS')
   })
 
   it('position sets door_position_status and needs open or close', () => {

@@ -21,14 +21,13 @@
 // store's defaults at the moment of the change, so a quick Grid-then-Fill change cannot have the
 // second save write back the Grid value the first one replaced.
 //
-// The Door links card (DOOR-1/2, P5.3, in ./DoorLinksCard) follows the same save-on-change rule and
-// is mounted only while the **saved** Access switch is on (DOOR-0): the form's unsaved checkbox
-// reveals the token and API-root fields, but nothing that would make an Access call.
+// The door links (DOOR-2) are no longer here: since P5.6 they live on the Doors screen
+// (features/doors/), each door's cameras on the door's own card. The form's unsaved Access checkbox
+// reveals the token and API-root fields, but nothing that would make an Access call (DOOR-0).
 //
 // Layout (user request 2026-11-17): a section sidebar on the left and the groups in their own
 // scroll container on the right — the keystore warning (only without a keystore), **Console**
-// (address and credentials, then Certificate, then Connection), **Streams**, and **Door links**
-// last. The sidebar highlights the group in view (measured against the scroll container, decided
+// (address and credentials, then Certificate, then Connection) and **Streams**. The sidebar highlights the group in view (measured against the scroll container, decided
 // by ./settingsSections.ts) and scrolls to a group on click; its rows are the shared `.sideItem`,
 // and the app version sits quietly at its foot. Help text is one short line at
 // most; what a requirement mandates (CON-2's keystore notice, CON-3's compare-the-fingerprint prompt,
@@ -39,9 +38,7 @@ import type { AccessProbe, IpcError, IpcSecretKey, ProtectProbe, Settings } from
 import { useAppStore } from '../../state/appStore'
 import { CheckIcon, PlugIcon, PulseIcon, TrashIcon } from '../../ui/icons'
 import { CertificateCard } from './CertificateCard'
-import { DoorLinksCard } from './DoorLinksCard'
 import { StatusLine, type StatusKind } from '../../ui/StatusLine'
-import { doorListKey } from './doorLinks'
 import { QualityOptions } from '../quality/QualityOptions'
 import {
   activeSection,
@@ -68,7 +65,6 @@ import './settings.css'
 export function SettingsPage(): JSX.Element {
   const settings = useAppStore((s) => s.settings)
   const keystoreAvailable = useAppStore((s) => s.keystoreAvailable)
-  const secretsStored = useAppStore((s) => s.secretsStored)
 
   // `settings` is null only until the first `getState()` lands, which the shell already waits for;
   // this is the type-level version of that guarantee rather than a state the user ever sees.
@@ -80,27 +76,14 @@ export function SettingsPage(): JSX.Element {
     )
   }
 
-  // What the door list depends on: the Door links card remounts on it (a new endpoint, pin or token
-  // reloads the list), and the layout re-attaches its size watcher to the new card's element.
-  const doorsKey = doorListKey(settings, secretsStored)
-
   return (
-    <SettingsLayout
-      sections={settingsSections({
-        keystoreAvailable,
-        accessEnabled: settings.console.accessEnabled,
-      })}
-      layoutKey={doorsKey}
-    >
+    <SettingsLayout sections={settingsSections({ keystoreAvailable })}>
       {keystoreAvailable ? null : <KeystoreWarning />}
       <ConsoleCard settings={settings} keystoreAvailable={keystoreAvailable}>
         <CertificateSection accessEnabled={settings.console.accessEnabled} />
         <ConnectionCard accessEnabled={settings.console.accessEnabled} />
       </ConsoleCard>
       <StreamsCard streams={settings.streams} />
-      {settings.console.accessEnabled ? (
-        <DoorLinksCard key={doorsKey} links={settings.doorLinks} />
-      ) : null}
     </SettingsLayout>
   )
 }
@@ -123,18 +106,15 @@ const SCROLL_LOCK_FALLBACK_MS = 1000
  *
  * Which link is current is `activeSection`'s decision (./settingsSections.ts), fed from a
  * rAF-throttled measure of each group's top against the container: on scroll, on a window resize,
- * and when a group changes size (a ResizeObserver — the door list landing grows the page without a
- * scroll). A sidebar click locks its section as current until that programmatic scroll settles
+ * and when a group changes size (a ResizeObserver — a certificate panel opening grows the page
+ * without a scroll). A sidebar click locks its section as current until that programmatic scroll settles
  * (`scrollend`, with a timeout fallback), so a short last group cannot take the highlight mid-way.
  */
 function SettingsLayout({
   sections,
-  layoutKey,
   children,
 }: {
   sections: readonly SettingsSection[]
-  /** Changes whenever a group's element is replaced (the Door links card remounts on it). */
-  layoutKey: string
   children: ReactNode
 }): JSX.Element {
   const content = useRef<HTMLDivElement>(null)
@@ -186,7 +166,7 @@ function SettingsLayout({
       if (frame.current !== null) cancelAnimationFrame(frame.current)
       frame.current = null
     }
-  }, [ids, layoutKey, schedule])
+  }, [ids, schedule])
 
   // A lock still pending at unmount must not fire into a gone component.
   useEffect(

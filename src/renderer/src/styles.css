@@ -327,7 +327,8 @@ body,
  *  - `--ghost`: low emphasis (Close, Discard, reorder), no chrome until hovered;
  *  - `--icon`: icon only, square; it must carry `aria-label` and `title`;
  *  - `--sm`: the compact size, for rows in a list.
- * Disabled buttons are dimmed and ignore hover and press.
+ * Disabled buttons are dimmed and ignore hover and press; so is one that is only
+ * `aria-disabled="true"` (it keeps the focus, see below).
  */
 .button {
   display: inline-flex;
@@ -370,6 +371,17 @@ body,
 .button:disabled {
   opacity: 0.45;
   cursor: default;
+}
+
+/*
+ * A button that cannot act right now but must keep the focus (a request in flight, nothing chosen
+ * yet): `disabled` itself would throw the focus to the page body. It looks like `:disabled` and
+ * ignores the pointer; the component ignores a keyboard press in code.
+ */
+.button[aria-disabled='true'] {
+  opacity: 0.45;
+  cursor: default;
+  pointer-events: none;
 }
 
 .button--primary {
@@ -725,6 +737,45 @@ body,
 
 .status--muted {
   color: var(--muted);
+}
+
+/* --- banner ------------------------------------------------------------------------------------
+ * Something a whole screen should know, on a line above its content and never instead of it:
+ * missing setup or a failed request above the camera list, lockdown or failing reads above the
+ * doors. One shape — an alert icon in the kind's colour, the text in the normal colour so it stays
+ * readable, and at most one `.button--sm` action at the end. `--warn` or `--error`.
+ */
+.banner {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.5rem 0.6rem 0.5rem 0.75rem;
+  border: 1px solid var(--border);
+  border-left-width: 3px;
+  border-radius: var(--radius);
+  background: var(--bg-raised);
+}
+
+.banner--warn {
+  border-left-color: var(--warn);
+}
+
+.banner--warn > .icon {
+  color: var(--warn);
+}
+
+.banner--error {
+  border-left-color: var(--error);
+}
+
+.banner--error > .icon {
+  color: var(--error);
+}
+
+.banner__text {
+  flex: 1;
+  min-width: 0;
+  font-size: var(--font-sm);
 }
 
 /* --- dialog (ui/ConfirmDialog.tsx) -------------------------------------------------------------- */

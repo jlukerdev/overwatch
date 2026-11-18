@@ -1,6 +1,6 @@
 // The one way a card reports the outcome of an action (UX polish): the shared `.status`
 // line (styles.css) — an icon and a sentence, coloured by kind. Save, key save/clear, Test
-// connection, Connect, certificate accept, the stream defaults and the door links all use it, so a
+// connection, Connect, certificate accept, the stream defaults, the door links and the polling settings all use it, so a
 // success or a failure looks the same wherever it happened. It changes how an outcome is drawn,
 // never what is reported or when: each card still decides that, next to the control that caused it.
 //

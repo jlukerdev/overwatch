@@ -70,6 +70,7 @@ function appState(views: View[], lastViewId: string | null): AppState {
       lastViewId,
       streams: { defaultGridQuality: 'low', defaultFillQuality: 'high' },
       ui: { overlayAutoHideSec: 3 },
+      accessPolling: { withSocketSec: 5, withoutSocketSec: 2, unlockedSec: 1, detailsSec: 30 },
     },
     keystoreAvailable: true,
     secretsStored: { protectApiKey: true, accessToken: false },

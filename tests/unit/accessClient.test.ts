@@ -819,6 +819,42 @@ describe('lock rule (§7.10, §7.11)', () => {
     expect(logs).toStrictEqual(['GET /doors/door-1/lock_rule -> 200 SUCCESS'])
   })
 
+  it('logs nothing at all for a quiet read, success or failure, and still throws the failure (P5.6)', async () => {
+    let fail = false
+    const { client, logs } = harness(
+      fakeFetch(() =>
+        fail
+          ? jsonResponse(404, { code: 'CODE_RESOURCE_NOT_FOUND', msg: 'not found' })
+          : jsonResponse(200, { code: 'SUCCESS', data: { type: 'schedule', ended_time: 9 } }),
+      ),
+    )
+    // A details round is one of these per door, every `detailsSec`, all day.
+    for (let i = 0; i < 5; i += 1) await client.lockRule('door-1', { quiet: true })
+    expect(logs).toEqual([])
+    // On a console older than Access 1.24.6 every one fails: not a line each either.
+    fail = true
+    for (let i = 0; i < 5; i += 1) {
+      const error = await accessError(client.lockRule('door-1', { quiet: true }))
+      expect(error.kind).toBe('not-found')
+    }
+    expect(logs).toEqual([])
+    // The same read without the flag is logged as before.
+    await accessError(client.lockRule('door-1'))
+    expect(logs).toEqual(['GET /doors/door-1/lock_rule -> 404 CODE_RESOURCE_NOT_FOUND'])
+  })
+
+  it('a quiet read is still refused, silently, while Access is off or there is no token (DOOR-0)', async () => {
+    const { client, logs, state, fetchSpy } = harness(fakeFetch(() => jsonResponse(200, {})))
+    state.enabled = false
+    expect((await accessError(client.lockRule('door-1', { quiet: true }))).kind).toBe('disabled')
+    expect((await accessError(client.emergencyStatus({ quiet: true }))).kind).toBe('disabled')
+    state.enabled = true
+    state.token = null
+    expect((await accessError(client.lockRule('door-1', { quiet: true }))).kind).toBe('auth')
+    expect(fetchSpy).not.toHaveBeenCalled()
+    expect(logs).toEqual([])
+  })
+
   it('reads a rule without ended_time as endedTime null, and keeps an undocumented type', async () => {
     const { client } = harness(
       fakeFetch(() => jsonResponse(200, { code: 'SUCCESS', data: { type: 'keep_lock' } })),
@@ -942,6 +978,40 @@ describe('lock rule (§7.10, §7.11)', () => {
 })
 
 describe('emergency status (§7.12, §7.13)', () => {
+  it('logs nothing at all for a quiet read, success or failure (P5.6)', async () => {
+    let fail = false
+    const { client, logs } = harness(
+      fakeFetch(() =>
+        fail
+          ? jsonResponse(500, { code: 'CODE_SYSTEM_ERROR', msg: 'boom' })
+          : jsonResponse(200, { code: 'SUCCESS', data: { evacuation: false, lockdown: true } }),
+      ),
+    )
+    await expect(client.emergencyStatus({ quiet: true })).resolves.toStrictEqual({
+      lockdown: true,
+      evacuation: false,
+    })
+    fail = true
+    expect((await accessError(client.emergencyStatus({ quiet: true }))).kind).toBe('server')
+    expect(logs).toEqual([])
+    await accessError(client.emergencyStatus())
+    expect(logs).toEqual(['GET /doors/settings/emergency -> 500 CODE_SYSTEM_ERROR'])
+  })
+
+  it('never quiets a PUT: changing a door or the emergency status is always logged', async () => {
+    const { client, logs } = harness(
+      fakeFetch(() => jsonResponse(200, { code: 'SUCCESS', data: 'success' })),
+    )
+    await client.setEmergencyStatus({ lockdown: true, evacuation: false })
+    await client.setLockRule('door-1', { type: 'keep_lock' })
+    await client.unlock('door-1')
+    expect(logs).toEqual([
+      'PUT /doors/settings/emergency -> 200 SUCCESS',
+      'PUT /doors/door-1/lock_rule -> 200 SUCCESS',
+      'PUT /doors/door-1/unlock -> 200 SUCCESS',
+    ])
+  })
+
   it('reads GET /doors/settings/emergency', async () => {
     const { fn, sent } = recordingFetch(() =>
       jsonResponse(200, {

@@ -87,6 +87,39 @@ describe('load', () => {
     const result = await store().load()
     expect(result).toEqual({ source: 'file', config: defaultConfig(), migratedFrom: null })
   })
+  it('loads a file with a hand-edited polling interval that is out of range, without recovery (P5.6)', async () => {
+    // One bad number must not cost the user every View: the file loads, that interval is its
+    // default, and nothing is moved aside.
+    await writeFile(
+      join(dir, CONFIG_FILE_NAME),
+      JSON.stringify({
+        schemaVersion: 2,
+        accessPolling: { withSocketSec: 0, withoutSocketSec: 4, unlockedSec: 99, detailsSec: 45 },
+      }),
+    )
+    const result = await store().load()
+    expect(result.source).toBe('file')
+    expect(result.config.accessPolling).toEqual({
+      withSocketSec: 5,
+      withoutSocketSec: 4,
+      unlockedSec: 1,
+      detailsSec: 45,
+    })
+    expect(await entries()).toEqual([CONFIG_FILE_NAME])
+  })
+
+  it('migrates a v1 file to the current version with the polling defaults (P5.6: no new step)', async () => {
+    await writeFile(join(dir, CONFIG_FILE_NAME), JSON.stringify({ schemaVersion: 1, views: [] }))
+    const result = await store().load()
+    expect(result).toMatchObject({ source: 'file', migratedFrom: 1 })
+    expect(result.config.accessPolling).toEqual({
+      withSocketSec: 5,
+      withoutSocketSec: 2,
+      unlockedSec: 1,
+      detailsSec: 30,
+    })
+  })
+
   it('migrates a v1 file on load (P3.1: cells gain their placement)', async () => {
     await writeFile(
       join(dir, CONFIG_FILE_NAME),

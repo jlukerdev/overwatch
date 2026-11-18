@@ -330,7 +330,10 @@ export function createIpcRouter(deps: IpcRouterDeps): ReadonlyMap<string, IpcHan
     if (input.key === 'protectApiKey' && replaced) await ready.manager.credentialReplaced()
     // DOOR-6: the door-state monitor needs a token to run, and one that stopped on a rejected token
     // has to hear that there is a new one.
-    if (input.key === 'accessToken') ready.manager.accessInputsChanged('the Access token was saved')
+    // P5.6: `trustChanged`, because the door list the Doors screen holds was read with the old one.
+    if (input.key === 'accessToken') {
+      ready.manager.accessInputsChanged('the Access token was saved', { trustChanged: true })
+    }
     return state(ready)
   })
 
@@ -347,7 +350,7 @@ export function createIpcRouter(deps: IpcRouterDeps): ReadonlyMap<string, IpcHan
     } else {
       // DOOR-6: nothing may keep reading door states on a token the user has removed. The manager
       // sees the missing credential (deleted above) and stops the monitor and its socket.
-      ready.manager.accessInputsChanged('the Access token was cleared')
+      ready.manager.accessInputsChanged('the Access token was cleared', { trustChanged: true })
     }
     return state(ready)
   })
@@ -357,9 +360,12 @@ export function createIpcRouter(deps: IpcRouterDeps): ReadonlyMap<string, IpcHan
    * no longer matched) starts again once one is. Told for either endpoint: Access may answer on the
    * same `host:port` as Protect (SPEC §5.2), and for a monitor that is running fine it costs one
    * read. While the monitor may not run (Access off, nobody watching) it sends nothing.
+   *
+   * `trustChanged` (P5.6): a re-accepted certificate may be another machine's, so the door list the
+   * Doors screen holds — the one `doorAction` takes door ids from — is dropped and read again.
    */
   const certificateChanged = (ready: Ready): void => {
-    ready.manager.accessInputsChanged('a certificate was accepted')
+    ready.manager.accessInputsChanged('a certificate was accepted', { trustChanged: true })
   }
 
   on(IPC.checkCertificate, async (input, ready) => {
@@ -484,12 +490,6 @@ export function createIpcRouter(deps: IpcRouterDeps): ReadonlyMap<string, IpcHan
     return state(ready)
   })
 
-  // DOOR-1 (P5.3). The DOOR-0 check is the manager's, before the client is even resolved, so a
-  // switched-off Access answers `disabled` with no request made. Every other failure arrives
-  // already mapped (`not-configured`, `pin-required`, `auth`, …) — the same `IpcError` the manager
-  // put in the Access status, endpoint included — so it is passed through rather than re-mapped.
-  on(IPC.listDoors, (_input, ready) => ready.manager.doors())
-
   on(IPC.setDoorLinks, async (input, ready) => {
     // DOOR-2: local config only, so no Access call and no DOOR-0 refusal — the links are kept while
     // Access is off (DOOR-0) and a save is as valid then as at any other time. Nothing is checked
@@ -517,6 +517,39 @@ export function createIpcRouter(deps: IpcRouterDeps): ReadonlyMap<string, IpcHan
   // harness's Views link no doors unless the user's own `doorLinks` do — in which case the lock
   // state shown is real. DOOR-0 and every other precondition are the manager's.
   on(IPC.watchDoors, (input, ready) => Promise.resolve(ready.manager.watchDoors(input.watching)))
+
+  // P5.6. `not-ready` before the services are up, like `watchDoors`; after that it never fails for
+  // a console reason (the reason is the state's `error`). No perf-run block: opening the Doors
+  // screen changes no config, and what it shows is the console's own doors.
+  on(IPC.watchDoorsScreen, (input, ready) =>
+    Promise.resolve(ready.manager.watchDoorsScreen(input.open)),
+  )
+
+  // DOOR-3/4/5 (P5.6): **changes a physical door.** The payload has passed `DoorActionInputSchema`
+  // (a non-empty door id, a known action, minutes for `custom` and only for it) before this line;
+  // an invalid one never reaches the manager and is not in `unlock.log` (the P5.4 decision: the
+  // log is for attempts, not for malformed IPC). Everything else is the manager's, in its order:
+  // DOOR-0, the door id against the list main read itself, the hub check, the one PUT, the log. It
+  // answers an `IpcResult` with `retryable: false` on every failure, so it is passed through as is.
+  // No perf-run block, as for `unlockDoor`: the harness never opens the Doors screen, and nothing
+  // it shows the renderer (`settingsView`) touches Access.
+  on(IPC.doorAction, (input, ready) => ready.manager.doorAction(input))
+
+  // DOOR-3/4/5 (P5.6): **changes every door.** Both flags `true` is refused by the schema above
+  // this line; the manager applies DOOR-0, sends the one PUT and writes the log. Passed through.
+  on(IPC.setDoorEmergency, (input, ready) => ready.manager.setDoorEmergency(input))
+
+  on(IPC.setAccessPolling, async (input, ready) => {
+    // DOOR-6 (P5.6). Local config only: no Access call and no DOOR-0 refusal, like `setDoorLinks` —
+    // the intervals are kept while Access is off and simply unused. Every field is a whole number
+    // of seconds inside its range (`SetAccessPollingInputSchema`); the range is checked **here in
+    // main**, whatever the renderer's form allowed. No perf-run block either: `settingsView` does
+    // not touch `accessPolling`, so what the renderer sends back is the user's own values.
+    await saveFields(ready, { accessPolling: input })
+    // Applied without a restart: the monitor re-arms its pending timers from the new values.
+    ready.manager.accessPollingChanged()
+    return state(ready)
+  })
 
   on(IPC.ensureStream, async (input) => {
     const registry = deps.getRegistry()
@@ -548,8 +581,9 @@ export function createIpcRouter(deps: IpcRouterDeps): ReadonlyMap<string, IpcHan
 }
 
 /**
- * VIEW-6, QUAL-1, DOOR-2: persists top-level settings fields (the View list, the active View, the
- * stream quality defaults, the door links), then makes them the live config.
+ * VIEW-6, QUAL-1, DOOR-2, DOOR-6: persists top-level settings fields (the View list, the active
+ * View, the stream quality defaults, the door links, the Access read intervals), then makes them
+ * the live config.
  *
  * Both halves touch only the fields in `patch`. On disk, `config.update` applies them to the latest
  * stored config inside the store's write queue, so a console or pin write queued ahead of this one
@@ -559,7 +593,7 @@ export function createIpcRouter(deps: IpcRouterDeps): ReadonlyMap<string, IpcHan
  * into `current` before its own write is queued, so `current` can be ahead of anything this write
  * returned.
  */
-type SavedField = 'views' | 'lastViewId' | 'streams' | 'doorLinks'
+type SavedField = 'views' | 'lastViewId' | 'streams' | 'doorLinks' | 'accessPolling'
 
 async function saveFields(ready: Ready, patch: Partial<Pick<Config, SavedField>>): Promise<void> {
   const { services } = ready
@@ -570,6 +604,7 @@ async function saveFields(ready: Ready, patch: Partial<Pick<Config, SavedField>>
     ...('lastViewId' in patch ? { lastViewId: saved.lastViewId } : {}),
     ...('streams' in patch ? { streams: saved.streams } : {}),
     ...('doorLinks' in patch ? { doorLinks: saved.doorLinks } : {}),
+    ...('accessPolling' in patch ? { accessPolling: saved.accessPolling } : {}),
   }
 }
 

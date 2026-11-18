@@ -1,6 +1,8 @@
 // P5.4 (DOOR-5): the unlock audit log in src/main/access/unlockLog.ts — JSON Lines at
 // `<userData>/logs/unlock.log`, size rotation to `unlock.log.1`, serialized writes, and a write
 // failure that is reported but never rejects (an unlock's answer must not depend on the log).
+// P5.6: the same lines also carry the Doors screen's actions (`action`, `doorName`, `minutes`,
+// `lockdown`, `evacuation`), with the camera fields `null` for them.
 import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync, existsSync } from 'node:fs'
 import * as nodeFs from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -15,19 +17,26 @@ import {
   type UnlockLogFs,
 } from '../../src/main/access/unlockLog'
 
+/** The four P5.6 detail fields as a cell unlock writes them. Spelled out so `toEqual` sees them. */
+const NO_DETAILS = { doorName: null, minutes: null, lockdown: null, evacuation: null } as const
+
 const SUCCESS: UnlockAttempt = {
+  action: 'unlock',
   cameraRef: 'cam-bell:package',
   cameraName: 'Front Doorbell',
   doorId: 'door-front',
+  ...NO_DETAILS,
   result: 'success',
   errorKind: null,
   message: null,
 }
 
 const REFUSED: UnlockAttempt = {
+  action: 'unlock',
   cameraRef: 'cam-2',
   cameraName: 'cam-2',
   doorId: null,
+  ...NO_DETAILS,
   result: 'failure',
   errorKind: 'not-found',
   message: 'cam-2 is not linked to a door, so nothing was unlocked.',
@@ -59,10 +68,106 @@ describe('formatUnlockLogLine', () => {
   it('writes one JSON object per line, in the fixed key order, with UTC time', () => {
     const line = formatUnlockLogLine({ time: FIXED.toISOString(), ...SUCCESS })
     expect(line).toBe(
-      '{"time":"2026-11-18T09:15:02.123Z","cameraRef":"cam-bell:package",' +
-        '"cameraName":"Front Doorbell","doorId":"door-front","result":"success",' +
-        '"errorKind":null,"message":null}\n',
+      '{"time":"2026-11-18T09:15:02.123Z","action":"unlock","cameraRef":"cam-bell:package",' +
+        '"cameraName":"Front Doorbell","doorId":"door-front","doorName":null,"minutes":null,' +
+        '"lockdown":null,"evacuation":null,"result":"success","errorKind":null,"message":null}\n',
     )
+  })
+
+  it('keeps the pre-P5.6 keys in their old order relative to each other', () => {
+    const keys = Object.keys(
+      JSON.parse(formatUnlockLogLine({ time: FIXED.toISOString(), ...SUCCESS })) as object,
+    )
+    expect(keys).toEqual([
+      'time',
+      'action',
+      'cameraRef',
+      'cameraName',
+      'doorId',
+      'doorName',
+      'minutes',
+      'lockdown',
+      'evacuation',
+      'result',
+      'errorKind',
+      'message',
+    ])
+    const old = ['time', 'cameraRef', 'cameraName', 'doorId', 'result', 'errorKind', 'message']
+    expect(keys.filter((key) => old.includes(key))).toEqual(old)
+  })
+
+  it('writes every key for a caller that leaves the optional ones out (they are null)', () => {
+    const line = formatUnlockLogLine({
+      time: FIXED.toISOString(),
+      action: 'unlock',
+      cameraRef: 'cam-1',
+      cameraName: 'Porch',
+      doorId: 'door-1',
+      result: 'success',
+      errorKind: null,
+      message: null,
+    })
+    expect(JSON.parse(line)).toEqual({
+      time: FIXED.toISOString(),
+      action: 'unlock',
+      cameraRef: 'cam-1',
+      cameraName: 'Porch',
+      doorId: 'door-1',
+      ...NO_DETAILS,
+      result: 'success',
+      errorKind: null,
+      message: null,
+    })
+  })
+
+  it('P5.6: a Doors screen action has no camera, and names the door and what was sent', () => {
+    const line = formatUnlockLogLine({
+      time: FIXED.toISOString(),
+      action: 'custom',
+      cameraRef: null,
+      cameraName: null,
+      doorId: 'door-front',
+      doorName: 'House - 1F - Front Door',
+      minutes: 45,
+      result: 'success',
+      errorKind: null,
+      message: null,
+    })
+    expect(line).toBe(
+      '{"time":"2026-11-18T09:15:02.123Z","action":"custom","cameraRef":null,' +
+        '"cameraName":null,"doorId":"door-front","doorName":"House - 1F - Front Door",' +
+        '"minutes":45,"lockdown":null,"evacuation":null,"result":"success","errorKind":null,' +
+        '"message":null}\n',
+    )
+  })
+
+  it('P5.6: an emergency change has no door, and carries both flags as asked', () => {
+    const line = formatUnlockLogLine({
+      time: FIXED.toISOString(),
+      action: 'emergency',
+      cameraRef: null,
+      cameraName: null,
+      doorId: null,
+      lockdown: false,
+      evacuation: true,
+      result: 'unknown',
+      errorKind: 'timeout',
+      message: 'The Access API did not answer in time.',
+    })
+    expect(JSON.parse(line)).toEqual({
+      time: FIXED.toISOString(),
+      action: 'emergency',
+      cameraRef: null,
+      cameraName: null,
+      doorId: null,
+      doorName: null,
+      minutes: null,
+      lockdown: false,
+      evacuation: true,
+      result: 'unknown',
+      errorKind: 'timeout',
+      message: 'The Access API did not answer in time.',
+    })
   })
 
   it('keeps a message with a newline on one line, and drops fields it does not know', () => {
@@ -148,7 +253,17 @@ describe('createUnlockLog', () => {
         return nodeFs.appendFile(path, data, options)
       },
     }
-    const log = createUnlockLog({ dir, now: () => FIXED, maxBytes: 500, fs: slowFs })
+    // Two and a half lines: the file is over the limit once it holds three, so the fourth append
+    // rotates and the last three fit without a second rotation, whatever a line's length is.
+    const lineBytes = Buffer.byteLength(
+      formatUnlockLogLine({ time: FIXED.toISOString(), ...REFUSED }),
+    )
+    const log = createUnlockLog({
+      dir,
+      now: () => FIXED,
+      maxBytes: Math.floor(lineBytes * 2.5),
+      fs: slowFs,
+    })
     const refs = Array.from({ length: 6 }, (_, i) => `cam-${String(i)}`)
     await Promise.all(refs.map((cameraRef) => log.append({ ...REFUSED, cameraRef })))
 
@@ -219,9 +334,11 @@ describe('createUnlockLog', () => {
 
   it('logs an unknown outcome with its error kind and message', async () => {
     const unknown: UnlockAttempt = {
+      action: 'unlock',
       cameraRef: 'cam-bell',
       cameraName: 'Front Doorbell',
       doorId: 'door-front',
+      ...NO_DETAILS,
       result: 'unknown',
       errorKind: 'timeout',
       message: 'PUT /doors/door-front/unlock failed: the Access API did not answer in time.',

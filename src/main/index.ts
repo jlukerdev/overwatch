@@ -557,8 +557,13 @@ function createWindow(): void {
   // each of those ends the watch here, and with it the polling and the notifications socket; the
   // Live screen calls `watchDoors(true)` again when it mounts. A same-document navigation (a hash
   // or history change) keeps the page, so it is not one of them (it is `did-navigate-in-page`).
+  // P5.6: the same goes for the Doors screen's own flag (`watchDoorsScreen`), which keeps the
+  // monitor running, with a request per door for the lock rules, whether or not Live is watching.
+  // Both are cleared: the renderer mounts whichever screen it lands on and says so again.
   const stopWatchingDoors = (): void => {
-    if (mainWindow === win) connection?.watchDoors(false)
+    if (mainWindow !== win) return
+    connection?.watchDoors(false)
+    connection?.watchDoorsScreen(false)
   }
   // `did-navigate`, not `did-start-navigation`: only a navigation that committed has replaced the
   // page. One that was started and cancelled (a reload the user backed out of at the unsaved-
@@ -679,8 +684,8 @@ if (!app.requestSingleInstanceLock()) {
           // DOOR-5: `<userData>/logs/unlock.log`, one JSON line per attempt. Its write failures go
           // to `console.error('[unlock-log] …')` and never change an unlock's answer.
           unlockLog: createUnlockLog({ dir: join(app.getPath('userData'), 'logs') }),
-          // DOOR-6: only ever called while the door-state monitor runs (Access on, token stored, a
-          // door linked, the Live screen watching).
+          // DOOR-6: only ever called while the door-state monitor runs (Access on, token stored,
+          // and the Live screen watching a linked door or the Doors screen open).
           openDoorNotifications: (handlers) => openDoorNotifications(started, handlers),
         })
         // P2.1/P2.2, after the connection manager because the registry reads its cached inventory.

@@ -16,7 +16,11 @@
 import type { SecretsStored } from '@shared/ipc'
 import type { Settings } from '@shared/models'
 
-export type Screen = 'cameras' | 'grid' | 'settings'
+/**
+ * `doors` (P5.6) exists only while the saved Access switch is on (DOOR-0, App.tsx) and is never the
+ * first screen: opening it makes main read the Access console, which only the user asks for.
+ */
+export type Screen = 'cameras' | 'doors' | 'grid' | 'settings'
 
 /**
  * The first screen for `settings` as loaded; `null` (no settings) is treated as a fresh install.

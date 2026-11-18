@@ -3,6 +3,7 @@
 // Everything runs on vitest's fake clock (which the monitor's default `Date.now` and `setTimeout`
 // read) against a hand-driven `GET /doors` and a fake notifications socket, so each cadence in the
 // module's header is asserted as a number of reads at a point in time, with no socket and no HTTP.
+import type { DoorsScreenState } from '@shared/ipc'
 import type { Door, DoorStates } from '@shared/models'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { AccessApiError } from '../../src/main/access/client'
@@ -10,6 +11,8 @@ import {
   BURST_AFTER_TRIGGER_MS,
   BURST_POLL_MS,
   BURST_UNLOCKED_MAX_MS,
+  DEFAULT_DOOR_MONITOR_INTERVALS,
+  DETAILS_POLL_MS,
   FAILURE_BACKOFF_MAX_MS,
   NO_SOCKET_FAST_POLL_MS,
   POLL_WITHOUT_SOCKET_MS,
@@ -17,6 +20,7 @@ import {
   TRIGGER_COALESCE_MS,
   createDoorStateMonitor,
   type DoorMonitorHaltReason,
+  type DoorMonitorIntervals,
   type DoorNotificationHandlers,
   type DoorReadResult,
 } from '../../src/main/access/doorStateMonitor'
@@ -697,5 +701,1020 @@ describe('a socket that stays down', () => {
     h.monitor.start()
     await vi.advanceTimersByTimeAsync(NO_SOCKET_FAST_POLL_MS * 3)
     expect(pollingOnly(h)).toBe(0)
+  })
+})
+
+// -------------------------------------------------------------------------------------------------
+// P5.6: the Doors screen as a second watcher, and the user-set intervals.
+
+const EMPTY_SCREEN: DoorsScreenState = {
+  doors: null,
+  stale: false,
+  rules: {},
+  emergency: null,
+  error: null,
+}
+const NORMAL = { lockdown: false, evacuation: false }
+const NO_RULE = { type: '', endedTime: null }
+
+interface ScreenSetupOptions {
+  readonly linked?: readonly string[]
+  /** Whether the Doors screen is open when the test starts. Default: open. */
+  readonly open?: boolean
+  readonly intervals?: DoorMonitorIntervals
+}
+
+function screenSetup(options: ScreenSetupOptions = {}) {
+  let doors: readonly Door[] = [door('front'), door('garage'), door('unlinked')]
+  let failure: unknown = null
+  let open = options.open ?? true
+  let intervals = options.intervals ?? DEFAULT_DOOR_MONITOR_INTERVALS
+  let emergency: { lockdown: boolean; evacuation: boolean } | Error = NORMAL
+  const rules = new Map<string, { type: string; endedTime: number | null } | Error>()
+  const linked = new Set(options.linked ?? ['front'])
+  const readDoors = vi.fn(() =>
+    failure === null ? Promise.resolve(doors) : Promise.reject(failure as Error),
+  )
+  const readEmergency = vi.fn(() =>
+    emergency instanceof Error ? Promise.reject(emergency) : Promise.resolve(emergency),
+  )
+  const readLockRule = vi.fn((id: string) => {
+    const rule = rules.get(id) ?? NO_RULE
+    return rule instanceof Error ? Promise.reject(rule) : Promise.resolve(rule)
+  })
+  const liveStates: DoorStates[] = []
+  const screens: DoorsScreenState[] = []
+  const halts: DoorMonitorHaltReason[] = []
+  const logged: string[] = []
+  const sockets: DoorNotificationHandlers[] = []
+  const monitor = createDoorStateMonitor({
+    readDoors,
+    openNotifications: (handlers) => {
+      sockets.push(handlers)
+      return { stop: () => undefined }
+    },
+    linkedDoorIds: () => linked,
+    onStates: (states) => {
+      liveStates.push(states)
+    },
+    onHalt: (reason) => {
+      halts.push(reason)
+    },
+    intervals: () => intervals,
+    screen: {
+      open: () => open,
+      readEmergency,
+      readLockRule,
+      onState: (state) => {
+        screens.push(state)
+      },
+      toError: (error) => ({
+        kind: error instanceof AccessApiError && error.kind === 'auth' ? 'auth' : 'network',
+        message: error instanceof Error ? error.message : 'unknown',
+        endpoint: 'console:12445',
+        retryable: false,
+      }),
+    },
+    log: (line) => {
+      logged.push(line)
+    },
+  })
+  return {
+    monitor,
+    readDoors,
+    readEmergency,
+    readLockRule,
+    liveStates,
+    screens,
+    halts,
+    logged,
+    sockets,
+    lastScreen(): DoorsScreenState {
+      const last = screens.at(-1)
+      if (last === undefined) throw new Error('no screen state was sent')
+      return last
+    },
+    setDoors(next: readonly Door[]) {
+      doors = next
+    },
+    setFailure(next: unknown) {
+      failure = next
+    },
+    setOpen(next: boolean) {
+      open = next
+      monitor.screenChanged()
+    },
+    setIntervals(next: DoorMonitorIntervals) {
+      intervals = next
+    },
+    setEmergency(next: { lockdown: boolean; evacuation: boolean } | Error) {
+      emergency = next
+    },
+    setRule(id: string, next: { type: string; endedTime: number | null } | Error) {
+      rules.set(id, next)
+    },
+    /** Starts, lets the first door read and the first details round answer, opens the socket, and
+     *  waits out the trigger burst so the next read is a plain baseline one. */
+    async started() {
+      monitor.start()
+      await vi.advanceTimersByTimeAsync(0)
+      sockets.at(-1)?.onStateChange('open')
+      await vi.advanceTimersByTimeAsync(TRIGGER_COALESCE_MS + BURST_AFTER_TRIGGER_MS)
+      const before = readDoors.mock.calls.length
+      while (readDoors.mock.calls.length === before) await vi.advanceTimersByTimeAsync(50)
+      await vi.advanceTimersByTimeAsync(0)
+      readDoors.mockClear()
+      readEmergency.mockClear()
+      readLockRule.mockClear()
+    },
+  }
+}
+
+describe('the Doors screen: every door (P5.6)', () => {
+  it('reports every door the console lists, with rules and emergency, once they are read', async () => {
+    const h = screenSetup()
+    h.setRule('garage', { type: 'schedule', endedTime: 1795000000 })
+    h.monitor.start()
+    expect(h.monitor.screen).toEqual(EMPTY_SCREEN)
+    await vi.advanceTimersByTimeAsync(0)
+    expect(h.lastScreen()).toEqual({
+      doors: [door('front'), door('garage'), door('unlinked')],
+      stale: false,
+      rules: {
+        front: NO_RULE,
+        garage: { type: 'schedule', endedTime: 1795000000 },
+        unlinked: NO_RULE,
+      },
+      emergency: NORMAL,
+      error: null,
+    })
+    expect(h.monitor.screen).toEqual(h.lastScreen())
+    // The first state had the list and no details yet: unknown is "missing", never a guess.
+    expect(h.screens[0]).toEqual({
+      doors: [door('front'), door('garage'), door('unlinked')],
+      stale: false,
+      rules: {},
+      emergency: null,
+      error: null,
+    })
+  })
+
+  it('leaves the Live states as they were: linked doors only, same shape', async () => {
+    const h = screenSetup({ linked: ['front'] })
+    h.setDoors([door('front', 'unlock', 'open'), door('garage', 'unlock'), door('unlinked')])
+    h.monitor.start()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(h.liveStates).toEqual([{ front: { relay: 'unlock', position: 'open' } }])
+    expect(h.monitor.states).toEqual({ front: { relay: 'unlock', position: 'open' } })
+  })
+
+  it('sends the screen state only when it changed', async () => {
+    const h = screenSetup()
+    await h.started()
+    const sent = h.screens.length
+    await vi.advanceTimersByTimeAsync(POLL_WITH_SOCKET_MS * 6)
+    expect(h.readDoors.mock.calls.length).toBeGreaterThanOrEqual(6)
+    expect(h.screens).toHaveLength(sent)
+    h.setDoors([door('front', 'lock', 'open'), door('garage'), door('unlinked')])
+    await vi.advanceTimersByTimeAsync(POLL_WITH_SOCKET_MS)
+    expect(h.screens).toHaveLength(sent + 1)
+    expect(h.lastScreen().doors?.[0]).toMatchObject({ id: 'front', position: 'open' })
+  })
+
+  it('hands out copies: a caller cannot change the list actions are checked against', async () => {
+    const h = screenSetup()
+    await h.started()
+    const first = h.monitor.screen.doors?.[0]
+    const known = h.monitor.knownDoor('front')
+    if (first === undefined || known === null) throw new Error('expected the door')
+    first.boundToHub = false
+    known.boundToHub = false
+    known.id = 'other'
+    expect(h.monitor.knownDoor('front')).toEqual(door('front'))
+  })
+
+  it('bursts while any door is unlocked, linked or not, and stops with the relock', async () => {
+    const h = screenSetup({ linked: ['front'] })
+    await h.started()
+    h.setDoors([door('front'), door('garage'), door('unlinked', 'unlock')])
+    await vi.advanceTimersByTimeAsync(POLL_WITH_SOCKET_MS)
+    h.readDoors.mockClear()
+    await vi.advanceTimersByTimeAsync(BURST_POLL_MS * 5)
+    expect(h.readDoors).toHaveBeenCalledTimes(5)
+    h.setDoors([door('front'), door('garage'), door('unlinked')])
+    await vi.advanceTimersByTimeAsync(BURST_POLL_MS)
+    h.readDoors.mockClear()
+    await vi.advanceTimersByTimeAsync(POLL_WITH_SOCKET_MS - 1)
+    expect(h.readDoors).not.toHaveBeenCalled()
+  })
+
+  it('gives up the burst for a door held unlocked for 30 s, as for a linked one', async () => {
+    const h = screenSetup({ linked: [] })
+    await h.started()
+    h.setDoors([door('front'), door('garage', 'unlock'), door('unlinked')])
+    await vi.advanceTimersByTimeAsync(POLL_WITH_SOCKET_MS + BURST_UNLOCKED_MAX_MS)
+    h.readDoors.mockClear()
+    await vi.advanceTimersByTimeAsync(POLL_WITH_SOCKET_MS * 4)
+    // Back on the baseline: four reads in 20 s, not twenty.
+    expect(h.readDoors.mock.calls.length).toBeLessThanOrEqual(5)
+  })
+
+  it('knows a door only from its own last read, and only while the screen is open', async () => {
+    const h = screenSetup()
+    h.monitor.start()
+    // Nothing read yet.
+    expect(h.monitor.knownDoor('front')).toBeNull()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(h.monitor.knownDoor('front')).toEqual(door('front'))
+    expect(h.monitor.knownDoor('unlinked')).toEqual(door('unlinked'))
+    for (const id of ['', 'nope', 'FRONT', 'front ', 'constructor', '__proto__', 'toString']) {
+      expect(h.monitor.knownDoor(id), id).toBeNull()
+    }
+    // A door the console stops listing is no longer known.
+    h.setDoors([door('front')])
+    h.monitor.poke('test')
+    await vi.advanceTimersByTimeAsync(TRIGGER_COALESCE_MS)
+    expect(h.monitor.knownDoor('unlinked')).toBeNull()
+    h.setOpen(false)
+    expect(h.monitor.knownDoor('front')).toBeNull()
+  })
+
+  it('reports a rule only once it was read, and drops it with the screen', async () => {
+    const h = screenSetup()
+    h.setRule('front', { type: 'custom', endedTime: 99 })
+    h.setRule('garage', new AccessApiError('nope', { kind: 'not-found' }))
+    h.monitor.start()
+    expect(h.monitor.screen.rules).toEqual({})
+    await vi.advanceTimersByTimeAsync(0)
+    // Read and found to be "no rule" is known; a failed read is missing, not a guess.
+    expect(h.monitor.screen.rules).toEqual({
+      front: { type: 'custom', endedTime: 99 },
+      unlinked: NO_RULE,
+    })
+    h.setOpen(false)
+    expect(h.monitor.screen.rules).toEqual({})
+  })
+})
+
+describe('the Doors screen: opening and closing while the monitor runs (P5.6)', () => {
+  it('reads nothing extra, keeps no list and sends no screen state while the screen is closed', async () => {
+    const h = screenSetup({ open: false })
+    await h.started()
+    await vi.advanceTimersByTimeAsync(DETAILS_POLL_MS * 2)
+    expect(h.readEmergency).not.toHaveBeenCalled()
+    expect(h.readLockRule).not.toHaveBeenCalled()
+    expect(h.screens).toEqual([])
+    expect(h.monitor.screen).toEqual(EMPTY_SCREEN)
+    expect(h.monitor.knownDoor('front')).toBeNull()
+    // Live is served as in P5.5.
+    expect(h.monitor.states).toEqual({ front: LOCKED })
+  })
+
+  it('opening reads the doors at once, then the details; closing stops both and forgets the list', async () => {
+    const h = screenSetup({ open: false })
+    await h.started()
+    h.setOpen(true)
+    await vi.advanceTimersByTimeAsync(TRIGGER_COALESCE_MS)
+    expect(h.readDoors).toHaveBeenCalledTimes(1)
+    expect(h.readEmergency).toHaveBeenCalledTimes(1)
+    expect(h.readLockRule).toHaveBeenCalledTimes(3)
+    expect(h.lastScreen().doors).toHaveLength(3)
+    expect(h.lastScreen().emergency).toEqual(NORMAL)
+
+    const sent = h.screens.length
+    h.setOpen(false)
+    // Closing sends nothing: the renderer asked for it, and its answer is the reset.
+    expect(h.screens).toHaveLength(sent)
+    expect(h.monitor.screen).toEqual(EMPTY_SCREEN)
+    h.readEmergency.mockClear()
+    h.readLockRule.mockClear()
+    await vi.advanceTimersByTimeAsync(DETAILS_POLL_MS * 3)
+    expect(h.readEmergency).not.toHaveBeenCalled()
+    expect(h.readLockRule).not.toHaveBeenCalled()
+    // The door reads go on for Live.
+    expect(h.monitor.running).toBe(true)
+    expect(h.monitor.states).toEqual({ front: LOCKED })
+  })
+
+  it('closing ends the burst an unlinked door was holding', async () => {
+    const h = screenSetup({ linked: ['front'] })
+    await h.started()
+    h.setDoors([door('front'), door('garage'), door('unlinked', 'unlock')])
+    await vi.advanceTimersByTimeAsync(POLL_WITH_SOCKET_MS + BURST_POLL_MS)
+    h.setOpen(false)
+    h.readDoors.mockClear()
+    await vi.advanceTimersByTimeAsync(POLL_WITH_SOCKET_MS - 1)
+    expect(h.readDoors.mock.calls.length).toBeLessThanOrEqual(1)
+  })
+
+  it('reopening starts from nothing: the list is read again, not remembered', async () => {
+    const h = screenSetup()
+    await h.started()
+    h.setOpen(false)
+    h.setOpen(true)
+    expect(h.monitor.knownDoor('front')).toBeNull()
+    expect(h.monitor.screen).toEqual(EMPTY_SCREEN)
+    await vi.advanceTimersByTimeAsync(TRIGGER_COALESCE_MS)
+    expect(h.monitor.knownDoor('front')).toEqual(door('front'))
+  })
+
+  it('screenChanged does nothing to the reads while the monitor is stopped', async () => {
+    const h = screenSetup({ open: false })
+    h.setOpen(true)
+    await vi.advanceTimersByTimeAsync(DETAILS_POLL_MS)
+    expect(h.readDoors).not.toHaveBeenCalled()
+    expect(h.readEmergency).not.toHaveBeenCalled()
+    expect(h.screens).toEqual([])
+  })
+})
+
+describe('the details rounds as the monitor drives them (P5.6)', () => {
+  it('runs one round after the first door read that worked, then every detailsMs', async () => {
+    const h = screenSetup()
+    h.monitor.start()
+    // Not before a door read has worked: the token and the certificate are unproven.
+    expect(h.readEmergency).not.toHaveBeenCalled()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(h.readEmergency).toHaveBeenCalledTimes(1)
+    expect(h.readLockRule.mock.calls.map((call) => call[0])).toEqual([
+      'front',
+      'garage',
+      'unlinked',
+    ])
+    await vi.advanceTimersByTimeAsync(DETAILS_POLL_MS - 1)
+    expect(h.readEmergency).toHaveBeenCalledTimes(1)
+    await vi.advanceTimersByTimeAsync(1)
+    expect(h.readEmergency).toHaveBeenCalledTimes(2)
+    await vi.advanceTimersByTimeAsync(DETAILS_POLL_MS * 3)
+    expect(h.readEmergency).toHaveBeenCalledTimes(5)
+  })
+
+  it('starts no round while the first door reads fail', async () => {
+    const h = screenSetup()
+    h.setFailure(new AccessApiError('The console did not answer.', { kind: 'network' }))
+    h.monitor.start()
+    await vi.advanceTimersByTimeAsync(FAILURE_BACKOFF_MAX_MS * 2)
+    expect(h.readEmergency).not.toHaveBeenCalled()
+    expect(h.readLockRule).not.toHaveBeenCalled()
+    h.setFailure(null)
+    await vi.advanceTimersByTimeAsync(FAILURE_BACKOFF_MAX_MS)
+    expect(h.readEmergency).toHaveBeenCalledTimes(1)
+  })
+
+  it('re-reads only the rule of a door whose relay changed between two reads, and only then', async () => {
+    const h = screenSetup()
+    await h.started()
+    // Unchanged reads, and a position change, cause none.
+    h.setDoors([door('front', 'lock', 'open'), door('garage'), door('unlinked')])
+    await vi.advanceTimersByTimeAsync(POLL_WITH_SOCKET_MS * 2)
+    expect(h.readLockRule).not.toHaveBeenCalled()
+    h.setRule('garage', { type: 'keep_unlock', endedTime: 3602128562 })
+    h.setDoors([door('front', 'lock', 'open'), door('garage', 'unlock'), door('unlinked')])
+    await vi.advanceTimersByTimeAsync(POLL_WITH_SOCKET_MS)
+    // That door's rule, not the other doors' — and the emergency status, one request: a lockdown
+    // or an evacuation started elsewhere is exactly a relay that moved.
+    expect(h.readLockRule.mock.calls.map((call) => call[0])).toEqual(['garage'])
+    expect(h.readEmergency).toHaveBeenCalledTimes(1)
+    expect(h.lastScreen().rules.garage).toEqual({ type: 'keep_unlock', endedTime: 3602128562 })
+    // The door staying unlocked is not a change: the burst reads cause no more.
+    await vi.advanceTimersByTimeAsync(BURST_POLL_MS * 5)
+    expect(h.readLockRule).toHaveBeenCalledTimes(1)
+    // The relock is one.
+    h.setDoors([door('front', 'lock', 'open'), door('garage'), door('unlinked')])
+    await vi.advanceTimersByTimeAsync(BURST_POLL_MS)
+    expect(h.readLockRule.mock.calls.map((call) => call[0])).toEqual(['garage', 'garage'])
+    expect(h.readEmergency).toHaveBeenCalledTimes(2)
+  })
+
+  it('shows an emergency started elsewhere as soon as the relays move, not at the next round', async () => {
+    const h = screenSetup()
+    await h.started()
+    // An evacuation from the Access app: every relay opens, and the status says why.
+    h.setEmergency({ lockdown: false, evacuation: true })
+    h.setDoors([door('front', 'unlock'), door('garage', 'unlock'), door('unlinked', 'unlock')])
+    await vi.advanceTimersByTimeAsync(POLL_WITH_SOCKET_MS)
+    expect(h.lastScreen().emergency).toEqual({ lockdown: false, evacuation: true })
+    expect(h.readEmergency).toHaveBeenCalledTimes(1)
+  })
+
+  it('re-reads the rules of every door that moved in the same read, in one round', async () => {
+    const h = screenSetup()
+    await h.started()
+    h.setDoors([door('front', 'unlock'), door('garage'), door('unlinked', 'unlock')])
+    await vi.advanceTimersByTimeAsync(POLL_WITH_SOCKET_MS)
+    expect(h.readLockRule.mock.calls.map((call) => call[0])).toEqual(['front', 'unlinked'])
+  })
+
+  it('runs a full round when a door joins or leaves the list', async () => {
+    const h = screenSetup()
+    await h.started()
+    h.setRule('office', { type: 'keep_lock', endedTime: 5 })
+    h.setDoors([door('front'), door('garage'), door('unlinked'), door('office')])
+    await vi.advanceTimersByTimeAsync(POLL_WITH_SOCKET_MS)
+    expect(h.readEmergency).toHaveBeenCalledTimes(1)
+    expect(h.readLockRule).toHaveBeenCalledTimes(4)
+    expect(h.lastScreen().rules.office).toEqual({ type: 'keep_lock', endedTime: 5 })
+    // Same count, another door: still a changed list.
+    h.setDoors([door('front'), door('garage'), door('unlinked'), door('shed')])
+    await vi.advanceTimersByTimeAsync(POLL_WITH_SOCKET_MS)
+    expect(h.readEmergency).toHaveBeenCalledTimes(2)
+    expect(h.lastScreen().rules).not.toHaveProperty('office')
+    h.setDoors([door('front'), door('garage')])
+    await vi.advanceTimersByTimeAsync(POLL_WITH_SOCKET_MS)
+    expect(h.readEmergency).toHaveBeenCalledTimes(3)
+  })
+
+  it('asks for no round because the console lists a door id twice', async () => {
+    const h = screenSetup()
+    h.setDoors([door('front'), door('front'), door('garage')])
+    await h.started()
+    // Every poll would count three doors against two ids and call the list changed.
+    await vi.advanceTimersByTimeAsync(POLL_WITH_SOCKET_MS * 4)
+    expect(h.readDoors.mock.calls.length).toBeGreaterThanOrEqual(4)
+    expect(h.readEmergency).not.toHaveBeenCalled()
+    expect(h.readLockRule).not.toHaveBeenCalled()
+    // And a round asks about that door once.
+    h.monitor.refreshDetails('test')
+    await vi.advanceTimersByTimeAsync(0)
+    expect(h.readLockRule.mock.calls.map((call) => call[0])).toEqual(['front', 'garage'])
+  })
+
+  it('refreshDetails with a scope reads only that: one door and the emergency status', async () => {
+    const h = screenSetup()
+    await h.started()
+    h.setRule('garage', { type: 'custom', endedTime: 42 })
+    h.monitor.refreshDetails('a door action was answered', { doorIds: ['garage'], emergency: true })
+    await vi.advanceTimersByTimeAsync(0)
+    expect(h.readEmergency).toHaveBeenCalledTimes(1)
+    expect(h.readLockRule.mock.calls.map((call) => call[0])).toEqual(['garage'])
+    expect(h.lastScreen().rules.garage).toEqual({ type: 'custom', endedTime: 42 })
+  })
+
+  it('a door action costs its own door, not three rounds of every door', async () => {
+    const h = screenSetup()
+    await h.started()
+    // What the connection manager does after an answered action: a read now, and that door's rule.
+    h.setDoors([door('front'), door('garage', 'unlock'), door('unlinked')])
+    h.monitor.poke('a door action was answered')
+    h.monitor.refreshDetails('a door action was answered', { doorIds: ['garage'], emergency: true })
+    await vi.advanceTimersByTimeAsync(TRIGGER_COALESCE_MS)
+    // …and the relock a few seconds later.
+    h.setDoors([door('front'), door('garage'), door('unlinked')])
+    await vi.advanceTimersByTimeAsync(BURST_POLL_MS)
+    expect(new Set(h.readLockRule.mock.calls.map((call) => call[0]))).toEqual(new Set(['garage']))
+    expect(h.readLockRule.mock.calls.length).toBeLessThanOrEqual(3)
+    // One emergency read beside each of those: three requests' worth, not three rounds.
+    expect(h.readEmergency.mock.calls.length).toBeLessThanOrEqual(3)
+  })
+
+  it('refreshDetails runs a round now, coalesced, and nothing while closed or stopped', async () => {
+    const h = screenSetup()
+    await h.started()
+    for (let i = 0; i < 10; i += 1) h.monitor.refreshDetails('a door action was answered')
+    await vi.advanceTimersByTimeAsync(0)
+    // The round that started, and the one the other nine were folded into.
+    expect(h.readEmergency).toHaveBeenCalledTimes(2)
+    h.setOpen(false)
+    h.readEmergency.mockClear()
+    h.monitor.refreshDetails('closed')
+    await vi.advanceTimersByTimeAsync(0)
+    expect(h.readEmergency).not.toHaveBeenCalled()
+    h.monitor.stop()
+    h.monitor.refreshDetails('stopped')
+    await vi.advanceTimersByTimeAsync(0)
+    expect(h.readEmergency).not.toHaveBeenCalled()
+  })
+
+  it('shows a failed rule as a missing rule and a failed emergency read as null', async () => {
+    const h = screenSetup()
+    h.setEmergency(new AccessApiError('no such endpoint', { kind: 'not-found' }))
+    h.setRule('garage', new AccessApiError('no such endpoint', { kind: 'not-found' }))
+    h.monitor.start()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(h.lastScreen()).toMatchObject({
+      rules: { front: NO_RULE, unlinked: NO_RULE },
+      emergency: null,
+      // A details failure is not a door-list failure: no error, not stale.
+      error: null,
+      stale: false,
+    })
+    expect(h.lastScreen().rules).not.toHaveProperty('garage')
+    // The door reads are untouched by it: the monitor keeps running and halts nothing.
+    expect(h.monitor.running).toBe(true)
+    expect(h.halts).toEqual([])
+  })
+
+  it('never halts or moves the door reads over a details failure, even an auth one', async () => {
+    const h = screenSetup()
+    h.setEmergency(new AccessApiError('scope missing', { kind: 'auth' }))
+    await h.started()
+    await vi.advanceTimersByTimeAsync(DETAILS_POLL_MS * 2)
+    expect(h.monitor.running).toBe(true)
+    expect(h.halts).toEqual([])
+    expect(h.monitor.screen.error).toBeNull()
+    expect(h.monitor.screen.doors).toHaveLength(3)
+  })
+
+  it('skips the timed rounds while the door reads fail, and reads again when they work', async () => {
+    const h = screenSetup()
+    await h.started()
+    h.setFailure(new AccessApiError('The console did not answer.', { kind: 'network' }))
+    await vi.advanceTimersByTimeAsync(DETAILS_POLL_MS * 3)
+    expect(h.readEmergency).not.toHaveBeenCalled()
+    expect(h.readLockRule).not.toHaveBeenCalled()
+    h.setFailure(null)
+    await vi.advanceTimersByTimeAsync(FAILURE_BACKOFF_MAX_MS)
+    expect(h.readEmergency).toHaveBeenCalledTimes(1)
+    expect(h.lastScreen()).toMatchObject({ stale: false, error: null, emergency: NORMAL })
+  })
+})
+
+describe('the Doors screen while the door reads fail (P5.6)', () => {
+  const down = new AccessApiError('The console did not answer.', { kind: 'network' })
+
+  it('reports the error together with stale, from the second failure, keeping the names', async () => {
+    const h = screenSetup()
+    h.setRule('front', { type: 'custom', endedTime: 7 })
+    h.setDoors([door('front', 'unlock'), door('garage'), door('unlinked')])
+    h.monitor.start()
+    await vi.advanceTimersByTimeAsync(0)
+    h.setFailure(down)
+    h.monitor.poke('test')
+    await vi.advanceTimersByTimeAsync(TRIGGER_COALESCE_MS)
+    // One lost poll with a list on screen is not news (user decision 2026-11-18): nothing changes,
+    // so nothing is sent, and the screen keeps what was last read.
+    expect(h.monitor.screen).toMatchObject({
+      stale: false,
+      error: null,
+      rules: { front: { type: 'custom', endedTime: 7 } },
+      emergency: NORMAL,
+    })
+    expect(h.monitor.stale).toBe(false)
+    expect(h.monitor.screen.doors).toHaveLength(3)
+    h.monitor.poke('test')
+    await vi.advanceTimersByTimeAsync(TRIGGER_COALESCE_MS)
+    expect(h.monitor.stale).toBe(true)
+    expect(h.lastScreen()).toMatchObject({
+      stale: true,
+      error: { kind: 'network', message: 'The console did not answer.' },
+      // As old as the relays now: unknown too.
+      rules: {},
+      emergency: null,
+    })
+    // The list is kept so the screen still names its doors; the relay in it is the old one, which
+    // is exactly what `stale` tells the renderer not to draw.
+    expect(h.lastScreen().doors?.map((entry) => entry.id)).toEqual(['front', 'garage', 'unlinked'])
+    // Live's states are unknown at the same moment, as in P5.5.
+    expect(h.monitor.states).toEqual({})
+  })
+
+  it('sends nothing for a single failed read between two that work', async () => {
+    const h = screenSetup()
+    await h.started()
+    const sent = h.screens.length
+    h.setFailure(down)
+    await vi.advanceTimersByTimeAsync(POLL_WITH_SOCKET_MS)
+    expect(h.readDoors).toHaveBeenCalledTimes(1)
+    h.setFailure(null)
+    await vi.advanceTimersByTimeAsync(FAILURE_BACKOFF_MAX_MS)
+    expect(h.screens).toHaveLength(sent)
+    expect(h.monitor.stale).toBe(false)
+  })
+
+  it('is not stale once stopped, and stale ends with the next read that works', async () => {
+    const h = screenSetup()
+    await h.started()
+    h.setFailure(down)
+    await vi.advanceTimersByTimeAsync(FAILURE_BACKOFF_MAX_MS * 2)
+    expect(h.monitor.stale).toBe(true)
+    h.setFailure(null)
+    await vi.advanceTimersByTimeAsync(FAILURE_BACKOFF_MAX_MS)
+    expect(h.monitor.stale).toBe(false)
+    h.setFailure(down)
+    await vi.advanceTimersByTimeAsync(FAILURE_BACKOFF_MAX_MS * 2)
+    h.monitor.stop()
+    expect(h.monitor.stale).toBe(false)
+  })
+
+  it('clears the error and stale with the next read that works', async () => {
+    const h = screenSetup()
+    await h.started()
+    h.setFailure(down)
+    await vi.advanceTimersByTimeAsync(FAILURE_BACKOFF_MAX_MS * 2)
+    expect(h.lastScreen()).toMatchObject({ stale: true, error: { kind: 'network' } })
+    h.setFailure(null)
+    await vi.advanceTimersByTimeAsync(FAILURE_BACKOFF_MAX_MS)
+    expect(h.lastScreen()).toMatchObject({
+      stale: false,
+      error: null,
+      rules: { front: NO_RULE, garage: NO_RULE, unlinked: NO_RULE },
+      emergency: NORMAL,
+    })
+  })
+
+  it('has no list and says why when no read has worked yet', async () => {
+    const h = screenSetup()
+    h.setFailure(down)
+    h.monitor.start()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(h.lastScreen()).toEqual({
+      ...EMPTY_SCREEN,
+      error: expect.objectContaining({ kind: 'network' }) as unknown,
+    })
+    expect(h.monitor.knownDoor('front')).toBeNull()
+  })
+
+  it('on a halt: drops the list, the rules and the rounds, and keeps the reason', async () => {
+    const h = screenSetup()
+    await h.started()
+    expect(h.monitor.knownDoor('front')).not.toBeNull()
+    h.setFailure(new AccessApiError('The token was rejected.', { kind: 'auth' }))
+    await vi.advanceTimersByTimeAsync(POLL_WITH_SOCKET_MS)
+    expect(h.halts).toEqual(['auth'])
+    expect(h.monitor.running).toBe(false)
+    expect(h.lastScreen()).toEqual({
+      ...EMPTY_SCREEN,
+      error: {
+        kind: 'auth',
+        message: 'The token was rejected.',
+        endpoint: 'console:12445',
+        retryable: false,
+      },
+    })
+    expect(h.monitor.screen).toEqual(h.lastScreen())
+    expect(h.monitor.knownDoor('front')).toBeNull()
+    expect(h.monitor.screen.rules).toEqual({})
+    h.readEmergency.mockClear()
+    h.readLockRule.mockClear()
+    await vi.advanceTimersByTimeAsync(DETAILS_POLL_MS * 3)
+    expect(h.readEmergency).not.toHaveBeenCalled()
+    expect(h.readLockRule).not.toHaveBeenCalled()
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('a restart after a halt keeps showing the reason until a read answers', async () => {
+    const h = screenSetup()
+    h.setFailure(new AccessApiError('The token was rejected.', { kind: 'auth' }))
+    h.monitor.start()
+    await vi.advanceTimersByTimeAsync(0)
+    const sent = h.screens.length
+    // The 60 s retry of a rejected token: same failure, nothing new to show.
+    h.monitor.start()
+    expect(h.monitor.screen.error?.kind).toBe('auth')
+    await vi.advanceTimersByTimeAsync(0)
+    expect(h.screens).toHaveLength(sent)
+    // And once it works the reason goes.
+    h.setFailure(null)
+    h.monitor.start()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(h.lastScreen()).toMatchObject({ error: null })
+    expect(h.lastScreen().doors).toHaveLength(3)
+  })
+
+  it('an explicit stop after a halt drops the reason too', async () => {
+    const h = screenSetup()
+    h.setFailure(new AccessApiError('The token was rejected.', { kind: 'auth' }))
+    h.monitor.start()
+    await vi.advanceTimersByTimeAsync(0)
+    h.monitor.stop()
+    expect(h.monitor.screen).toEqual(EMPTY_SCREEN)
+    expect(h.lastScreen()).toEqual(EMPTY_SCREEN)
+  })
+})
+
+describe('stop, and forgetting the list (P5.6)', () => {
+  it('stop sends one reset state while the screen is open, and ends every read', async () => {
+    const h = screenSetup()
+    await h.started()
+    const sent = h.screens.length
+    h.monitor.stop()
+    expect(h.screens).toHaveLength(sent + 1)
+    expect(h.lastScreen()).toEqual(EMPTY_SCREEN)
+    expect(h.monitor.knownDoor('front')).toBeNull()
+    expect(vi.getTimerCount()).toBe(0)
+    await vi.advanceTimersByTimeAsync(DETAILS_POLL_MS * 2)
+    expect(h.readDoors).not.toHaveBeenCalled()
+    expect(h.readEmergency).not.toHaveBeenCalled()
+    // A second stop has nothing to say.
+    h.monitor.stop()
+    expect(h.screens).toHaveLength(sent + 1)
+  })
+
+  it('ignores a details answer that arrives after the stop', async () => {
+    const h = screenSetup()
+    let release: (value: { lockdown: boolean; evacuation: boolean }) => void = () => undefined
+    h.readEmergency.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          release = resolve
+        }),
+    )
+    h.monitor.start()
+    await vi.advanceTimersByTimeAsync(0)
+    h.monitor.stop()
+    const sent = h.screens.length
+    release({ lockdown: true, evacuation: false })
+    await vi.advanceTimersByTimeAsync(0)
+    expect(h.screens).toHaveLength(sent)
+    expect(h.monitor.screen).toEqual(EMPTY_SCREEN)
+    expect(h.readLockRule).not.toHaveBeenCalled()
+  })
+
+  it('a restart begins with no list: one read from the last run is not carried over', async () => {
+    const h = screenSetup()
+    await h.started()
+    h.monitor.stop()
+    h.monitor.start()
+    expect(h.monitor.knownDoor('front')).toBeNull()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(h.monitor.knownDoor('front')).toEqual(door('front'))
+  })
+
+  it('forgetScreen drops the list and the details at once, reads them again, and leaves Live alone', async () => {
+    const h = screenSetup({ linked: ['front'] })
+    await h.started()
+    const live = h.liveStates.length
+    h.monitor.forgetScreen('the Access token was saved')
+    // At once, before any read: no door action can be checked against the old list.
+    expect(h.monitor.knownDoor('front')).toBeNull()
+    expect(h.lastScreen()).toEqual(EMPTY_SCREEN)
+    expect(h.monitor.states).toEqual({ front: LOCKED })
+    await vi.advanceTimersByTimeAsync(TRIGGER_COALESCE_MS)
+    expect(h.readDoors).toHaveBeenCalledTimes(1)
+    expect(h.readEmergency).toHaveBeenCalledTimes(1)
+    expect(h.monitor.knownDoor('front')).toEqual(door('front'))
+    expect(h.lastScreen().rules).toEqual({ front: NO_RULE, garage: NO_RULE, unlinked: NO_RULE })
+    expect(h.liveStates).toHaveLength(live)
+  })
+
+  it('forgetScreen: a door read already in flight cannot bring the old list back', async () => {
+    const h = screenSetup({ linked: ['front'] })
+    await h.started()
+    // A read sent with the old token, still unanswered when the token is replaced.
+    let answerOld: (doors: readonly Door[]) => void = () => undefined
+    h.readDoors.mockImplementationOnce(
+      () =>
+        new Promise<readonly Door[]>((resolve) => {
+          answerOld = resolve
+        }),
+    )
+    h.monitor.poke('test')
+    await vi.advanceTimersByTimeAsync(TRIGGER_COALESCE_MS)
+    expect(h.readDoors).toHaveBeenCalledTimes(1)
+    h.monitor.forgetScreen('the Access token was saved')
+    expect(h.monitor.knownDoor('front')).toBeNull()
+
+    // The old console's answer: a door the new token must not be able to act on.
+    answerOld([door('front'), door('old-console-door')])
+    await vi.advanceTimersByTimeAsync(0)
+    expect(h.monitor.knownDoor('front')).toBeNull()
+    expect(h.monitor.knownDoor('old-console-door')).toBeNull()
+    expect(h.monitor.screen.doors).toBeNull()
+    expect(h.lastScreen()).toEqual(EMPTY_SCREEN)
+    // Nothing was asked about its doors either.
+    expect(h.readEmergency).not.toHaveBeenCalled()
+    expect(h.readLockRule).not.toHaveBeenCalled()
+
+    // The read the forget asked for follows it, and is the one that counts.
+    await vi.advanceTimersByTimeAsync(TRIGGER_COALESCE_MS)
+    expect(h.readDoors).toHaveBeenCalledTimes(2)
+    expect(h.monitor.knownDoor('front')).toEqual(door('front'))
+    expect(h.monitor.knownDoor('old-console-door')).toBeNull()
+    expect(h.readLockRule.mock.calls.map((call) => call[0])).toEqual([
+      'front',
+      'garage',
+      'unlinked',
+    ])
+  })
+
+  it('forgetScreen: a details round already in flight cannot bring the old rules back', async () => {
+    const h = screenSetup()
+    await h.started()
+    let answerOld: (rule: { type: string; endedTime: number | null }) => void = () => undefined
+    h.readLockRule.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          answerOld = resolve
+        }),
+    )
+    h.monitor.refreshDetails('test', { doorIds: ['front'], emergency: false })
+    await vi.advanceTimersByTimeAsync(0)
+    h.monitor.forgetScreen('a certificate was accepted')
+    answerOld({ type: 'keep_unlock', endedTime: 1 })
+    await vi.advanceTimersByTimeAsync(0)
+    expect(h.monitor.screen.rules).toEqual({})
+    await vi.advanceTimersByTimeAsync(TRIGGER_COALESCE_MS)
+    expect(h.monitor.screen.rules.front).toEqual(NO_RULE)
+  })
+
+  it('forgetScreen does nothing while stopped', async () => {
+    const h = screenSetup()
+    h.monitor.forgetScreen('test')
+    await vi.advanceTimersByTimeAsync(TRIGGER_COALESCE_MS)
+    expect(h.readDoors).not.toHaveBeenCalled()
+    expect(h.screens).toEqual([])
+  })
+})
+
+describe('user-set intervals (DOOR-6, P5.6)', () => {
+  const custom: DoorMonitorIntervals = {
+    withSocketMs: 20_000,
+    withoutSocketMs: 4_000,
+    unlockedMs: 2_000,
+    detailsMs: 60_000,
+  }
+
+  it("defaults to P5.5's constants", () => {
+    expect(DEFAULT_DOOR_MONITOR_INTERVALS).toEqual({
+      withSocketMs: POLL_WITH_SOCKET_MS,
+      withoutSocketMs: POLL_WITHOUT_SOCKET_MS,
+      unlockedMs: BURST_POLL_MS,
+      detailsMs: DETAILS_POLL_MS,
+    })
+    expect(DETAILS_POLL_MS).toBe(30_000)
+  })
+
+  it('polls at the set baseline with the socket open', async () => {
+    const h = screenSetup({ intervals: custom })
+    await h.started()
+    await vi.advanceTimersByTimeAsync(custom.withSocketMs * 3)
+    expect(h.readDoors).toHaveBeenCalledTimes(3)
+  })
+
+  it('polls at the set no-socket interval while the socket is not open', async () => {
+    const h = screenSetup({ intervals: custom, open: false })
+    h.monitor.start()
+    await vi.advanceTimersByTimeAsync(0)
+    h.readDoors.mockClear()
+    await vi.advanceTimersByTimeAsync(custom.withoutSocketMs * 5)
+    expect(h.readDoors).toHaveBeenCalledTimes(5)
+  })
+
+  it('polls at the set unlocked interval while a door is unlocked', async () => {
+    const h = screenSetup({ intervals: custom })
+    await h.started()
+    h.setDoors([door('front', 'unlock'), door('garage'), door('unlinked')])
+    await vi.advanceTimersByTimeAsync(custom.withSocketMs)
+    h.readDoors.mockClear()
+    await vi.advanceTimersByTimeAsync(custom.unlockedMs * 6)
+    expect(h.readDoors).toHaveBeenCalledTimes(6)
+  })
+
+  it('runs the details rounds at the set interval', async () => {
+    const h = screenSetup({ intervals: custom })
+    h.monitor.start()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(h.readEmergency).toHaveBeenCalledTimes(1)
+    await vi.advanceTimersByTimeAsync(DETAILS_POLL_MS)
+    expect(h.readEmergency).toHaveBeenCalledTimes(1)
+    await vi.advanceTimersByTimeAsync(custom.detailsMs - DETAILS_POLL_MS)
+    expect(h.readEmergency).toHaveBeenCalledTimes(2)
+  })
+
+  it('never reads a failing console more often than a healthy one (a 60 s baseline)', async () => {
+    const slow: DoorMonitorIntervals = { ...custom, withSocketMs: 60_000 }
+    const h = screenSetup({ intervals: slow })
+    await h.started()
+    h.setFailure(new AccessApiError('The console did not answer.', { kind: 'network' }))
+    await vi.advanceTimersByTimeAsync(slow.withSocketMs)
+    expect(h.readDoors).toHaveBeenCalledTimes(1)
+    // The backoff's 30 s cap is below this baseline: the wait is still the baseline, every time.
+    for (let failure = 2; failure <= 4; failure += 1) {
+      await vi.advanceTimersByTimeAsync(slow.withSocketMs - 1)
+      expect(h.readDoors).toHaveBeenCalledTimes(failure - 1)
+      await vi.advanceTimersByTimeAsync(1)
+      expect(h.readDoors).toHaveBeenCalledTimes(failure)
+    }
+  })
+
+  it('still backs off up to the cap from a baseline below it', async () => {
+    const h = screenSetup({ intervals: { ...custom, withSocketMs: 20_000 } })
+    await h.started()
+    h.setFailure(new AccessApiError('The console did not answer.', { kind: 'network' }))
+    await vi.advanceTimersByTimeAsync(20_000)
+    expect(h.readDoors).toHaveBeenCalledTimes(1)
+    // 20 s doubled is 40 s, capped at 30 s — and never under the 20 s baseline.
+    await vi.advanceTimersByTimeAsync(FAILURE_BACKOFF_MAX_MS - 1)
+    expect(h.readDoors).toHaveBeenCalledTimes(1)
+    await vi.advanceTimersByTimeAsync(1)
+    expect(h.readDoors).toHaveBeenCalledTimes(2)
+  })
+
+  it('never lets the unlocked interval slow a door below the baseline', async () => {
+    // The ranges overlap: 10 s "unlocked" with a 2 s baseline must not mean a slower poll.
+    const h = screenSetup({
+      intervals: { ...custom, withSocketMs: 2_000, unlockedMs: 10_000 },
+    })
+    await h.started()
+    h.setDoors([door('front', 'unlock'), door('garage'), door('unlinked')])
+    await vi.advanceTimersByTimeAsync(2_000)
+    h.readDoors.mockClear()
+    await vi.advanceTimersByTimeAsync(10_000)
+    expect(h.readDoors).toHaveBeenCalledTimes(5)
+  })
+
+  it('rearm applies a shorter door-read interval now, not after the old one runs out', async () => {
+    const h = screenSetup({ intervals: custom })
+    await h.started()
+    await vi.advanceTimersByTimeAsync(5_000)
+    expect(h.readDoors).not.toHaveBeenCalled()
+    // 5 s into a 20 s wait, the user saves 6 s: the next read is 1 s away.
+    h.setIntervals({ ...custom, withSocketMs: 6_000 })
+    h.monitor.rearm()
+    await vi.advanceTimersByTimeAsync(999)
+    expect(h.readDoors).not.toHaveBeenCalled()
+    await vi.advanceTimersByTimeAsync(1)
+    expect(h.readDoors).toHaveBeenCalledTimes(1)
+    await vi.advanceTimersByTimeAsync(6_000 * 3)
+    expect(h.readDoors).toHaveBeenCalledTimes(4)
+  })
+
+  it('rearm reads at once when the new interval has already passed, exactly once', async () => {
+    const h = screenSetup({ intervals: custom })
+    await h.started()
+    await vi.advanceTimersByTimeAsync(10_000)
+    h.setIntervals({ ...custom, withSocketMs: 5_000 })
+    h.monitor.rearm()
+    h.monitor.rearm()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(h.readDoors).toHaveBeenCalledTimes(1)
+  })
+
+  it('rearm applies a longer interval to the pending read too', async () => {
+    const h = screenSetup()
+    await h.started()
+    h.setIntervals({ ...DEFAULT_DOOR_MONITOR_INTERVALS, withSocketMs: 60_000 })
+    h.monitor.rearm()
+    await vi.advanceTimersByTimeAsync(59_000)
+    expect(h.readDoors).not.toHaveBeenCalled()
+    await vi.advanceTimersByTimeAsync(1_000)
+    expect(h.readDoors).toHaveBeenCalledTimes(1)
+  })
+
+  it('rearm applies a shorter details interval now', async () => {
+    const h = screenSetup({ intervals: custom })
+    await h.started()
+    await vi.advanceTimersByTimeAsync(12_000)
+    // 60 s was set, so nothing has run since the first round.
+    expect(h.readEmergency).not.toHaveBeenCalled()
+    h.setIntervals({ ...custom, detailsMs: 10_000 })
+    h.monitor.rearm()
+    // That round ended more than 10 s ago, so the next one is due now.
+    await vi.advanceTimersByTimeAsync(0)
+    expect(h.readEmergency).toHaveBeenCalledTimes(1)
+    await vi.advanceTimersByTimeAsync(10_000)
+    expect(h.readEmergency).toHaveBeenCalledTimes(2)
+  })
+
+  it('a value read without rearm still applies from the next scheduling decision', async () => {
+    const h = screenSetup({ intervals: custom })
+    await h.started()
+    h.setIntervals({ ...custom, withSocketMs: 3_000 })
+    // The pending 20 s wait runs out as it was armed; everything after it is 3 s.
+    await vi.advanceTimersByTimeAsync(custom.withSocketMs)
+    h.readDoors.mockClear()
+    await vi.advanceTimersByTimeAsync(3_000 * 4)
+    expect(h.readDoors).toHaveBeenCalledTimes(4)
+  })
+
+  it('rearm does nothing while stopped: no read, no timer', async () => {
+    const h = screenSetup()
+    h.monitor.rearm()
+    await vi.advanceTimersByTimeAsync(DETAILS_POLL_MS)
+    expect(h.readDoors).not.toHaveBeenCalled()
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('keeps the constants that are not settings: coalescing, the after-trigger burst, the backoff cap', async () => {
+    const h = screenSetup({ intervals: { ...custom, unlockedMs: 1_000 } })
+    await h.started()
+    // A flood of triggers is still one read per 250 ms.
+    for (let i = 0; i < 20; i += 1) {
+      h.monitor.poke('flood')
+      await vi.advanceTimersByTimeAsync(TRIGGER_COALESCE_MS / 5)
+    }
+    expect(h.readDoors.mock.calls.length).toBeLessThanOrEqual(5)
+    // And the failure backoff still caps at 30 s whatever the baseline.
+    h.setFailure(new AccessApiError('The console did not answer.', { kind: 'network' }))
+    await vi.advanceTimersByTimeAsync(FAILURE_BACKOFF_MAX_MS * 4)
+    h.readDoors.mockClear()
+    await vi.advanceTimersByTimeAsync(FAILURE_BACKOFF_MAX_MS * 3)
+    expect(h.readDoors).toHaveBeenCalledTimes(3)
+  })
+})
+
+describe('without the Doors screen option (P5.5 behaviour, unchanged)', () => {
+  it('has an empty screen, knows no door, and its new methods are harmless', async () => {
+    const h = setup()
+    await h.started()
+    expect(h.monitor.screen).toEqual(EMPTY_SCREEN)
+    expect(h.monitor.knownDoor('front')).toBeNull()
+    expect(h.monitor.stale).toBe(false)
+    h.monitor.screenChanged()
+    h.monitor.refreshDetails('test')
+    h.monitor.rearm()
+    await vi.advanceTimersByTimeAsync(POLL_WITH_SOCKET_MS)
+    expect(h.monitor.running).toBe(true)
+    expect(h.monitor.states).toEqual({ front: LOCKED, garage: LOCKED })
   })
 })

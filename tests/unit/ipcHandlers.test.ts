@@ -13,7 +13,13 @@ import {
   IPC,
   IPC_CHANNELS,
   ipcResultSchema,
+  emptyDoorsScreenState,
   type AppState,
+  type DoorActionInput,
+  type DoorActionResult,
+  type DoorEmergencyInput,
+  type DoorEmergencyResult,
+  type DoorsScreenState,
   type IpcError,
   type IpcResult,
   type UnlockResult,
@@ -195,11 +201,6 @@ function setup(options: SetupOptions = {}) {
     streamQualities: vi.fn(() =>
       Promise.resolve({ high: true, medium: false, low: true, package: false }),
     ),
-    // DOOR-1: the real manager refuses with `disabled` while Access is off; that refusal is tested
-    // in connectionManager.test.ts, and here it is injected where a test needs it.
-    doors: vi.fn((): Promise<IpcResult<Door[]>> =>
-      Promise.resolve({ ok: true, value: [FRONT_DOOR] }),
-    ),
     // DOOR-3: the real manager's refusals, logging and single PUT are tested in
     // connectionManager.test.ts; here it answers a success unless a test injects otherwise.
     unlockDoor: vi.fn<(cameraRef: string) => Promise<IpcResult<UnlockResult>>>(() =>
@@ -219,7 +220,32 @@ function setup(options: SetupOptions = {}) {
       ok: true,
       value: { 'door-1': { relay: 'lock', position: null } },
     })),
-    accessInputsChanged: vi.fn<(reason: string) => void>(),
+    // P5.6: the real manager's rules for these are tested in connectionManagerDoorsScreen.test.ts;
+    // here each answers a plain success unless a test injects otherwise.
+    watchDoorsScreen: vi.fn<(open: boolean) => IpcResult<DoorsScreenState>>(() => ({
+      ok: true,
+      value: { ...emptyDoorsScreenState(), doors: [FRONT_DOOR] },
+    })),
+    doorAction: vi.fn<(input: DoorActionInput) => Promise<IpcResult<DoorActionResult>>>((input) =>
+      Promise.resolve({
+        ok: true,
+        value: {
+          doorId: input.doorId,
+          doorName: 'Front Door',
+          action: input.action,
+          sent: input.action === 'lock' ? 'lock_now' : input.action,
+          minutes: input.minutes ?? null,
+          outcome: 'done',
+          reason: null,
+        },
+      }),
+    ),
+    setDoorEmergency: vi.fn<(input: DoorEmergencyInput) => Promise<IpcResult<DoorEmergencyResult>>>(
+      (input) => Promise.resolve({ ok: true, value: { ...input, outcome: 'done', reason: null } }),
+    ),
+    accessPollingChanged: vi.fn<() => void>(),
+    accessInputsChanged:
+      vi.fn<(reason: string, options?: { readonly trustChanged?: boolean }) => void>(),
     applyConsoleChange: vi.fn((next: Config['console']) => {
       current = { ...current, console: next }
       return Promise.resolve()
@@ -411,12 +437,97 @@ describe('request validation (CLAUDE.md)', () => {
       payload: { cameraId: '' },
       why: 'no camera id',
     },
-    { channel: IPC.listDoors.channel, payload: {}, why: 'an argument where there is none' },
     { channel: IPC.watchDoors.channel, payload: undefined, why: 'no payload' },
     {
       channel: IPC.watchDoors.channel,
       payload: { watching: 'yes' },
       why: 'a flag that is no boolean',
+    },
+    { channel: IPC.watchDoorsScreen.channel, payload: {}, why: 'no flag' },
+    {
+      channel: IPC.watchDoorsScreen.channel,
+      payload: { open: 1 },
+      why: 'a flag that is no boolean',
+    },
+    {
+      channel: IPC.doorAction.channel,
+      payload: { doorId: '', action: 'unlock' },
+      why: 'an empty door id',
+    },
+    {
+      channel: IPC.doorAction.channel,
+      payload: { action: 'unlock' },
+      why: 'no door id',
+    },
+    {
+      channel: IPC.doorAction.channel,
+      payload: { doorId: 'door-1', action: 'lock_now' },
+      why: 'a wire rule the renderer may not choose itself',
+    },
+    {
+      channel: IPC.doorAction.channel,
+      payload: { doorId: 'door-1', action: 'custom' },
+      why: 'a custom unlock with no minutes',
+    },
+    {
+      channel: IPC.doorAction.channel,
+      payload: { doorId: 'door-1', action: 'keep_unlock', minutes: 30 },
+      why: 'minutes on an action that takes none',
+    },
+    {
+      channel: IPC.doorAction.channel,
+      payload: { doorId: 'door-1', action: 'custom', minutes: 0 },
+      why: 'zero minutes',
+    },
+    {
+      channel: IPC.doorAction.channel,
+      payload: { doorId: 'door-1', action: 'custom', minutes: 1441 },
+      why: 'more than a day',
+    },
+    {
+      channel: IPC.doorAction.channel,
+      payload: { doorId: 'door-1', action: 'custom', minutes: 1.5 },
+      why: 'a fraction of a minute',
+    },
+    {
+      channel: IPC.setDoorEmergency.channel,
+      payload: { lockdown: true, evacuation: true },
+      why: 'lockdown and evacuation together',
+    },
+    {
+      channel: IPC.setDoorEmergency.channel,
+      payload: { lockdown: true },
+      why: 'one flag missing, which must not be filled in for the renderer',
+    },
+    {
+      channel: IPC.setDoorEmergency.channel,
+      payload: { lockdown: 'true', evacuation: false },
+      why: 'a flag that is a string',
+    },
+    {
+      channel: IPC.setAccessPolling.channel,
+      payload: { withSocketSec: 5, withoutSocketSec: 2, unlockedSec: 1 },
+      why: 'one interval missing, which must not be defaulted',
+    },
+    {
+      channel: IPC.setAccessPolling.channel,
+      payload: { withSocketSec: 1, withoutSocketSec: 2, unlockedSec: 1, detailsSec: 30 },
+      why: 'a baseline below its floor',
+    },
+    {
+      channel: IPC.setAccessPolling.channel,
+      payload: { withSocketSec: 5, withoutSocketSec: 2, unlockedSec: 0, detailsSec: 30 },
+      why: 'an unlocked interval of zero',
+    },
+    {
+      channel: IPC.setAccessPolling.channel,
+      payload: { withSocketSec: 5, withoutSocketSec: 2, unlockedSec: 1, detailsSec: 601 },
+      why: 'a details interval above its ceiling',
+    },
+    {
+      channel: IPC.setAccessPolling.channel,
+      payload: { withSocketSec: 5, withoutSocketSec: 2.5, unlockedSec: 1, detailsSec: 30 },
+      why: 'a fraction of a second',
     },
     {
       channel: IPC.setDoorLinks.channel,
@@ -498,6 +609,14 @@ function payloadFor(channel: string): unknown {
       return { cameraRef: 'cam-1' }
     case IPC.watchDoors.channel:
       return { watching: true }
+    case IPC.watchDoorsScreen.channel:
+      return { open: true }
+    case IPC.doorAction.channel:
+      return { doorId: 'door-1', action: 'unlock' }
+    case IPC.setDoorEmergency.channel:
+      return { lockdown: false, evacuation: false }
+    case IPC.setAccessPolling.channel:
+      return { withSocketSec: 5, withoutSocketSec: 2, unlockedSec: 1, detailsSec: 30 }
     default:
       return undefined
   }
@@ -1109,40 +1228,10 @@ describe('cameraStreamQualities (QUAL-7)', () => {
   })
 })
 
-describe('listDoors (DOOR-1, P5.3)', () => {
-  it("passes the manager's doors through", async () => {
-    const result = await h.call(IPC.listDoors)
-    expect(h.manager.doors).toHaveBeenCalledTimes(1)
-    expect(result).toEqual({ ok: true, value: [FRONT_DOOR] })
-  })
-
-  it("passes the manager's mapped failure through unchanged, endpoint included", async () => {
-    // The manager maps the client's error once, for the status and for this answer alike
-    // (connectionManager.test.ts covers the mapping), so the handler must not re-map it.
-    const error: IpcError = {
-      kind: 'pin-required',
-      message: 'No TLS certificate is pinned for 192.0.2.10:12445 yet.',
-      endpoint: '192.0.2.10:12445',
-      retryable: false,
-    }
-    h.manager.doors.mockResolvedValueOnce({ ok: false, error })
-    const result = await h.call(IPC.listDoors)
-    expect(failure(result)).toEqual(error)
-  })
-
-  it('answers disabled while Access is off (DOOR-0)', async () => {
-    h.manager.doors.mockResolvedValueOnce({
-      ok: false,
-      error: { kind: 'disabled', message: 'off', endpoint: null, retryable: false },
-    })
-    const result = await h.call(IPC.listDoors)
-    expect(failure(result)).toMatchObject({ kind: 'disabled', retryable: false })
-  })
-
-  it('still never throws if the manager does', async () => {
-    h.manager.doors.mockRejectedValueOnce(new Error('a bug in main'))
-    const result = await h.call(IPC.listDoors)
-    expect(failure(result)).toMatchObject({ kind: 'internal', message: 'a bug in main' })
+describe('the removed door list call (DOOR-1, P5.6)', () => {
+  it('registers no handler for vp:doors/list', () => {
+    // The one-shot list went with Settings' Door links card (user decision 2026-11-18).
+    expect(Object.values(IPC).map((spec) => spec.channel)).not.toContain('vp:doors/list')
   })
 })
 
@@ -1226,6 +1315,10 @@ describe('telling the door-state monitor what changed (DOOR-6, P5.5)', () => {
     expect(h.manager.accessInputsChanged).not.toHaveBeenCalled()
     await h.call(IPC.setSecret, { key: 'accessToken', value: 'a-token' })
     expect(h.manager.accessInputsChanged).toHaveBeenCalledTimes(1)
+    // P5.6: the Doors screen's door list was read with the old token.
+    expect(h.manager.accessInputsChanged).toHaveBeenLastCalledWith(expect.any(String), {
+      trustChanged: true,
+    })
     // By then the token is where the manager reads it.
     expect(h.services.credentials.accessToken).toBe('a-token')
   })
@@ -1238,6 +1331,9 @@ describe('telling the door-state monitor what changed (DOOR-6, P5.5)', () => {
     })
     await h.call(IPC.clearSecret, { key: 'accessToken' })
     expect(h.manager.accessInputsChanged).toHaveBeenCalledTimes(1)
+    expect(h.manager.accessInputsChanged).toHaveBeenLastCalledWith(expect.any(String), {
+      trustChanged: true,
+    })
     expect(heldAtCall).toBeUndefined()
     await h.call(IPC.clearSecret, { key: 'protectApiKey' })
     expect(h.manager.accessInputsChanged).toHaveBeenCalledTimes(1)
@@ -1256,6 +1352,10 @@ describe('telling the door-state monitor what changed (DOOR-6, P5.5)', () => {
     await h.call(IPC.repinCertificate, { endpoint: 'protect', fingerprint256: FP_A })
     expect(h.pins.repin).toHaveBeenCalledTimes(1)
     expect(h.manager.accessInputsChanged).toHaveBeenCalledTimes(2)
+    // P5.6: a re-accepted certificate may be another machine's, so the door list is dropped.
+    for (const call of h.manager.accessInputsChanged.mock.calls) {
+      expect(call[1]).toEqual({ trustChanged: true })
+    }
   })
 
   it('after the door links are saved, once they are the live config', async () => {
@@ -1266,6 +1366,252 @@ describe('telling the door-state monitor what changed (DOOR-6, P5.5)', () => {
     await h.call(IPC.setDoorLinks, { links: { 'cam-1': 'door-1' } })
     expect(h.manager.accessInputsChanged).toHaveBeenCalledTimes(1)
     expect(linksAtCall).toEqual({ 'cam-1': 'door-1' })
+    // Links are not a matter of trust: the Doors screen keeps its door list through a link save.
+    expect(h.manager.accessInputsChanged.mock.calls[0]).toHaveLength(1)
+  })
+})
+
+describe('watchDoorsScreen (P5.6)', () => {
+  it('passes the flag to the manager and its state back', async () => {
+    const result = await h.call<DoorsScreenState>(IPC.watchDoorsScreen, { open: true })
+    expect(h.manager.watchDoorsScreen).toHaveBeenCalledExactlyOnceWith(true)
+    expect(result.ok && result.value.doors).toEqual([FRONT_DOOR])
+    h.manager.watchDoorsScreen.mockReturnValueOnce({ ok: true, value: emptyDoorsScreenState() })
+    expect(await h.call(IPC.watchDoorsScreen, { open: false })).toEqual({
+      ok: true,
+      value: emptyDoorsScreenState(),
+    })
+    expect(h.manager.watchDoorsScreen).toHaveBeenLastCalledWith(false)
+  })
+
+  it('carries a reason nothing is read as the state, not as a failed call', async () => {
+    h.manager.watchDoorsScreen.mockReturnValueOnce({
+      ok: true,
+      value: {
+        ...emptyDoorsScreenState(),
+        error: { kind: 'disabled', message: 'Access is off.', endpoint: null, retryable: false },
+      },
+    })
+    const result = await h.call<DoorsScreenState>(IPC.watchDoorsScreen, { open: true })
+    expect(result.ok && result.value.error?.kind).toBe('disabled')
+  })
+
+  it('is allowed during a perf run: it changes no config', async () => {
+    const perf = setup({
+      viewWritesBlocked: () => 'Views cannot be changed during a perf run.',
+      streamsWritesBlocked: () => 'Stream quality defaults cannot be changed during a perf run.',
+    })
+    expect((await perf.call(IPC.watchDoorsScreen, { open: true })).ok).toBe(true)
+    expect(perf.config.update).not.toHaveBeenCalled()
+  })
+
+  it('still never throws if the manager does', async () => {
+    h.manager.watchDoorsScreen.mockImplementationOnce(() => {
+      throw new Error('a bug in main')
+    })
+    const result = await h.call(IPC.watchDoorsScreen, { open: true })
+    expect(failure(result)).toMatchObject({ kind: 'internal', message: 'a bug in main' })
+  })
+})
+
+describe('doorAction (DOOR-3/4/5, P5.6)', () => {
+  it('passes the validated action to the manager, once, and its answer back', async () => {
+    const result = await h.call<DoorActionResult>(IPC.doorAction, {
+      doorId: 'door-1',
+      action: 'custom',
+      minutes: 45,
+    })
+    expect(h.manager.doorAction).toHaveBeenCalledExactlyOnceWith({
+      doorId: 'door-1',
+      action: 'custom',
+      minutes: 45,
+    })
+    expect(result).toEqual({
+      ok: true,
+      value: {
+        doorId: 'door-1',
+        doorName: 'Front Door',
+        action: 'custom',
+        sent: 'custom',
+        minutes: 45,
+        outcome: 'done',
+        reason: null,
+      },
+    })
+  })
+
+  it('passes on nothing but the three fields: an extra key never reaches the manager', async () => {
+    await h.call(IPC.doorAction, { doorId: 'door-1', action: 'lock', sent: 'keep_unlock', n: 2 })
+    expect(h.manager.doorAction).toHaveBeenCalledExactlyOnceWith({
+      doorId: 'door-1',
+      action: 'lock',
+    })
+  })
+
+  it('never reaches the manager with a payload the schema refuses', async () => {
+    for (const payload of [
+      { doorId: 'door-1', action: 'custom' },
+      { doorId: 'door-1', action: 'unlock', minutes: 5 },
+      { doorId: '', action: 'lock' },
+      { doorId: 'door-1', action: 'open' },
+    ]) {
+      const result = await handlerFor(h.router, IPC.doorAction.channel)(payload)
+      expect(failure(result).kind).toBe('invalid-request')
+    }
+    expect(h.manager.doorAction).not.toHaveBeenCalled()
+  })
+
+  it("passes the manager's refusal through unchanged, never retryable", async () => {
+    h.manager.doorAction.mockResolvedValueOnce({
+      ok: false,
+      error: {
+        kind: 'not-found',
+        message: 'Not a door main read.',
+        endpoint: null,
+        retryable: false,
+      },
+    })
+    const result = await h.call(IPC.doorAction, { doorId: 'door-9', action: 'unlock' })
+    expect(failure(result)).toEqual({
+      kind: 'not-found',
+      message: 'Not a door main read.',
+      endpoint: null,
+      retryable: false,
+    })
+    // One call per request: the handler repeats nothing (DOOR-3/4).
+    expect(h.manager.doorAction).toHaveBeenCalledTimes(1)
+  })
+
+  it('still never throws if the manager does, and does not call it again', async () => {
+    h.manager.doorAction.mockRejectedValueOnce(new Error('a bug in main'))
+    const result = await h.call(IPC.doorAction, { doorId: 'door-1', action: 'unlock' })
+    expect(failure(result)).toMatchObject({ kind: 'internal', retryable: false })
+    expect(h.manager.doorAction).toHaveBeenCalledTimes(1)
+  })
+
+  it('is allowed during a perf run, like the cell unlock, and writes no config', async () => {
+    const perf = setup({
+      viewWritesBlocked: () => 'Views cannot be changed during a perf run.',
+      streamsWritesBlocked: () => 'Stream quality defaults cannot be changed during a perf run.',
+    })
+    expect((await perf.call(IPC.doorAction, { doorId: 'door-1', action: 'lock' })).ok).toBe(true)
+    expect(perf.config.update).not.toHaveBeenCalled()
+  })
+})
+
+describe('setDoorEmergency (DOOR-3/4/5, P5.6)', () => {
+  it('passes both flags to the manager, once, and its answer back', async () => {
+    const result = await h.call<DoorEmergencyResult>(IPC.setDoorEmergency, {
+      lockdown: false,
+      evacuation: true,
+    })
+    expect(h.manager.setDoorEmergency).toHaveBeenCalledExactlyOnceWith({
+      lockdown: false,
+      evacuation: true,
+    })
+    expect(result).toEqual({
+      ok: true,
+      value: { lockdown: false, evacuation: true, outcome: 'done', reason: null },
+    })
+  })
+
+  it('refuses both flags on before the manager hears of it', async () => {
+    const result = await handlerFor(
+      h.router,
+      IPC.setDoorEmergency.channel,
+    )({ lockdown: true, evacuation: true })
+    expect(failure(result).kind).toBe('invalid-request')
+    expect(h.manager.setDoorEmergency).not.toHaveBeenCalled()
+  })
+
+  it("passes the manager's failure through and never calls it twice", async () => {
+    h.manager.setDoorEmergency.mockResolvedValueOnce({
+      ok: false,
+      error: { kind: 'disabled', message: 'Access is off.', endpoint: null, retryable: false },
+    })
+    const result = await h.call(IPC.setDoorEmergency, { lockdown: true, evacuation: false })
+    expect(failure(result).kind).toBe('disabled')
+    expect(h.manager.setDoorEmergency).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('setAccessPolling (DOOR-6, P5.6)', () => {
+  const POLLING = { withSocketSec: 10, withoutSocketSec: 3, unlockedSec: 2, detailsSec: 60 }
+
+  it('saves the four intervals through the config store and answers with the new state', async () => {
+    const result = await h.call<AppState>(IPC.setAccessPolling, POLLING)
+    expect(h.config.update).toHaveBeenCalledTimes(1)
+    expect(h.disk).toMatchObject({
+      accessPolling: POLLING,
+      // The rest of the config goes along untouched.
+      console: { host: '192.0.2.10', certFingerprint: FP_A },
+    })
+    expect(result.ok && result.value.settings.accessPolling).toEqual(POLLING)
+    expect(h.services.current.accessPolling).toEqual(POLLING)
+  })
+
+  it('tells the manager once the new values are the live config, so they apply without a restart', async () => {
+    let liveAtCall: unknown = null
+    h.manager.accessPollingChanged.mockImplementationOnce(() => {
+      liveAtCall = h.services.current.accessPolling
+    })
+    await h.call(IPC.setAccessPolling, POLLING)
+    expect(h.manager.accessPollingChanged).toHaveBeenCalledTimes(1)
+    expect(liveAtCall).toEqual(POLLING)
+  })
+
+  it('accepts each bound itself and refuses one step outside it, in main', async () => {
+    const lowest = { withSocketSec: 2, withoutSocketSec: 1, unlockedSec: 1, detailsSec: 10 }
+    const highest = { withSocketSec: 60, withoutSocketSec: 30, unlockedSec: 10, detailsSec: 600 }
+    expect((await h.call(IPC.setAccessPolling, lowest)).ok).toBe(true)
+    expect((await h.call(IPC.setAccessPolling, highest)).ok).toBe(true)
+    expect(h.disk.accessPolling).toEqual(highest)
+    h.config.update.mockClear()
+    for (const [field, value] of [
+      ['withSocketSec', 1],
+      ['withSocketSec', 61],
+      ['withoutSocketSec', 0],
+      ['withoutSocketSec', 31],
+      ['unlockedSec', 0],
+      ['unlockedSec', 11],
+      ['detailsSec', 9],
+      ['detailsSec', 601],
+    ] as const) {
+      const result = await handlerFor(
+        h.router,
+        IPC.setAccessPolling.channel,
+      )({ ...POLLING, [field]: value })
+      expect(failure(result).kind).toBe('invalid-request')
+      expect(failure(result).message).toContain(field)
+    }
+    expect(h.config.update).not.toHaveBeenCalled()
+    expect(h.disk.accessPolling).toEqual(highest)
+  })
+
+  it('makes no Access call and is accepted while Access is off (DOOR-0: local config only)', async () => {
+    expect(h.console.accessEnabled).toBe(false)
+    expect((await h.call(IPC.setAccessPolling, POLLING)).ok).toBe(true)
+    expect(h.manager.watchDoorsScreen).not.toHaveBeenCalled()
+  })
+
+  it('is allowed during a perf run: the harness shows the renderer none of these values', async () => {
+    const perf = setup({
+      settingsView: (s) => withPerfGridQuality(s, 'high'),
+      viewWritesBlocked: () => 'Views cannot be changed during a perf run.',
+      streamsWritesBlocked: () => 'Stream quality defaults cannot be changed during a perf run.',
+    })
+    const result = await perf.call<AppState>(IPC.setAccessPolling, POLLING)
+    expect(result.ok && result.value.settings.accessPolling).toEqual(POLLING)
+    expect(perf.disk.accessPolling).toEqual(POLLING)
+  })
+
+  it('answers a failed write as a failure and leaves the live config alone', async () => {
+    h.config.update.mockRejectedValueOnce(new Error('disk full'))
+    const before = h.services.current.accessPolling
+    const result = await h.call(IPC.setAccessPolling, POLLING)
+    expect(failure(result)).toMatchObject({ kind: 'internal', message: 'disk full' })
+    expect(h.services.current.accessPolling).toEqual(before)
+    expect(h.manager.accessPollingChanged).not.toHaveBeenCalled()
   })
 })
 
@@ -1292,7 +1638,7 @@ describe('setDoorLinks (DOOR-2, P5.3)', () => {
     expect(h.services.current.console.accessEnabled).toBe(false)
     const result = await h.call(IPC.setDoorLinks, { links: { 'cam-1': 'door-1' } })
     expect(result.ok).toBe(true)
-    expect(h.manager.doors).not.toHaveBeenCalled()
+    expect(h.manager.watchDoorsScreen).not.toHaveBeenCalled()
     expect(h.disk.doorLinks).toEqual({ 'cam-1': 'door-1' })
   })
 

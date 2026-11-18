@@ -9,6 +9,16 @@
 import {
   AppStateSchema,
   CameraIdInputSchema,
+  DOOR_ACTIONS,
+  DOOR_ACTIONS_SENT,
+  DoorActionInputSchema,
+  DoorActionResultSchema,
+  DoorEmergencyInputSchema,
+  DoorsScreenStateSchema,
+  MAX_DOOR_CUSTOM_MINUTES,
+  MAX_DOOR_ID_LENGTH,
+  SetAccessPollingInputSchema,
+  emptyDoorsScreenState,
   ConsoleInputSchema,
   AcceptCertInputSchema,
   EndpointInputSchema,
@@ -32,6 +42,12 @@ import {
   SnapshotResultSchema,
   type AppState,
 } from '@shared/ipc'
+import {
+  ACCESS_POLLING_BOUNDS,
+  ACCESS_POLLING_FIELDS,
+  defaultAccessPolling,
+  type AccessPollingField,
+} from '@shared/models'
 import { QUALITIES, STREAM_QUALITIES } from '@shared/quality'
 import { streamHandle } from '@shared/streams'
 import { describe, expect, it } from 'vitest'
@@ -317,7 +333,11 @@ describe('request schemas', () => {
     }
   })
 
-  it('answers listDoors with the trimmed Door shape, never the wire one (DOOR-1)', () => {
+  it('has no one-shot door list call: the Doors screen is the only reader (DOOR-1, P5.6)', () => {
+    // `vp:doors/list` went with Settings' Door links card (user decision 2026-11-18): the list
+    // reaches the renderer through `watchDoorsScreen` and its push, and nowhere else.
+    expect(Object.keys(IPC)).not.toContain('listDoors')
+    expect(Object.values(IPC).map((spec) => spec.channel)).not.toContain('vp:doors/list')
     const door = {
       id: 'door-1',
       name: 'Front Door',
@@ -328,9 +348,15 @@ describe('request schemas', () => {
       relay: 'lock',
       position: null,
     }
-    expect(IPC.listDoors.value.parse([door])).toEqual([door])
+    const listed = { ...emptyDoorsScreenState(), doors: [door] }
+    expect(IPC.watchDoorsScreen.value.parse(listed)).toEqual(listed)
     // `is_bind_hub`'s string form is normalized in main (SPEC §5.2): only a boolean crosses.
-    expect(IPC.listDoors.value.safeParse([{ ...door, boundToHub: 'false' }]).success).toBe(false)
+    expect(
+      IPC.watchDoorsScreen.value.safeParse({
+        ...listed,
+        doors: [{ ...door, boundToHub: 'false' }],
+      }).success,
+    ).toBe(false)
   })
 
   it('takes one boolean for watchDoors and answers the door-state map (DOOR-6)', () => {
@@ -351,14 +377,183 @@ describe('request schemas', () => {
     expect(IPC.watchDoors.value.parse({})).toEqual({})
   })
 
-  it('accepts undefined for the calls that take no payload', () => {
-    for (const spec of [
-      IPC.getState,
-      IPC.testConnection,
-      IPC.connect,
-      IPC.listCameras,
-      IPC.listDoors,
+  it('takes one boolean for watchDoorsScreen and answers the whole screen state (P5.6)', () => {
+    expect(IPC.watchDoorsScreen.channel).toBe('vp:doors/screen')
+    expect(IPC.watchDoorsScreen.request.parse({ open: true })).toEqual({ open: true })
+    // No door id crosses here either: an unknown key is stripped.
+    expect(IPC.watchDoorsScreen.request.parse({ open: false, doorIds: ['d'] })).toEqual({
+      open: false,
+    })
+    for (const bad of [undefined, {}, { open: 'yes' }, { open: null }, { watching: true }]) {
+      expect(IPC.watchDoorsScreen.request.safeParse(bad).success, JSON.stringify(bad)).toBe(false)
+    }
+    expect(IPC.watchDoorsScreen.value).toBe(DoorsScreenStateSchema)
+  })
+
+  it('takes a door id, an action and minutes only for custom, for doorAction (DOOR-3/4, P5.6)', () => {
+    expect(IPC.doorAction.channel).toBe('vp:doors/action')
+    expect(IPC.doorAction.request).toBe(DoorActionInputSchema)
+    expect([...DOOR_ACTIONS]).toEqual([
+      'unlock',
+      'lock',
+      'keep_unlock',
+      'keep_lock',
+      'custom',
+      'reset',
+    ])
+    for (const action of DOOR_ACTIONS) {
+      const input =
+        action === 'custom' ? { doorId: 'd', action, minutes: 30 } : { doorId: 'd', action }
+      expect(DoorActionInputSchema.parse(input)).toEqual(input)
+    }
+    // `minutes` iff `custom`: missing where required, present where not allowed.
+    expect(DoorActionInputSchema.safeParse({ doorId: 'd', action: 'custom' }).success).toBe(false)
+    for (const action of DOOR_ACTIONS.filter((entry) => entry !== 'custom')) {
+      const withMinutes = { doorId: 'd', action, minutes: 5 }
+      expect(DoorActionInputSchema.safeParse(withMinutes).success, action).toBe(false)
+    }
+    // Whole minutes from 1 to a day.
+    expect(MAX_DOOR_CUSTOM_MINUTES).toBe(1440)
+    for (const minutes of [1, 60, 1440]) {
+      expect(
+        DoorActionInputSchema.safeParse({ doorId: 'd', action: 'custom', minutes }).success,
+      ).toBe(true)
+    }
+    for (const minutes of [0, -5, 1441, 2.5, '30', null, Number.NaN, Number.POSITIVE_INFINITY]) {
+      expect(
+        DoorActionInputSchema.safeParse({ doorId: 'd', action: 'custom', minutes }).success,
+        String(minutes),
+      ).toBe(false)
+    }
+    for (const bad of [
+      undefined,
+      {},
+      { doorId: '', action: 'unlock' },
+      { doorId: 7, action: 'unlock' },
+      { doorId: 'd' },
+      // The wire rule is main's to send (`lock` → `lock_now`, always).
+      { doorId: 'd', action: 'lock_now' },
+      { doorId: 'd', action: 'lock_early' },
+      { doorId: 'd', action: 'emergency' },
+      { doorId: 'd', action: 'UNLOCK' },
     ]) {
+      expect(DoorActionInputSchema.safeParse(bad).success, JSON.stringify(bad)).toBe(false)
+    }
+    // The id is bounded: a refused one is written whole to unlock.log (DOOR-5).
+    expect(MAX_DOOR_ID_LENGTH).toBe(200)
+    const longest = 'd'.repeat(MAX_DOOR_ID_LENGTH)
+    expect(DoorActionInputSchema.safeParse({ doorId: longest, action: 'unlock' }).success).toBe(
+      true,
+    )
+    expect(
+      DoorActionInputSchema.safeParse({ doorId: `${longest}d`, action: 'unlock' }).success,
+    ).toBe(false)
+    // Nothing else rides along: no camera ref, no rule, no repeat count.
+    expect(
+      DoorActionInputSchema.parse({ doorId: 'd', action: 'lock', sent: 'keep_unlock', times: 3 }),
+    ).toEqual({ doorId: 'd', action: 'lock' })
+  })
+
+  it('answers doorAction with what was sent and whether the outcome is known (P5.6)', () => {
+    expect(IPC.doorAction.value).toBe(DoorActionResultSchema)
+    expect([...DOOR_ACTIONS_SENT]).toEqual([
+      'unlock',
+      'lock_now',
+      'reset',
+      'keep_lock',
+      'keep_unlock',
+      'custom',
+    ])
+    const result = {
+      doorId: 'd',
+      doorName: 'Front Door',
+      action: 'lock',
+      sent: 'lock_now',
+      minutes: null,
+      outcome: 'done',
+      reason: null,
+    }
+    expect(DoorActionResultSchema.parse(result)).toEqual(result)
+    // Lock is always `lock_now` (user decision 2026-11-18): the app never sends `lock_early`.
+    expect(DoorActionResultSchema.safeParse({ ...result, sent: 'lock_early' }).success).toBe(false)
+    expect(
+      DoorActionResultSchema.parse({ ...result, outcome: 'unknown', reason: 'No answer.' }).outcome,
+    ).toBe('unknown')
+    // `lock` is a request, never something that was sent; `failed` is an error, not an outcome.
+    expect(DoorActionResultSchema.safeParse({ ...result, sent: 'lock' }).success).toBe(false)
+    expect(DoorActionResultSchema.safeParse({ ...result, outcome: 'failed' }).success).toBe(false)
+  })
+
+  it('takes both emergency flags and refuses both on (DOOR-3, P5.6)', () => {
+    expect(IPC.setDoorEmergency.channel).toBe('vp:doors/emergency')
+    expect(IPC.setDoorEmergency.request).toBe(DoorEmergencyInputSchema)
+    for (const ok of [
+      { lockdown: true, evacuation: false },
+      { lockdown: false, evacuation: true },
+      { lockdown: false, evacuation: false },
+    ]) {
+      expect(DoorEmergencyInputSchema.parse(ok)).toEqual(ok)
+    }
+    for (const bad of [
+      { lockdown: true, evacuation: true },
+      { lockdown: true },
+      { evacuation: false },
+      {},
+      undefined,
+      // A truthy string must never put every door into lockdown.
+      { lockdown: 'true', evacuation: false },
+      { lockdown: 1, evacuation: 0 },
+      { lockdown: null, evacuation: false },
+    ]) {
+      expect(DoorEmergencyInputSchema.safeParse(bad).success, JSON.stringify(bad)).toBe(false)
+    }
+    const answer = { lockdown: false, evacuation: true, outcome: 'done', reason: null }
+    expect(IPC.setDoorEmergency.value.parse(answer)).toEqual(answer)
+  })
+
+  it('takes all four polling intervals inside their bounds, and never defaults one (DOOR-6, P5.6)', () => {
+    expect(IPC.setAccessPolling.channel).toBe('vp:doors/polling')
+    expect(IPC.setAccessPolling.request).toBe(SetAccessPollingInputSchema)
+    // Answers the whole state, like every other setting save.
+    expect(IPC.setAccessPolling.value).toBe(AppStateSchema)
+    expect(ACCESS_POLLING_BOUNDS).toEqual({
+      withSocketSec: { min: 2, max: 60, default: 5 },
+      withoutSocketSec: { min: 1, max: 30, default: 2 },
+      unlockedSec: { min: 1, max: 10, default: 1 },
+      detailsSec: { min: 10, max: 600, default: 30 },
+    })
+    expect(ACCESS_POLLING_FIELDS).toEqual([
+      'withSocketSec',
+      'withoutSocketSec',
+      'unlockedSec',
+      'detailsSec',
+    ])
+    const defaults = defaultAccessPolling()
+    expect(SetAccessPollingInputSchema.parse(defaults)).toEqual(defaults)
+    const at = (edge: 'min' | 'max'): Record<AccessPollingField, number> => ({
+      withSocketSec: ACCESS_POLLING_BOUNDS.withSocketSec[edge],
+      withoutSocketSec: ACCESS_POLLING_BOUNDS.withoutSocketSec[edge],
+      unlockedSec: ACCESS_POLLING_BOUNDS.unlockedSec[edge],
+      detailsSec: ACCESS_POLLING_BOUNDS.detailsSec[edge],
+    })
+    expect(SetAccessPollingInputSchema.safeParse(at('min')).success).toBe(true)
+    expect(SetAccessPollingInputSchema.safeParse(at('max')).success).toBe(true)
+    for (const field of ACCESS_POLLING_FIELDS) {
+      const { min, max } = ACCESS_POLLING_BOUNDS[field]
+      for (const value of [min - 1, max + 1, min + 0.5, String(min), null]) {
+        expect(
+          SetAccessPollingInputSchema.safeParse({ ...defaults, [field]: value }).success,
+          `${field}=${String(value)}`,
+        ).toBe(false)
+      }
+      // A missing field is the renderer's bug: defaulting it would reset a setting unasked.
+      const missing = Object.fromEntries(Object.entries(defaults).filter(([key]) => key !== field))
+      expect(SetAccessPollingInputSchema.safeParse(missing).success, `no ${field}`).toBe(false)
+    }
+  })
+
+  it('accepts undefined for the calls that take no payload', () => {
+    for (const spec of [IPC.getState, IPC.testConnection, IPC.connect, IPC.listCameras]) {
       expect(spec.request.safeParse(undefined).success).toBe(true)
       expect(spec.request.safeParse({ sneaky: true }).success).toBe(false)
     }
@@ -464,6 +659,58 @@ describe('event payloads', () => {
     }
     // The same shape as the call's answer, so the renderer has one thing to hold.
     expect(payload).toBe(IPC.watchDoors.value)
+  })
+
+  it('parses the whole Doors screen state, the same shape the call answers (P5.6)', () => {
+    const { channel, payload } = IPC_EVENTS.doorsScreen
+    expect(channel).toBe('vp:event/doorsScreen')
+    expect(payload).toBe(IPC.watchDoorsScreen.value)
+    const empty = emptyDoorsScreenState()
+    expect(empty).toEqual({ doors: null, stale: false, rules: {}, emergency: null, error: null })
+    expect(payload.parse(empty)).toEqual(empty)
+    // A fresh object per call: a caller that fills one in must not change the next one.
+    expect(emptyDoorsScreenState()).not.toBe(empty)
+    const door = {
+      id: 'door-1',
+      name: 'Front Door',
+      fullName: 'House - 1F - Front Door',
+      floorId: 'floor-1',
+      type: 'door',
+      boundToHub: true,
+      relay: 'unlock',
+      position: 'close',
+    }
+    const full = {
+      doors: [door, { ...door, id: 'door-2', boundToHub: false, relay: 'lock', position: null }],
+      stale: true,
+      rules: {
+        'door-1': { type: 'schedule', endedTime: 1795000000 },
+        // No rule, and a type the reference does not list: both must get through (leniency).
+        'door-2': { type: '', endedTime: null },
+        'door-3': { type: 'something_new', endedTime: 0 },
+      },
+      emergency: { lockdown: false, evacuation: true },
+      error: {
+        kind: 'timeout',
+        message: 'No answer.',
+        endpoint: 'udm.local:12445',
+        retryable: true,
+      },
+    }
+    expect(payload.parse(full)).toEqual(full)
+    for (const bad of [
+      { ...empty, doors: undefined },
+      { ...empty, stale: 'no' },
+      { ...empty, doors: [{ ...door, relay: 'ajar' }] },
+      { ...empty, doors: [{ ...door, id: '' }] },
+      { ...empty, rules: { 'door-1': { type: 7, endedTime: null } } },
+      { ...empty, rules: { 'door-1': { type: 'custom' } } },
+      { ...empty, rules: { '': { type: 'custom', endedTime: null } } },
+      { ...empty, emergency: { lockdown: true } },
+      { ...empty, error: { kind: 'made-up', message: 'x' } },
+    ]) {
+      expect(payload.safeParse(bad).success, JSON.stringify(bad)).toBe(false)
+    }
   })
 
   it('tells a new go2rtc port apart from no go2rtc at all (P2.1/P2.2, gate G2)', () => {

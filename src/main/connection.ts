@@ -2,8 +2,10 @@
 // camera list. It owns five things and nothing else — the per-endpoint `ConnectionStatus`, the
 // camera inventory, the devices subscription that keeps the inventory current (CAM-2), the events
 // subscription that feeds the cell scheduler (CELL-2, P4.2), and the door-state monitor that keeps
-// the Live screen's unlock buttons truthful (DOOR-6, P5.5) — and it pushes every change to the
-// renderer through `IPC_EVENTS`.
+// the Live screen's unlock buttons and the Doors screen truthful (DOOR-6, P5.5/P5.6) — and it
+// pushes every change to the renderer through `IPC_EVENTS`. It is also where every request that
+// changes a physical door is made: the cell's unlock (P5.4) and the Doors screen's door actions
+// and emergency status (P5.6), each exactly one PUT for one confirmed user action (DOOR-3/4).
 //
 // The two feeds open and close together (same endpoint, same key, same pinned Agent, same R9
 // limiter), but **only the devices feed drives the Protect `ConnectionStatus`**. The badge answers
@@ -42,11 +44,18 @@
 // tests drive every phase, the feed and the pin-clearing in plain Node with no window and no socket.
 import {
   IPC_EVENTS,
+  emptyDoorsScreenState,
   ipcFail,
   ipcOk,
   type AccessProbe,
   type ConnectionPhase,
   type ConnectionStatus,
+  type DoorActionInput,
+  type DoorActionResult,
+  type DoorActionSent,
+  type DoorEmergencyInput,
+  type DoorEmergencyResult,
+  type DoorsScreenState,
   type EndpointName,
   type EndpointStatus,
   type IpcError,
@@ -59,23 +68,27 @@ import {
   type UnlockResult,
 } from '@shared/ipc'
 import { parseCameraRef } from '@shared/cameraRef'
+import { doorDisplayName } from '@shared/doorName'
 import type { Camera, ConsoleConfig, Door, DoorStates } from '@shared/models'
 import { STREAM_QUALITIES } from '@shared/quality'
 import {
+  ACCESS_AUTH_ADVICE,
   AccessApiError,
   isAccessApiUnavailable,
   type AccessClient,
   type AccessErrorKind,
 } from './access/client'
+import type { DoorDetailsScope } from './access/doorDetailsMonitor'
 import {
   FAILURES_BEFORE_UNKNOWN,
   createDoorStateMonitor,
   type DoorMonitorHaltReason,
+  type DoorMonitorIntervals,
   type DoorNotificationHandlers,
   type DoorReadResult,
   type DoorStateMonitor,
 } from './access/doorStateMonitor'
-import type { UnlockAttempt, UnlockLog } from './access/unlockLog'
+import type { UnlockAttempt, UnlockLog, UnlockLogAction } from './access/unlockLog'
 import type { Config } from './config/schema'
 import type { ConfigStore } from './config/store'
 import {
@@ -118,7 +131,14 @@ export interface ConnectionServices {
   /** Shared with the REST client: a WebSocket upgrade spends a request permit too (R9). */
   readonly limiter: RateLimiter
   protect(): Pick<ProtectClient, 'metaInfo' | 'cameras' | 'snapshot' | 'rtspsStreams'>
-  access(): Pick<AccessClient, 'doors' | 'unlock'>
+  /**
+   * `setLockRule` and `setEmergencyStatus` change physical doors: each is called from exactly one
+   * place below (`doorAction`, `setDoorEmergency`), once per confirmed user action (DOOR-3/4).
+   */
+  access(): Pick<
+    AccessClient,
+    'doors' | 'unlock' | 'lockRule' | 'setLockRule' | 'emergencyStatus' | 'setEmergencyStatus'
+  >
 }
 
 export interface ConnectionManagerOptions {
@@ -183,15 +203,6 @@ export interface ConnectionManager {
    */
   streamQualities(cameraId: string): Promise<RtspsAvailability>
   /**
-   * DOOR-1 (P5.3): `GET /doors` for Settings' door-link card. DOOR-0 first: while Access is off it
-   * answers `disabled` and **no** Access call is made — the client is not even resolved. Otherwise
-   * one request (no pacing of its own, SPEC §5.2), and the Access status follows it exactly as Test
-   * connection's probe does: `connected` on success, `error` with the failure otherwise, emitted
-   * either way. Answers an `IpcResult` rather than rejecting, so the error the card shows is the one
-   * the status recorded (`not-configured`, `pin-required`, `auth`, …, with the endpoint's host:port).
-   */
-  doors(): Promise<IpcResult<Door[]>>
-  /**
    * DOOR-3/4/5 (P5.4): unlock the door linked to a cell's camera ref (`<cameraId>` or
    * `<cameraId>:package`, which uses the doorbell's link — DOOR-2). The door comes from the saved
    * `doorLinks`, never from the renderer. DOOR-0 answers `disabled` (checked first) and no link
@@ -214,13 +225,52 @@ export interface ConnectionManager {
    */
   watchDoors(watching: boolean): IpcResult<DoorStates>
   /**
+   * P5.6: the Doors screen says whether it is open. A second, independent reason for the door-state
+   * monitor to run: it runs while Access is on (DOOR-0), the address resolves, a token is stored
+   * and **either** the Live screen watches a linked door **or** the Doors screen is open. While the
+   * screen is open the monitor tracks every door the console lists and reads each door's lock rule
+   * and the emergency status; all of it is read-only. Answers the state right now (everything
+   * unknown when closing); changes follow as `IPC_EVENTS.doorsScreen`. Never fails: why the doors
+   * cannot be read — Access off, no address, no token, a rejected token or certificate, the last
+   * failed read — is the state's `error`.
+   */
+  watchDoorsScreen(open: boolean): IpcResult<DoorsScreenState>
+  /**
+   * DOOR-3/4/5 (P5.6): one action on one door from the Doors screen — **changes a physical door**.
+   * In this order: DOOR-0 answers `disabled`; a door id that is not in the list main itself last
+   * read from the current console (while the Doors screen is open) answers `not-found`; a door with
+   * no hub answers `bad-request` — all three with no Access call. Otherwise exactly **one** PUT
+   * (`…/unlock` or `…/lock_rule`), never retried, never on a timer, every failure
+   * `retryable: false`; a PUT that may have reached the console without an answer is ok with
+   * `outcome: 'unknown'`. Every attempt, the three refusals included, is appended to the unlock log
+   * (DOOR-5) without the answer waiting for the write. Never rejects.
+   */
+  doorAction(input: DoorActionInput): Promise<IpcResult<DoorActionResult>>
+  /**
+   * DOOR-3/4/5 (P5.6): lockdown / evacuation of **every** door, or back to normal. DOOR-0 answers
+   * `disabled` with no call; otherwise exactly **one** `PUT /doors/settings/emergency`, never
+   * retried, with the same failure, unknown-outcome, logging and status rules as `doorAction`.
+   * Never rejects.
+   */
+  setDoorEmergency(input: DoorEmergencyInput): Promise<IpcResult<DoorEmergencyResult>>
+  /**
    * DOOR-6: something the door-state monitor depends on has just changed outside
    * `applyConsoleChange` — the Access token was stored or cleared, a certificate was accepted or
    * re-accepted, or the door links were saved. Starts or stops the monitor to match, and asks a
    * monitor that keeps running for a read now (which also drops doors that are no longer linked).
    * Sends nothing by itself while the monitor may not run.
+   *
+   * `trustChanged` (P5.6): the token or a certificate is what changed, so the door list the Doors
+   * screen was shown — the list `doorAction` accepts door ids from — may belong to another account
+   * or console. A monitor that keeps running drops it and reads it again.
    */
-  accessInputsChanged(reason: string): void
+  accessInputsChanged(reason: string, options?: { readonly trustChanged?: boolean }): void
+  /**
+   * DOOR-6 (P5.6): `accessPolling` has just been saved. The monitor reads the intervals at every
+   * scheduling decision; this re-arms its pending timers so a shorter one applies now. Sends
+   * nothing by itself.
+   */
+  accessPollingChanged(): void
   /**
    * CON-1/2: the Protect API key has just been deleted. Closes the feed and empties the inventory,
    * because nothing may keep running on a credential the user has removed. Clears
@@ -707,23 +757,110 @@ export function createConnectionManager(options: ConnectionManagerOptions): Conn
     return ids
   }
 
-  /** Every precondition is an offline read: deciding not to run sends nothing (DOOR-0). */
+  /**
+   * P5.6: whether the renderer has the Doors screen open (`watchDoorsScreen`). Independent of
+   * `doorsWatched`: the renderer mounts one screen and unmounts the other in either order.
+   */
+  let doorsScreenOpen = false
+  /** `JSON` of the Doors screen state the renderer was last given, so only a change is pushed. */
+  let doorsScreenSent = JSON.stringify(emptyDoorsScreenState())
+  /**
+   * True while `watchDoorsScreen` is working out its answer. What changes during the call (the
+   * monitor starting or stopping, the reason nothing is read) is in that answer, so it is not
+   * pushed as well: the renderer would get the same state twice, the push first.
+   */
+  let doorsScreenAnswering = false
+
+  /**
+   * Every precondition is an offline read: deciding not to run sends nothing (DOOR-0). Two
+   * watchers (P5.6): the Live screen needs a link to have anything to show, the Doors screen lists
+   * every door and so needs none.
+   */
   function doorMonitorWanted(): boolean {
     return (
-      doorsWatched &&
       !doorMonitorHeld &&
       services.current.console.accessEnabled &&
       credentialStored('access') &&
       endpointOf('access') !== null &&
-      linkedDoorIds().size > 0
+      ((doorsWatched && linkedDoorIds().size > 0) || doorsScreenOpen)
     )
+  }
+
+  /** The saved `accessPolling` seconds as the monitor's milliseconds, read at every use. */
+  function doorMonitorIntervals(): DoorMonitorIntervals {
+    const polling = services.current.accessPolling
+    return {
+      withSocketMs: polling.withSocketSec * 1000,
+      withoutSocketMs: polling.withoutSocketSec * 1000,
+      unlockedMs: polling.unlockedSec * 1000,
+      detailsMs: polling.detailsSec * 1000,
+    }
+  }
+
+  /**
+   * Why the monitor cannot even start for the Doors screen, as the error the screen shows, or
+   * `null` when nothing is in the way. The same three offline checks as {@link doorMonitorWanted},
+   * in the order the user has to fix them. No Access call (DOOR-0).
+   */
+  function doorsScreenBlocked(): IpcError | null {
+    const consoleConfig = services.current.console
+    if (!consoleConfig.accessEnabled) {
+      return {
+        kind: 'disabled',
+        message:
+          'UniFi Access is turned off, so the doors are not read. Turn on "Enable UniFi ' +
+          'Access" in Settings first (DOOR-0).',
+        endpoint: endpointOf('access')?.hostPort ?? null,
+        retryable: false,
+      }
+    }
+    let endpoint: ConsoleEndpoint
+    try {
+      endpoint = accessEndpoint(consoleConfig)
+    } catch (err) {
+      // CON-1: the parser's own message says what is wrong with the address.
+      return toIpcError(err, { endpoint: null })
+    }
+    if (!credentialStored('access')) {
+      return {
+        kind: 'auth',
+        message: `No Access API token is saved, so the doors cannot be read.${ACCESS_AUTH_ADVICE}`,
+        endpoint: endpoint.hostPort,
+        retryable: false,
+      }
+    }
+    return null
+  }
+
+  /**
+   * The Doors screen's state right now. The monitor's while it runs — or after it stopped by
+   * itself, when its last error is why nothing is listed — and otherwise "nothing known" plus the
+   * reason nothing is being read, if there is one.
+   */
+  function doorsScreenState(): DoorsScreenState {
+    if (!doorsScreenOpen) return emptyDoorsScreenState()
+    const monitored = doorMonitor?.screen ?? emptyDoorsScreenState()
+    if (doorMonitor?.running === true || monitored.error !== null) return monitored
+    // Held: between two endpoints, for the length of a save. Not an error; the list follows.
+    if (doorMonitorHeld) return monitored
+    return { ...emptyDoorsScreenState(), error: doorsScreenBlocked() }
+  }
+
+  /** Pushes the Doors screen's state if it is open and differs from what was last given. */
+  function pushDoorsScreen(): void {
+    if (doorsScreenAnswering) return
+    const next = doorsScreenState()
+    const key = JSON.stringify(next)
+    if (key === doorsScreenSent) return
+    doorsScreenSent = key
+    if (doorsScreenOpen) emit(IPC_EVENTS.doorsScreen.channel, next)
   }
 
   /**
    * The monitor's reads are real answers from the Access endpoint, so the status follows them as it
    * follows `readDoors` — but **only on a transition**: a poll every few seconds must not push the
    * same status, or log the same failure, every few seconds. Compared against the slot itself, so a
-   * `doors()` or an unlock that moved the status in between is taken into account.
+   * Test connection or an unlock that moved the status in between is taken into account.
    *
    * One failed poll is not an outage: the monitor keeps its states through it, and the status keeps
    * `connected` by the same rule, turning to `error` only at the failure that makes the states
@@ -762,6 +899,19 @@ export function createConnectionManager(options: ConnectionManagerOptions): Conn
       },
       onReadResult: applyDoorReadResult,
       onHalt: doorMonitorHalted,
+      intervals: doorMonitorIntervals,
+      screen: {
+        open: () => doorsScreenOpen,
+        // Both quiet: a round is a request per door, every `detailsSec`, and on a console older
+        // than Access 1.24.6 each of them fails for ever. The details monitor logs transitions.
+        readEmergency: () => services.access().emergencyStatus({ quiet: true }),
+        readLockRule: (doorId) => services.access().lockRule(doorId, { quiet: true }),
+        // The manager's own view is what goes out (`doorsScreenState`), so the payload is ignored.
+        onState: () => {
+          pushDoorsScreen()
+        },
+        toError: (error) => toIpcError(error, { endpoint: endpointOf('access')?.hostPort ?? null }),
+      },
       log: (line) => {
         log(`access: ${line}`)
       },
@@ -779,12 +929,16 @@ export function createConnectionManager(options: ConnectionManagerOptions): Conn
     cancelDoorMonitorRetry()
     if (!doorMonitorWanted()) {
       doorMonitor?.stop()
+      // The Doors screen may have just lost its list, or gained a reason nothing is read.
+      pushDoorsScreen()
       return
     }
     const monitor = ensureDoorMonitor()
-    if (monitor.running) return
-    doorMonitorSlot = state.access
-    monitor.start()
+    if (!monitor.running) {
+      doorMonitorSlot = state.access
+      monitor.start()
+    }
+    pushDoorsScreen()
   }
 
   function watchDoors(watching: boolean): IpcResult<DoorStates> {
@@ -793,11 +947,43 @@ export function createConnectionManager(options: ConnectionManagerOptions): Conn
     return ipcOk(doorMonitor?.states ?? {})
   }
 
-  function accessInputsChanged(reason: string): void {
+  function watchDoorsScreen(open: boolean): IpcResult<DoorsScreenState> {
+    const changed = doorsScreenOpen !== open
+    doorsScreenOpen = open
+    const wasRunning = doorMonitor?.running === true
+    doorsScreenAnswering = true
+    try {
+      syncDoorMonitor()
+      // A monitor that was already running for the Live screen has to hear that its scope
+      // changed: every door now (and a read at once), or back to the linked ones. One that has
+      // just started reads the flag itself.
+      if (changed && wasRunning) doorMonitor?.screenChanged()
+    } finally {
+      doorsScreenAnswering = false
+    }
+    // The answer is the reset or the first state, so it is also what the next push is compared
+    // with: nothing is pushed for a state the renderer has just been handed.
+    const answer = doorsScreenState()
+    doorsScreenSent = JSON.stringify(answer)
+    return ipcOk(answer)
+  }
+
+  function accessInputsChanged(
+    reason: string,
+    changed: { readonly trustChanged?: boolean } = {},
+  ): void {
     const wasRunning = doorMonitor?.running === true
     syncDoorMonitor()
     // A fresh start reads at once by itself; only a monitor that kept running needs telling.
-    if (wasRunning) doorMonitor?.poke(reason)
+    if (!wasRunning) return
+    // P5.6: before the read, so no door action can be checked against a list read with the old
+    // token or certificate in the meantime.
+    if (changed.trustChanged === true) doorMonitor?.forgetScreen(reason)
+    doorMonitor?.poke(reason)
+  }
+
+  function accessPollingChanged(): void {
+    doorMonitor?.rearm()
   }
 
   // --- the operations ---------------------------------------------------------------------------
@@ -911,9 +1097,9 @@ export function createConnectionManager(options: ConnectionManagerOptions): Conn
 
   /**
    * One `GET /doors`, with the Access status following it: `connected` on an answer, `error` with
-   * the mapped failure otherwise. Shared by Test connection's probe (CON-4) and the door-link card's
-   * list (DOOR-1), so the indicator says the same thing whichever of them asked last. The caller has
-   * already checked DOOR-0. `services.access()` throws `ConsoleEndpointError` for an address that
+   * the mapped failure otherwise. Test connection's Access probe (CON-4) is its one caller since
+   * P5.6 (the one-shot `vp:doors/list` it was shared with is gone: the Doors screen's list comes
+   * from the door-state monitor). The caller has already checked DOOR-0. `services.access()` throws `ConsoleEndpointError` for an address that
    * does not resolve, which is mapped like any other failure (`not-configured`).
    *
    * **A read whose endpoint was replaced meanwhile leaves the status alone.** `applyConsoleChange`
@@ -950,25 +1136,6 @@ export function createConnectionManager(options: ConnectionManagerOptions): Conn
     return result
   }
 
-  async function doors(): Promise<IpcResult<Door[]>> {
-    // DOOR-0, before anything else: not a request that fails, a request that never happens. The
-    // status is left alone — it already derives `disabled` from the switch.
-    if (!services.current.console.accessEnabled) {
-      log('doors: not sent (UniFi Access is disabled, DOOR-0)')
-      return ipcFail(
-        'disabled',
-        'UniFi Access is turned off, so the door list was not read. Turn on "Enable UniFi ' +
-          'Access" in Settings first (DOOR-0).',
-        { endpoint: endpointOf('access')?.hostPort ?? null },
-      )
-    }
-    // The mapped error, not the raw cause: it is the one the status just recorded, endpoint and
-    // all, so the card and the indicator say the same thing.
-    const read = await readDoors()
-    emitStatus()
-    return read
-  }
-
   /**
    * DOOR-3/4/5 (P5.4). **Releases a physical door**, so the rules are strict, in this order:
    *
@@ -992,7 +1159,7 @@ export function createConnectionManager(options: ConnectionManagerOptions): Conn
    *     the door opened. `append` never rejects (src/main/access/unlockLog.ts) and queues in call
    *     order, so the lines stay in the order the attempts ended.
    *
-   * The Access status follows the answer the way `doors()` does — `connected` on success, `error`
+   * The Access status follows the answer the way Test connection's probe does — `connected` on success, `error`
    * on an endpoint failure (auth, pin, network, timeout, …, an unknown outcome included) — except
    * that a refusal of this one door (`DOOR_LEVEL_UNLOCK_KINDS`) proves the endpoint works, so it
    * reads `connected`. Not serialized: an unlock moves no subscription, and two presses on two
@@ -1008,39 +1175,20 @@ export function createConnectionManager(options: ConnectionManagerOptions): Conn
     const linkedId = Object.hasOwn(links, cameraId) ? links[cameraId] : undefined
     const doorId = typeof linkedId === 'string' && linkedId !== '' ? linkedId : null
     const hostPort = (): string | null => endpointOf('access')?.hostPort ?? null
-    // The error kind of an unknown outcome, for its log line (set in the catch below).
-    let unknownKind: IpcError['kind'] | null = null
 
+    /** Logs the attempt (rule 5) and hands the answer back. `linked`: the door it was about. */
     const finish = (
       result: IpcResult<UnlockResult>,
       linked: string | null,
+      logged: DoorPutLogged,
     ): IpcResult<UnlockResult> => {
-      const attempt: UnlockAttempt = !result.ok
-        ? {
-            cameraRef,
-            cameraName,
-            doorId: linked,
-            result: 'failure',
-            errorKind: result.error.kind,
-            message: result.error.message,
-          }
-        : result.value.outcome === 'unknown'
-          ? {
-              cameraRef,
-              cameraName,
-              doorId: linked,
-              result: 'unknown',
-              errorKind: unknownKind,
-              message: result.value.reason,
-            }
-          : {
-              cameraRef,
-              cameraName,
-              doorId: linked,
-              result: 'success',
-              errorKind: null,
-              message: null,
-            }
+      const attempt: UnlockAttempt = {
+        action: 'unlock',
+        cameraRef,
+        cameraName,
+        doorId: linked,
+        ...logged,
+      }
       // Ids and the kind only in the console log: the message can name the address.
       log(
         `unlock: ${attempt.result} (door ${linked ?? 'none'}${
@@ -1051,87 +1199,398 @@ export function createConnectionManager(options: ConnectionManagerOptions): Conn
       if (unlockLog !== null) void unlockLog.append(attempt)
       return result
     }
+    /** A refusal before anything was sent (rules 1 and 2): logged like any other attempt. */
+    const refuse = (
+      kind: IpcError['kind'],
+      message: string,
+      endpoint: string | null,
+      linked: string | null,
+    ): IpcResult<UnlockResult> =>
+      finish(ipcFail(kind, message, { endpoint }), linked, {
+        result: 'failure',
+        errorKind: kind,
+        message,
+      })
 
     // Rule 1, DOOR-0: not a request that fails, one that never happens.
     if (!services.current.console.accessEnabled) {
-      return finish(
-        ipcFail(
-          'disabled',
-          'UniFi Access is turned off, so the door was not unlocked. Turn on "Enable UniFi ' +
-            'Access" in Settings first (DOOR-0).',
-          { endpoint: hostPort() },
-        ),
+      return refuse(
+        'disabled',
+        'UniFi Access is turned off, so the door was not unlocked. Turn on "Enable UniFi ' +
+          'Access" in Settings first (DOOR-0).',
+        hostPort(),
         doorId,
       )
     }
     if (doorId === null) {
-      return finish(
-        ipcFail(
-          'not-found',
-          `${cameraName} is not linked to a door, so nothing was unlocked. Link it to a door in ` +
-            'Settings → Door links.',
-        ),
+      return refuse(
+        'not-found',
+        `${cameraName} is not linked to a door, so nothing was unlocked. Link it to a door on ` +
+          'the Doors screen.',
+        null,
         null,
       )
     }
 
+    // The one PUT (rule 3), and the status that follows its answer: `sendDoorPut`, shared with the
+    // Doors screen's actions so the three cannot drift apart.
+    const outcome = await sendDoorPut('unlock', async () => {
+      await services.access().unlock(doorId)
+    })
+    // Rule 4 is in `doorPutAnswer`: an unknown outcome is `ok`, with the error's message as reason.
+    const { result, logged } = doorPutAnswer<UnlockResult>(outcome, (unknownReason) =>
+      unknownReason === null
+        ? { doorId, cameraName, outcome: 'unlocked', reason: null }
+        : { doorId, cameraName, outcome: 'unknown', reason: unknownReason },
+    )
+    // DOOR-6: the door may be open now, so the monitor reads at once and the button shows it within
+    // about a second (`afterDoorPut`). A read only — the unlock path is still the one PUT above,
+    // never repeated — and a no-op while nobody is watching. An unlock the console answered with a
+    // failure moved no door, so it asks for nothing; and the cell's unlock is not a Doors screen
+    // action, so no details round either.
+    afterDoorPut(outcome, 'an unlock was answered', { readAfterFailure: false, details: null })
+    return finish(result, doorId, logged)
+  }
+
+  // --- the Doors screen's actions (DOOR-3/4/5, P5.6) --------------------------------------------
+
+  /** What one door-changing PUT came to, for the answer, the log line and what follows. */
+  interface DoorPutOutcome {
+    /** `null`: the console accepted it. Otherwise the failure, already `retryable: false`. */
+    readonly error: IpcError | null
+    /** With an `error`: the PUT may have reached the console (`unlockOutcomeUnknown`). */
+    readonly unknown: boolean
+    /** The endpoint the PUT went to is still the configured one. */
+    readonly current: boolean
+  }
+
+  /**
+   * Sends **the one PUT** of a door-changing action — the cell's unlock (`unlockDoor`) and both
+   * Doors screen actions — and moves the Access status by its answer (see `unlockDoor` for the
+   * reasoning behind each rule):
+   *
+   *  - `put` is called **once**. There is no retry and no timer on this path (DOOR-3/4): a second
+   *    PUT is a second change to a physical door, so only the user confirming again repeats one,
+   *    and every failure is `retryable: false` whatever the client says.
+   *  - Status: `connected` on success and on a refusal that is about the door or the request
+   *    (`DOOR_LEVEL_UNLOCK_KINDS`: the console answered), `error` otherwise — an unknown outcome
+   *    included. An answer for an endpoint the user has replaced meanwhile leaves the new
+   *    endpoint's status alone.
+   *
+   * `what` names the request in the one log line this writes when the endpoint changed.
+   */
+  async function sendDoorPut(what: string, put: () => Promise<void>): Promise<DoorPutOutcome> {
     const slot = state.access
-    const where = hostPort()
-    let result: IpcResult<UnlockResult>
-    // What the status records: the error of a failure or of an unknown outcome.
-    let statusError: IpcError | null = null
+    const where = endpointOf('access')?.hostPort ?? null
+    let error: IpcError | null = null
+    let unknown = false
     let doorLevel = false
     try {
-      // The one PUT (rule 3). `services.access()` throws `ConsoleEndpointError` for an address that
-      // does not resolve, which lands in the catch like any other failure (`not-configured`).
-      await services.access().unlock(doorId)
-      result = ipcOk({ doorId, cameraName, outcome: 'unlocked', reason: null })
+      // `services.access()` throws `ConsoleEndpointError` for an address that does not resolve,
+      // which lands in the catch like any other failure (`not-configured`).
+      await put()
     } catch (err) {
-      // A console that refuses the whole API answers with a door-level kind (`forbidden`) but is an
-      // endpoint failure: the status must say `error`, not `connected` (see `isAccessApiUnavailable`).
       doorLevel =
         err instanceof AccessApiError &&
         DOOR_LEVEL_UNLOCK_KINDS.has(err.kind) &&
         !isAccessApiUnavailable(err)
-      // Rule 3: never retryable, whatever the client or the mapping says.
-      statusError = { ...toIpcError(err, { endpoint: where }), retryable: false }
-      if (unlockOutcomeUnknown(err)) {
-        // Rule 4: the door may have opened.
-        unknownKind = statusError.kind
-        result = ipcOk({ doorId, cameraName, outcome: 'unknown', reason: statusError.message })
-      } else {
-        result = { ok: false, error: statusError }
-      }
+      error = { ...toIpcError(err, { endpoint: where }), retryable: false }
+      unknown = unlockOutcomeUnknown(err)
     }
-
-    // As in `readDoors`: an answer for an endpoint the user has since replaced leaves the new
-    // endpoint's status alone. The caller still gets the answer, and the log still gets the line.
-    if (state.access === slot) {
+    const current = state.access === slot
+    if (current) {
       slot.updatedAt = now()
-      if (statusError === null || doorLevel) {
+      if (error === null || doorLevel) {
         slot.phase = 'connected'
         slot.error = null
       } else {
         slot.phase = 'error'
-        slot.error = statusError
+        slot.error = error
       }
       emitStatus()
     } else {
-      log('access: unlock finished after the endpoint changed; status left alone')
+      log(`access: ${what} finished after the endpoint changed; status left alone`)
     }
-    // DOOR-6: the door may be open now, so the monitor reads at once and the button shows it within
-    // about a second. A read only — the unlock path is still the one PUT above, never repeated — and
-    // a no-op while nobody is watching. An unlock the console accepted also proves the endpoint
-    // works, so a monitor that is wanted but stopped itself is started again first (its start reads
-    // at once); an unknown outcome proves nothing and only asks a running monitor to read.
-    if (result.ok) {
-      if (result.value.outcome === 'unlocked' && state.access === slot) {
-        accessInputsChanged('an unlock was answered')
-      } else {
-        doorMonitor?.poke('an unlock was answered')
+    return { error, unknown, current }
+  }
+
+  /** How a door-changing PUT ended, as `unlock.log` records it (DOOR-5). */
+  type DoorPutLogged = Pick<UnlockAttempt, 'result' | 'errorKind' | 'message'>
+
+  /**
+   * The answer to a door-changing PUT and what its log line says — the tail all three callers
+   * share:
+   *
+   *  - accepted → `ok` with `value(null)`, logged `success`;
+   *  - outcome unknown (`DoorPutOutcome.unknown`) → **`ok`** with `value(reason)`, the error's safe
+   *    message: the door may have changed, and a failure would invite a second try (user decision
+   *    2026-11-18). Logged `unknown` with the error's kind;
+   *  - anything else → the failure itself (already `retryable: false`), logged `failure`.
+   *
+   * Pure: the caller writes the log line and tells the monitor, in its own order.
+   */
+  function doorPutAnswer<T>(
+    outcome: DoorPutOutcome,
+    value: (unknownReason: string | null) => T,
+  ): { readonly result: IpcResult<T>; readonly logged: DoorPutLogged } {
+    const { error } = outcome
+    if (error === null) {
+      return {
+        result: ipcOk(value(null)),
+        logged: { result: 'success', errorKind: null, message: null },
       }
     }
-    return finish(result, doorId)
+    if (outcome.unknown) {
+      return {
+        result: ipcOk(value(error.message)),
+        logged: { result: 'unknown', errorKind: error.kind, message: error.message },
+      }
+    }
+    return {
+      result: { ok: false, error },
+      logged: { result: 'failure', errorKind: error.kind, message: error.message },
+    }
+  }
+
+  /**
+   * After a door-changing PUT was answered: the doors and their rules are probably different now,
+   * so the monitor reads them at once (reads only — the PUT above is never repeated). A PUT the
+   * console accepted also proves the endpoint works, so a monitor that is wanted but stopped
+   * itself is started again first (its start reads at once); any other answer only asks a running
+   * monitor — an unknown outcome proves nothing — and a plain failure only when
+   * `readAfterFailure` (the Doors screen's actions: the card may be showing a state the console
+   * has just contradicted).
+   *
+   * `details`: what the Doors screen's details round re-reads (`DoorDetailsScope`) — the one
+   * door's rule after a door action, everything after an emergency change — or `null` for none.
+   */
+  function afterDoorPut(
+    outcome: DoorPutOutcome,
+    reason: string,
+    then: { readonly readAfterFailure: boolean; readonly details: DoorDetailsScope | null },
+  ): void {
+    const failed = outcome.error !== null && !outcome.unknown
+    if (outcome.error === null && outcome.current) accessInputsChanged(reason)
+    else if (!failed || then.readAfterFailure) doorMonitor?.poke(reason)
+    if (then.details !== null) doorMonitor?.refreshDetails(reason, then.details)
+  }
+
+  /**
+   * The line both Doors screen actions write: console log and unlock log.
+   *
+   * The console line carries the kind and an id **only for a door main has read itself** (one with
+   * a `doorName`): a refused id is whatever the renderer sent, and unvetted text does not belong in
+   * a plain-text log. The unlock log does record it — as a JSON string, so it cannot break a line.
+   */
+  function recordDoorAttempt(attempt: UnlockAttempt): void {
+    const which =
+      attempt.action === 'emergency'
+        ? 'every door'
+        : typeof attempt.doorName === 'string' && attempt.doorId !== null
+          ? `door ${attempt.doorId}`
+          : 'a door id main has not read'
+    log(
+      `door action: ${attempt.action} ${attempt.result} (${which}${
+        attempt.errorKind === null ? '' : `, ${attempt.errorKind}`
+      })`,
+    )
+    // Not awaited: `append` never rejects, and its queue keeps the lines in call order.
+    if (unlockLog !== null) void unlockLog.append(attempt)
+  }
+
+  /**
+   * DOOR-3/4/5 (P5.6). **Changes a physical door**, so the rules are strict, in this order (the
+   * same structure as `unlockDoor`, with one difference that matters: here the renderer names the
+   * door):
+   *
+   *  1. **DOOR-0 first → `disabled`.** While Access is off the answer is always `disabled`,
+   *     whatever the door, with no Access call at all (not even the client is resolved).
+   *  2. **The door id must be one main read itself.** The cell's unlock never takes a door id
+   *     (DOOR-4): main resolves the door from the saved links, so a renderer bug can only reach a
+   *     door the user linked. A door with no linked camera has no such anchor, so the anchor here
+   *     is the door list main last read from the *current* console while the Doors screen is open
+   *     (the monitor's `knownDoor`). An id that is not in it — never read, read from an endpoint
+   *     or with a token since replaced, the screen not open, the reading stopped — is `not-found`
+   *     with **no Access call**. The id is compared, never interpreted.
+   *  3. **Not while the list is stale** (`unavailable`, no call; user decision 2026-11-18). Once
+   *     two door reads in a row have failed the kept list is only names: the screen draws every
+   *     state as unknown and disables its buttons, and main refuses as well — defence in depth,
+   *     so a renderer bug cannot act on a door whose state nobody knows.
+   *  4. **A door with no hub is refused** (`bad-request`, no call): the console cannot move it
+   *     (`is_bind_hub`, reference §7.7), and saying so is better than relaying its refusal.
+   *  5. **The mapping.** `unlock` → `PUT /doors/{id}/unlock`. `keep_unlock`, `keep_lock`,
+   *     `custom` (with its minutes) and `reset` → `PUT /doors/{id}/lock_rule` with that type.
+   *     `lock` → `lock_rule` with `lock_now`, **always** (user decision 2026-11-18): it ends an
+   *     unlock schedule and any temporary unlock at once (reference §7.10), whatever the door's
+   *     rule is. Nothing is chosen from the rule main last read — a rule that is out of date
+   *     would make `reset` a silent no-op on a door that is on a schedule. `sent` in the answer
+   *     says what went out.
+   *  6. **Exactly one PUT** (`sendDoorPut`): never retried, no timer, every failure
+   *     `retryable: false`; a PUT that may have reached the console with no answer is `ok` with
+   *     `outcome: 'unknown'`.
+   *  7. **Logged once the outcome is known** (DOOR-5), refusals 1–4 included — each was a person
+   *     confirming a door action in this app — and the answer never waits for the write.
+   *
+   * Not serialized, like `unlockDoor`: it moves no subscription.
+   */
+  async function doorAction(input: DoorActionInput): Promise<IpcResult<DoorActionResult>> {
+    const { doorId, action } = input
+    const minutes = action === 'custom' ? (input.minutes ?? null) : null
+
+    const refuse = (
+      kind: IpcError['kind'],
+      message: string,
+      doorName: string | null,
+    ): IpcResult<DoorActionResult> => {
+      recordDoorAttempt({
+        // Nothing was sent, so this is what was asked (`lock`, not the `lock_now` it becomes).
+        action,
+        cameraRef: null,
+        cameraName: null,
+        doorId,
+        doorName,
+        minutes,
+        result: 'failure',
+        errorKind: kind,
+        message,
+      })
+      return ipcFail(kind, message, { endpoint: endpointOf('access')?.hostPort ?? null })
+    }
+
+    // Rule 1, DOOR-0: not a request that fails, one that never happens.
+    if (!services.current.console.accessEnabled) {
+      return refuse(
+        'disabled',
+        'UniFi Access is turned off, so nothing was sent to the door. Turn on "Enable UniFi ' +
+          'Access" in Settings first (DOOR-0).',
+        null,
+      )
+    }
+    // Rule 2: only a door main has itself read from the current console.
+    const door = doorMonitor?.knownDoor(doorId) ?? null
+    if (door === null) {
+      return refuse(
+        'not-found',
+        'That door is not in the list View Protect last read from the console, so nothing was ' +
+          'sent. Open the Doors screen, wait for the door list and try again.',
+        null,
+      )
+    }
+    const doorName = doorDisplayName(door)
+    // Rule 3: the list is stale, so this door's state is not known.
+    if (doorMonitor?.stale === true) {
+      return refuse(
+        'unavailable',
+        "The door's state is not known right now, so nothing was sent. Try again once the doors " +
+          'can be read.',
+        doorName,
+      )
+    }
+    // Rule 4.
+    if (!door.boundToHub) {
+      return refuse(
+        'bad-request',
+        `${doorName} has no door hub, so it cannot be unlocked or locked from here. Nothing was ` +
+          'sent.',
+        doorName,
+      )
+    }
+
+    // Rule 5: Lock is always `lock_now`, whatever rule the door is under.
+    const sent: DoorActionSent = action === 'lock' ? 'lock_now' : action
+    // Rule 6: the one PUT.
+    const outcome = await sendDoorPut(`door action ${sent}`, async () => {
+      const client = services.access()
+      if (sent === 'unlock') await client.unlock(door.id)
+      else if (sent === 'custom') {
+        // A `custom` without minutes cannot pass `DoorActionInputSchema`; if one arrives anyway the
+        // client refuses the body before sending anything (`AccessLockRuleRequestSchema`).
+        await client.setLockRule(door.id, {
+          type: sent,
+          ...(minutes === null ? {} : { intervalMinutes: minutes }),
+        })
+      } else await client.setLockRule(door.id, { type: sent })
+    })
+
+    // The door may have changed on an unknown outcome: `ok`, not a failure (`doorPutAnswer`).
+    const { result, logged } = doorPutAnswer<DoorActionResult>(outcome, (unknownReason) => ({
+      doorId: door.id,
+      doorName,
+      action,
+      sent,
+      minutes,
+      outcome: unknownReason === null ? 'done' : 'unknown',
+      reason: unknownReason,
+    }))
+    recordDoorAttempt({
+      action: sent,
+      cameraRef: null,
+      cameraName: null,
+      doorId: door.id,
+      doorName,
+      minutes,
+      ...logged,
+    })
+    // This door's rule is what the action changed; the emergency status rides along because it is
+    // what overrides a rule, and one request. The other doors wait for their own reasons.
+    afterDoorPut(outcome, 'a door action was answered', {
+      readAfterFailure: true,
+      details: { doorIds: [door.id], emergency: true },
+    })
+    return result
+  }
+
+  /**
+   * DOOR-3/4/5 (P5.6). **Changes every door at once**: lockdown keeps them all locked, evacuation
+   * keeps them all unlocked, both `false` restores normal operation. The same rules as
+   * `doorAction` where they apply: DOOR-0 first (`disabled`, no call), then exactly one
+   * `PUT /doors/settings/emergency` — never retried, no timer, every failure `retryable: false`,
+   * an unanswered PUT is `ok` with `outcome: 'unknown'` — and a line in the unlock log either way.
+   * There is no door id to check. Both flags `true` cannot pass `DoorEmergencyInputSchema`; the
+   * check is repeated here because this function, not the schema, is what sends the PUT.
+   */
+  async function setDoorEmergency(
+    input: DoorEmergencyInput,
+  ): Promise<IpcResult<DoorEmergencyResult>> {
+    const { lockdown, evacuation } = input
+    const action: UnlockLogAction = 'emergency'
+    const logged = { action, cameraRef: null, cameraName: null, doorId: null, lockdown, evacuation }
+    const refuse = (kind: IpcError['kind'], message: string): IpcResult<DoorEmergencyResult> => {
+      recordDoorAttempt({ ...logged, result: 'failure', errorKind: kind, message })
+      return ipcFail(kind, message, { endpoint: endpointOf('access')?.hostPort ?? null })
+    }
+    // DOOR-0: not a request that fails, one that never happens.
+    if (!services.current.console.accessEnabled) {
+      return refuse(
+        'disabled',
+        'UniFi Access is turned off, so the emergency status was not changed. Turn on "Enable ' +
+          'UniFi Access" in Settings first (DOOR-0).',
+      )
+    }
+    if (lockdown && evacuation) {
+      return refuse('bad-request', 'Lockdown and evacuation cannot both be on. Nothing was sent.')
+    }
+
+    // The one PUT.
+    const outcome = await sendDoorPut('emergency status', () =>
+      services.access().setEmergencyStatus({ lockdown, evacuation }),
+    )
+    const { result, logged: ended } = doorPutAnswer<DoorEmergencyResult>(
+      outcome,
+      (unknownReason) => ({
+        lockdown,
+        evacuation,
+        outcome: unknownReason === null ? 'done' : 'unknown',
+        reason: unknownReason,
+      }),
+    )
+    recordDoorAttempt({ ...logged, ...ended })
+    // Every door's rule and relay may have moved with it: a full details round.
+    afterDoorPut(outcome, 'the emergency status was changed', {
+      readAfterFailure: true,
+      details: 'all',
+    })
+    return result
   }
 
   async function testConnection(): Promise<TestConnection> {
@@ -1300,14 +1759,16 @@ export function createConnectionManager(options: ConnectionManagerOptions): Conn
 
   async function shutdown(): Promise<void> {
     doorsWatched = false
+    doorsScreenOpen = false
     stopDoorMonitor()
     await stopFeed()
     await services.pins.closeAll()
   }
 
   // The six that move the subscriptions go through the queue; `testConnection`, `cameras`,
-  // `snapshot`, `streamQualities` and `doors` are plain requests that touch none of that state, so
-  // serializing them would only make the UI wait for a reconnect's backoff. `watchDoors` and
+  // `snapshot`, `streamQualities`, `unlockDoor`, `doorAction` and `setDoorEmergency` are
+  // plain requests that touch none of that state, so serializing them would only make the UI wait
+  // for a reconnect's backoff. `watchDoors`, `watchDoorsScreen`, `accessPollingChanged` and
   // `accessInputsChanged` are synchronous and move only the door-state monitor, which
   // `applyConsoleChange` holds still while the address is being replaced.
   return {
@@ -1319,10 +1780,13 @@ export function createConnectionManager(options: ConnectionManagerOptions): Conn
     cameras: () => refreshInventory('a camera list request'),
     snapshot,
     streamQualities,
-    doors,
     unlockDoor,
     watchDoors,
+    watchDoorsScreen,
+    doorAction,
+    setDoorEmergency,
     accessInputsChanged,
+    accessPollingChanged,
     credentialCleared: () => serialize(credentialCleared),
     credentialReplaced: () =>
       serialize(() => {

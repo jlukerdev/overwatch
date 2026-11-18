@@ -145,7 +145,7 @@ describe('unlockResultEvent (user decision 2026-11-18)', () => {
     ).toEqual({ type: 'result', ok: true })
   })
 
-  it('treats an unknown outcome like a failure: back to the neutral padlock, no second request', () => {
+  it('treats an unknown outcome like a failure: back to the neutral door icon, no second request', () => {
     const event = unlockResultEvent({
       ok: true,
       value: { ...value, outcome: 'unknown', reason: 'The Access API did not answer in time.' },

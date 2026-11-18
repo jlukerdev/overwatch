@@ -1,6 +1,6 @@
 /*
  * The door unlock control (P5.4; DOOR-3, UnlockButton.tsx), in the cell overlay's bottom slot
- * (features/cells/cells.css places the slot). A round, icon-only chip, bigger than the strip's
+ * (features/cells/cells.css places the slot). A rounded-rectangle, icon-only chip, bigger than the strip's
  * 28 px ones because it is the one control on a cell that acts on the house rather than the
  * picture: on the overlay's `--scrim` with a light icon at rest, the `--ok` green after a success.
  * Its border and hover / active fills are the strip's chip tokens (`--chip-*`, set on `.cellOverlay`
@@ -11,7 +11,7 @@
  * `transform` and `opacity` only, so a hold costs no layout or per-frame React state over video.
  */
 .unlockButton {
-  --unlock-size: 46px;
+  --unlock-size: 41px; /* 46 px less 10% (user request 2026-11-18) */
 
   position: relative;
   display: inline-flex;
@@ -22,7 +22,7 @@
   overflow: hidden;
   padding: 0;
   border: 1px solid var(--chip-border);
-  border-radius: 50%;
+  border-radius: var(--radius);
   background: var(--scrim);
   color: var(--fg);
   font: inherit;
@@ -67,11 +67,11 @@
   height: 20px;
 }
 
-/* The hold's fill: a green disc that grows to the button's edge over the hold. */
+/* The hold's fill: a green panel that grows to the button's edge over the hold. */
 .unlockButton__fill {
   position: absolute;
   inset: 0;
-  border-radius: 50%;
+  border-radius: var(--radius);
   background: color-mix(in srgb, var(--ok) 55%, transparent);
   opacity: 0;
   transform: scale(0);
@@ -90,7 +90,7 @@
     opacity 80ms ease-out;
 }
 
-/* Unlocked (for UNLOCKED_SHOWN_MS until P5.5 reads the real relay state): green, open padlock. */
+/* Unlocked (for UNLOCKED_SHOWN_MS until P5.5 reads the real relay state): green, open door. */
 .unlockButton[data-phase='unlocked'],
 .unlockButton[data-phase='unlocked']:hover,
 .unlockButton[data-phase='unlocked']:active {

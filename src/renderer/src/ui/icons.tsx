@@ -344,22 +344,21 @@ export function MicIcon(props: IconProps): JSX.Element {
   )
 }
 
-/** A closed padlock: a door's unlock control at rest (DOOR-3, features/door/UnlockButton). */
-export function PadlockIcon(props: IconProps): JSX.Element {
+/** A closed door in its frame: a door's unlock control at rest (DOOR-3, features/door/UnlockButton). */
+export function DoorIcon(props: IconProps): JSX.Element {
   return (
     <Svg {...props}>
-      <rect x="3" y="7" width="10" height="7" rx="1.5" />
-      <path d="M5.5 7V5a2.5 2.5 0 0 1 5 0v2M8 10v1.5" />
+      <rect x="4" y="1.5" width="8" height="13" rx="0.5" />
+      <path d="M2.5 14.5h11M9.5 8.5v.5" />
     </Svg>
   )
 }
 
-/** An open padlock, its shackle swung up: the door was just unlocked (DOOR-3). */
-export function PadlockOpenIcon(props: IconProps): JSX.Element {
+/** An open door, its leaf swung in on the hinge: the door was just unlocked (DOOR-3). */
+export function DoorOpenIcon(props: IconProps): JSX.Element {
   return (
     <Svg {...props}>
-      <rect x="3" y="7" width="10" height="7" rx="1.5" />
-      <path d="M5.5 7V4.5a2.5 2.5 0 0 1 4.9-.7M8 10v1.5" />
+      <path d="M12 14.5v-13H4M2.5 14.5h11M4 1.5l5.5 1.75v9.5L4 14.5zM8 8.25v.5" />
     </Svg>
   )
 }

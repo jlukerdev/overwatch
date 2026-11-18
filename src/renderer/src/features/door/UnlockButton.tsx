@@ -23,8 +23,8 @@
 // to read it from) and carries main's safe message. Nothing is retried. The toast is shown even if
 // the cell has gone meanwhile; only the button's own state and timers are skipped then.
 //
-// **Unlocked.** After a confirmed success the button shows the open padlock in green for
-// `UNLOCKED_SHOWN_MS`, then the neutral closed padlock again; an unknown outcome stays neutral. That is a stand-in until P5.5 reads the door's real state.
+// **Unlocked.** After a confirmed success the button shows the open door in green for
+// `UNLOCKED_SHOWN_MS`, then the neutral closed door again; an unknown outcome stays neutral. That is a stand-in until P5.5 reads the door's real state.
 //
 // **When it is drawn.** Only while Access is saved as on, the camera (or, for a package-channel
 // cell, its doorbell) has a door link, the camera is connected, and the cell's player is showing
@@ -49,7 +49,7 @@ import {
 import { isCameraOnline } from '@shared/models'
 import { useAppStore } from '../../state/appStore'
 import { showToast } from '../../state/toastStore'
-import { PadlockIcon, PadlockOpenIcon } from '../../ui/icons'
+import { DoorIcon, DoorOpenIcon } from '../../ui/icons'
 import { parseCameraRef } from '@shared/cameraRef'
 import { doorForCell, unlockAvailable } from './doorLink'
 import {
@@ -249,9 +249,9 @@ export function UnlockButton({
       {busy ? (
         <span className="spinner unlockButton__spinner" aria-hidden="true" />
       ) : unlocked ? (
-        <PadlockOpenIcon className="unlockButton__icon" />
+        <DoorOpenIcon className="unlockButton__icon" />
       ) : (
-        <PadlockIcon className="unlockButton__icon" />
+        <DoorIcon className="unlockButton__icon" />
       )}
     </button>
   )

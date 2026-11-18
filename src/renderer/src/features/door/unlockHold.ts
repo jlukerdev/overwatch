@@ -19,7 +19,7 @@
 //    again. A new press during that time starts a new hold.
 //  - **Green only when the door is known unlocked.** `result.ok` is "the console accepted the
 //    unlock". A failure and an unknown outcome (main's `outcome: 'unknown'`: no answer, the door may
-//    have opened, user decision 2026-11-18) both go back to the neutral padlock; the toast tells
+//    have opened, user decision 2026-11-18) both go back to the neutral door icon; the toast tells
 //    them apart ({@link unlockResultEvent}).
 //  - `abort` ends a hold that can no longer be seen through: the window lost focus (a release would
 //    never arrive), or the button stopped being available. It never cancels a request in flight,
@@ -32,7 +32,7 @@ import type { IpcResult, UnlockResult } from '@shared/ipc'
 export const HOLD_MS = 1000
 
 /**
- * How long a successful unlock shows the open padlock in green. A stand-in: P5.5 replaces it with
+ * How long a successful unlock shows the open door in green. A stand-in: P5.5 replaces it with
  * the door's real relay state (lock / unlock) read from Access.
  */
 export const UNLOCKED_SHOWN_MS = 5000

@@ -42,7 +42,7 @@
 // controls, after the ones that move between cameras.
 //
 // **Door unlock (P5.4; DOOR-0/2/3/4).** Not in the strip: the overlay's bottom slot gets
-// `<UnlockButton>` (features/door), a round padlock at the bottom centre of the cell, in the grid
+// `<UnlockButton>` (features/door), a rounded-rectangle door button at the bottom centre of the cell, in the grid
 // and in fill. It draws itself only while Access is saved as on, the camera (a package-channel
 // cell: its doorbell) has a door link, the camera is connected, and this cell's picture is live —
 // `streaming`, which the visible `<LivePlayer>` reports through `onPlayingChange` (memoised per

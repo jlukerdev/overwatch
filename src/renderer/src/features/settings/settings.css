@@ -8,12 +8,149 @@
  * background and a border no other panel has.
  */
 
+/*
+ * The screen fills `.app__body` exactly: a section sidebar on the left (styled like the Live
+ * screen's View switcher) and the groups' own scroll container on the right. The container is what
+ * scrolls, so the sidebar stays put and the IntersectionObserver in SettingsPage has a definite
+ * root (user request 2026-11-17).
+ */
 .settings {
   display: flex;
+  height: 100%;
+  min-height: 0;
+}
+
+.settings--loading {
+  padding: 1rem;
+}
+
+.settings__nav {
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+  gap: 0.25rem;
+  width: 12rem;
+  padding: 0.5rem;
+  border-right: 1px solid var(--border);
+  background: var(--bg-raised);
+  overflow-y: auto;
+}
+
+.settings__navItem {
+  width: 100%;
+  min-width: 0;
+  padding: 0.35rem 0.5rem;
+  border: 1px solid transparent;
+  border-radius: var(--radius);
+  background: none;
+  color: var(--muted);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.settings__navItem:hover {
+  color: var(--fg);
+}
+
+.settings__navItem:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.settings__navItem[aria-current='true'] {
+  border-color: var(--border);
+  background: var(--bg-sunken);
+  color: var(--fg);
+}
+
+.settings__content {
+  display: flex;
+  flex: 1;
   flex-direction: column;
   gap: 1rem;
-  max-width: 64rem;
+  min-width: 0;
+  min-height: 0;
   padding: 1rem;
+  overflow-y: auto;
+}
+
+/* Every group keeps its width readable on a wide window. */
+.settings__content > * {
+  width: 100%;
+  max-width: 64rem;
+  scroll-margin-top: 1rem;
+}
+
+/* A group heading is a focus target for the sidebar, not something to tab to. */
+.settings__groupTitle:focus {
+  outline: none;
+}
+
+/* Narrow windows: the sidebar becomes a strip of links above the content, wrapping, never scrolling sideways. */
+@media (max-width: 40rem) {
+  .settings {
+    flex-direction: column;
+  }
+
+  .settings__nav {
+    flex-direction: row;
+    flex-wrap: wrap;
+    width: auto;
+    border-right: 0;
+    border-bottom: 1px solid var(--border);
+    overflow: visible;
+  }
+
+  .settings__navItem {
+    width: auto;
+  }
+}
+
+/* --- The Console group: address and credentials, then Certificate, then Connection ------------ */
+
+.settings__subsection {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  margin-top: 1rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--border);
+}
+
+.settings__subhead {
+  margin: 0 0 0.25rem;
+  color: var(--fg);
+  font-size: 0.95rem;
+  font-weight: 600;
+}
+
+/* One endpoint's certificate inside the Certificate subsection. */
+.settings__cert {
+  padding: 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-sunken);
+}
+
+.settings__certTitle {
+  margin: 0;
+  font-size: 0.9rem;
+  font-weight: 600;
+}
+
+/* QUAL-1's two pickers side by side; one column when there is no room for two. */
+.settings__streamsGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0 1rem;
+  max-width: 32rem;
+}
+
+@media (max-width: 40rem) {
+  .settings__streamsGrid {
+    grid-template-columns: 1fr;
+  }
 }
 
 /* A card's heading row: title, state, and the action pushed to the right edge. */

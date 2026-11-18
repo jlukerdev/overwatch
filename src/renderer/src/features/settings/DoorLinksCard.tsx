@@ -24,6 +24,8 @@ import { useCallback, useEffect, useMemo, useRef, useState, type JSX } from 'rea
 import type { DoorLinks, IpcError } from '@shared/ipc'
 import { useAppStore } from '../../state/appStore'
 import { RefreshIcon, XIcon } from '../../ui/icons'
+import { GroupTitle } from './GroupTitle'
+import { DOORS_SECTION, sectionTitleId } from './settingsSections'
 import {
   addCameraOptions,
   addCameraPlaceholder,
@@ -187,9 +189,9 @@ export function DoorLinksCard({ links }: { links: DoorLinks }): JSX.Element {
   const cameraPlaceholder = addCameraPlaceholder(cameras, cameraOptions)
 
   return (
-    <section className="card">
+    <section className="card" id={DOORS_SECTION.id} aria-labelledby={sectionTitleId(DOORS_SECTION)}>
       <div className="row settings__cardHead">
-        <h2 className="card__title">Door links</h2>
+        <GroupTitle section={DOORS_SECTION}>Door links</GroupTitle>
         <button
           id={REFRESH_ID}
           type="button"
@@ -204,11 +206,7 @@ export function DoorLinksCard({ links }: { links: DoorLinks }): JSX.Element {
         </button>
       </div>
       <p className="card__hint">
-        Which UniFi Access door each camera looks at, for the unlock control on its cell. Add a
-        door, then the cameras that look at it. A camera belongs to one door: to move one, unlink
-        it, then add it to the other door. A doorbell&rsquo;s package camera shares the
-        doorbell&rsquo;s door. Changes save at once. The door list is read when Settings opens; use
-        Refresh doors after changing doors on the console.
+        Each camera links to one door; to move one, unlink it and add it to the other door.
       </p>
 
       {notice === null ? null : (
@@ -356,7 +354,7 @@ function DoorCardView({
       </div>
 
       {card.cameras.length === 0 ? (
-        <p className="field__hint">No cameras yet. Nothing is saved until you add one.</p>
+        <p className="field__hint">No cameras yet; nothing is saved until you add one.</p>
       ) : (
         <ul className="settings__doorCameras">
           {card.cameras.map((camera) => (

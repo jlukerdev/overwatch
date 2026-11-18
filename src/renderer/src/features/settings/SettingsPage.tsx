@@ -22,7 +22,16 @@
 // The Door links card (DOOR-1/2, P5.3, in ./DoorLinksCard) follows the same save-on-change rule and
 // is mounted only while the **saved** Access switch is on (DOOR-0): the form's unsaved checkbox
 // reveals the token and API-root fields, but nothing that would make an Access call.
-import { useState, type JSX } from 'react'
+//
+// Layout (user request 2026-11-17): a section sidebar on the left and the groups in their own
+// scroll container on the right — the keystore warning (only without a keystore), **Console**
+// (address and credentials, then Certificate, then Connection), **Streams**, and **Door links**
+// last. The sidebar highlights the group in view (IntersectionObserver on the scroll container,
+// decided by ./settingsSections.ts) and scrolls to a group on click. Help text is one short line at
+// most; what a requirement mandates (CON-2's keystore notice, CON-3's compare-the-fingerprint prompt,
+// DOOR-0's "the token and links are kept") is kept, only shorter.
+import { useCallback, useEffect, useRef, useState, type JSX, type ReactNode } from 'react'
+import { GroupTitle } from './GroupTitle'
 import type { AccessProbe, IpcError, IpcSecretKey, ProtectProbe, Settings } from '@shared/ipc'
 import { useAppStore } from '../../state/appStore'
 import { CheckIcon, PlugIcon, PulseIcon, TrashIcon, UnplugIcon } from '../../ui/icons'
@@ -30,6 +39,15 @@ import { CertificateCard } from './CertificateCard'
 import { DoorLinksCard } from './DoorLinksCard'
 import { doorListKey } from './doorLinks'
 import { QualityOptions } from '../quality/QualityOptions'
+import {
+  activeSection,
+  CONSOLE_SECTION,
+  KEYSTORE_SECTION,
+  sectionTitleId,
+  settingsSections,
+  STREAMS_SECTION,
+  type SettingsSection,
+} from './settingsSections'
 import {
   streamsInputFrom,
   consoleDraftFrom,
@@ -52,23 +70,171 @@ export function SettingsPage(): JSX.Element {
   // this is the type-level version of that guarantee rather than a state the user ever sees.
   if (settings === null) {
     return (
-      <div className="settings">
+      <div className="settings settings--loading">
         <p className="app__muted">Loading settings…</p>
       </div>
     )
   }
 
+  // What the door list depends on: the Door links card remounts on it (a new endpoint, pin or token
+  // reloads the list), and the layout re-attaches its size watcher to the new card's element.
+  const doorsKey = doorListKey(settings, secretsStored)
+
+  return (
+    <SettingsLayout
+      sections={settingsSections({
+        keystoreAvailable,
+        accessEnabled: settings.console.accessEnabled,
+      })}
+      layoutKey={doorsKey}
+    >
+      {keystoreAvailable ? null : <KeystoreWarning />}
+      <ConsoleCard settings={settings} keystoreAvailable={keystoreAvailable}>
+        <CertificateSection accessEnabled={settings.console.accessEnabled} />
+        <ConnectionCard accessEnabled={settings.console.accessEnabled} />
+      </ConsoleCard>
+      <StreamsCard streams={settings.streams} />
+      {settings.console.accessEnabled ? (
+        <DoorLinksCard key={doorsKey} links={settings.doorLinks} />
+      ) : null}
+    </SettingsLayout>
+  )
+}
+
+// -------------------------------------------------------------------------------------------------
+// The section sidebar and the scroll container
+
+/** Smooth unless the user asked the OS for less motion. */
+function scrollBehavior(): ScrollBehavior {
+  return window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth'
+}
+
+/** How long a sidebar click keeps its section current if `scrollend` never fires. */
+const SCROLL_LOCK_FALLBACK_MS = 1000
+
+/**
+ * The sidebar plus the groups' own scroll container. The container — not `.app__body` — is what
+ * scrolls (`.settings` fills the body exactly), so the sidebar stays put without `position:
+ * sticky`.
+ *
+ * Which link is current is `activeSection`'s decision (./settingsSections.ts), fed from a
+ * rAF-throttled measure of each group's top against the container: on scroll, on a window resize,
+ * and when a group changes size (a ResizeObserver — the door list landing grows the page without a
+ * scroll). A sidebar click locks its section as current until that programmatic scroll settles
+ * (`scrollend`, with a timeout fallback), so a short last group cannot take the highlight mid-way.
+ */
+function SettingsLayout({
+  sections,
+  layoutKey,
+  children,
+}: {
+  sections: readonly SettingsSection[]
+  /** Changes whenever a group's element is replaced (the Door links card remounts on it). */
+  layoutKey: string
+  children: ReactNode
+}): JSX.Element {
+  const content = useRef<HTMLDivElement>(null)
+  const frame = useRef<number | null>(null)
+  const lock = useRef<{ id: string; release: () => void } | null>(null)
+  const [active, setActive] = useState<string | null>(sections[0]?.id ?? null)
+  // The list's identity changes every render; its ids are what the callbacks depend on.
+  const ids = sections.map((section) => section.id).join(' ')
+
+  const measure = useCallback((): void => {
+    frame.current = null
+    const root = content.current
+    if (root === null) return
+    const rootTop = root.getBoundingClientRect().top
+    const order = ids.split(' ').map((id) => ({ id }))
+    const tops = new Map<string, number>()
+    for (const { id } of order) {
+      const element = document.getElementById(id)
+      if (element !== null) tops.set(id, element.getBoundingClientRect().top - rootTop)
+    }
+    const metrics = {
+      scrollTop: root.scrollTop,
+      scrollHeight: root.scrollHeight,
+      clientHeight: root.clientHeight,
+    }
+    setActive(activeSection(order, tops, metrics, lock.current?.id ?? null))
+  }, [ids])
+
+  const schedule = useCallback((): void => {
+    frame.current ??= requestAnimationFrame(measure)
+  }, [measure])
+
+  useEffect(() => {
+    const root = content.current
+    if (root === null) return
+    schedule()
+    root.addEventListener('scroll', schedule, { passive: true })
+    window.addEventListener('resize', schedule)
+    const resizes = new ResizeObserver(schedule)
+    for (const id of ids.split(' ')) {
+      const element = document.getElementById(id)
+      if (element !== null) resizes.observe(element)
+    }
+    return () => {
+      root.removeEventListener('scroll', schedule)
+      window.removeEventListener('resize', schedule)
+      resizes.disconnect()
+      if (frame.current !== null) cancelAnimationFrame(frame.current)
+      frame.current = null
+    }
+  }, [ids, layoutKey, schedule])
+
+  // A lock still pending at unmount must not fire into a gone component.
+  useEffect(
+    () => () => {
+      lock.current?.release()
+    },
+    [],
+  )
+
+  const go = (section: SettingsSection): void => {
+    const root = content.current
+    const target = document.getElementById(section.id)
+    if (root === null || target === null) return
+    lock.current?.release()
+    let timer = 0
+    const release = (): void => {
+      if (lock.current?.release !== release) return
+      lock.current = null
+      window.clearTimeout(timer)
+      root.removeEventListener('scrollend', release)
+      schedule()
+    }
+    lock.current = { id: section.id, release }
+    root.addEventListener('scrollend', release)
+    timer = window.setTimeout(release, SCROLL_LOCK_FALLBACK_MS)
+    setActive(section.id)
+    // The section, not its heading, so the card's top border and padding stay in view
+    // (`scroll-margin-top` on the groups). The heading takes the focus (tabIndex -1), so the
+    // keyboard continues from that group.
+    target.scrollIntoView({ behavior: scrollBehavior(), block: 'start' })
+    document.getElementById(sectionTitleId(section))?.focus({ preventScroll: true })
+  }
+
   return (
     <div className="settings">
-      {keystoreAvailable ? null : <KeystoreWarning />}
-      <ConsoleCard settings={settings} keystoreAvailable={keystoreAvailable} />
-      <CertificateSection accessEnabled={settings.console.accessEnabled} />
-      <ConnectionCard accessEnabled={settings.console.accessEnabled} />
-      {settings.console.accessEnabled ? (
-        // Keyed on what the door list depends on, so a new endpoint, pin or token reloads it.
-        <DoorLinksCard key={doorListKey(settings, secretsStored)} links={settings.doorLinks} />
-      ) : null}
-      <StreamsCard streams={settings.streams} />
+      <nav className="settings__nav" aria-label="Settings sections">
+        {sections.map((section) => (
+          <button
+            key={section.id}
+            type="button"
+            className="settings__navItem"
+            aria-current={active === section.id ? 'true' : undefined}
+            onClick={() => {
+              go(section)
+            }}
+          >
+            {section.label}
+          </button>
+        ))}
+      </nav>
+      <div className="settings__content" ref={content}>
+        {children}
+      </div>
     </div>
   )
 }
@@ -79,12 +245,16 @@ export function SettingsPage(): JSX.Element {
  */
 function KeystoreWarning(): JSX.Element {
   return (
-    <section className="card settings__keystore" role="alert">
-      <h2 className="card__title">The OS keystore is not available</h2>
+    <section
+      className="card settings__keystore"
+      id={KEYSTORE_SECTION.id}
+      aria-labelledby={sectionTitleId(KEYSTORE_SECTION)}
+      role="alert"
+    >
+      <GroupTitle section={KEYSTORE_SECTION}>The OS keystore is not available</GroupTitle>
       <p className="settings__mismatchText">
-        This system has no keystore for the app to encrypt credentials with (Keychain on macOS,
-        DPAPI on Windows). The API key and the Access token cannot be saved, and the app will ask
-        for them again the next time it starts. They are never written to disk in plain text.
+        Credentials can&rsquo;t be saved without Keychain or DPAPI, so they are asked for at every
+        launch; they are never stored in plain text.
       </p>
     </section>
   )
@@ -96,9 +266,12 @@ function KeystoreWarning(): JSX.Element {
 function ConsoleCard({
   settings,
   keystoreAvailable,
+  children,
 }: {
   settings: Settings
   keystoreAvailable: boolean
+  /** The Certificate and Connection subsections, after the address and credentials. */
+  children: ReactNode
 }): JSX.Element {
   const secretsStored = useAppStore((s) => s.secretsStored)
   const setConsole = useAppStore((s) => s.setConsole)
@@ -141,12 +314,14 @@ function ConsoleCard({
   const dirty = isConsoleDirty(draft, settings)
 
   return (
-    <section className="card">
-      <h2 className="card__title">Console</h2>
-      <p className="card__hint">
-        Where the UniFi console is and what the app signs in with. Saving does not connect — use
-        Test connection below.
-      </p>
+    <section
+      className="card"
+      id={CONSOLE_SECTION.id}
+      aria-labelledby={sectionTitleId(CONSOLE_SECTION)}
+    >
+      <GroupTitle section={CONSOLE_SECTION}>Console</GroupTitle>
+      <h3 className="settings__subhead">Address and credentials</h3>
+      <p className="card__hint">Saving does not connect.</p>
 
       <div className="field">
         <label className="field__label" htmlFor="console-host">
@@ -165,8 +340,7 @@ function ConsoleCard({
           }}
         />
         <p className="field__hint">
-          The IP address or host name, with a port only if the console does not use 443. No https://
-          in front of it.
+          IP or host name, no https://; add a port only if it isn&rsquo;t 443.
         </p>
         {errors.host === undefined ? null : <p className="field__error">{errors.host}</p>}
       </div>
@@ -174,7 +348,7 @@ function ConsoleCard({
       <SecretField
         secretKey="protectApiKey"
         label="Protect Integration API key"
-        hint="Created in the UniFi console under Protect → Integrations. Stored in the OS keystore and never shown again."
+        hint="From Protect → Integrations. Never shown again once saved."
         stored={secretsStored.protectApiKey}
         keystoreAvailable={keystoreAvailable}
         value={draft.protectApiKey}
@@ -200,8 +374,7 @@ function ConsoleCard({
           <label htmlFor="access-enabled">Enable UniFi Access</label>
         </div>
         <p className="field__hint">
-          Off by default. While it is off the app makes no Access calls and hides every door
-          control; a saved token and the door links are kept for when you turn it back on.
+          While off, no Access calls are made; a saved token and door links are kept.
         </p>
       </div>
 
@@ -210,7 +383,7 @@ function ConsoleCard({
           <SecretField
             secretKey="accessToken"
             label="Access API token"
-            hint="The UniFi Access developer API token. Stored in the OS keystore and never shown again."
+            hint="From Access → Settings → Advanced → API Token. Never shown again once saved."
             stored={secretsStored.accessToken}
             keystoreAvailable={keystoreAvailable}
             value={draft.accessToken}
@@ -240,9 +413,7 @@ function ConsoleCard({
               }}
             />
             <p className="field__hint">
-              Leave this empty for the usual address: port 12445 on the console host, whatever port
-              the host field carries. Set it to point the app at a proxied Access API or at the
-              development mock — it is the whole API root, origin and path.
+              Empty uses port 12445 on the console; set it for a proxy or the dev mock.
             </p>
             {errors.accessBaseUrl === undefined ? null : (
               <p className="field__error">{errors.accessBaseUrl}</p>
@@ -266,6 +437,8 @@ function ConsoleCard({
         {dirty ? <span className="field__hint">Unsaved changes</span> : null}
       </div>
       {saveError === null ? null : <p className="field__error">{saveError.message}</p>}
+
+      {children}
     </section>
   )
 }
@@ -385,12 +558,13 @@ function CertificateSection({ accessEnabled }: { accessEnabled: boolean }): JSX.
   if (connection === null) return null
 
   return (
-    <>
+    <div className="settings__subsection">
+      <h3 className="settings__subhead">Certificate</h3>
       <CertificateCard endpoint="protect" label="Protect" status={connection.protect} />
       {accessEnabled ? (
         <CertificateCard endpoint="access" label="Access" status={connection.access} />
       ) : null}
-    </>
+    </div>
   )
 }
 
@@ -434,12 +608,11 @@ function ConnectionCard({ accessEnabled }: { accessEnabled: boolean }): JSX.Elem
   }
 
   return (
-    <section className="card">
-      <h2 className="card__title">Connection</h2>
+    <div className="settings__subsection">
+      <h3 className="settings__subhead">Connection</h3>
       <p className="card__hint">
-        The app opens the camera feed when you ask it to, so a console that is not set up costs
-        nothing. Once a connect has worked, it connects by itself at launch until you disconnect,
-        remove the API key or change the console address.
+        After a connect works, the app reconnects at launch until you disconnect, change the address
+        or replace the key.
       </p>
 
       <dl className="settings__facts">
@@ -503,7 +676,7 @@ function ConnectionCard({ accessEnabled }: { accessEnabled: boolean }): JSX.Elem
           <dd className={accessProbeClass(probes.access)}>{describeAccessProbe(probes.access)}</dd>
         </dl>
       )}
-    </section>
+    </div>
   )
 }
 
@@ -543,12 +716,11 @@ function StreamsCard({ streams }: { streams: Settings['streams'] }): JSX.Element
     if (!result.ok) setSaveError({ field, error: result.error })
   }
 
-  const select = (field: StreamsField, label: string, hint: string): JSX.Element => (
+  const select = (field: StreamsField, label: string): JSX.Element => (
     <QualitySelect
       value={streams[field]}
       field={field}
       label={label}
-      hint={hint}
       disabled={saving}
       error={saveError?.field === field ? saveError.error : null}
       onChange={(value) => {
@@ -558,22 +730,20 @@ function StreamsCard({ streams }: { streams: Settings['streams'] }): JSX.Element
   )
 
   return (
-    <section className="card">
-      <h2 className="card__title">Streams</h2>
+    <section
+      className="card"
+      id={STREAMS_SECTION.id}
+      aria-labelledby={sectionTitleId(STREAMS_SECTION)}
+    >
+      <GroupTitle section={STREAMS_SECTION}>Streams</GroupTitle>
       <p className="card__hint">
-        The quality each camera plays at unless a View or a cell says otherwise. Changes save at
-        once.
+        Defaults for the grid and for a filled cell; a View can override both, a cell its grid
+        quality.
       </p>
-      {select(
-        'defaultGridQuality',
-        'Grid quality',
-        'What every cell plays unless its View or the cell itself overrides it.',
-      )}
-      {select(
-        'defaultFillQuality',
-        'Fill quality',
-        'Used when a cell fills the grid, unless the View overrides it.',
-      )}
+      <div className="settings__streamsGrid">
+        {select('defaultGridQuality', 'Grid quality')}
+        {select('defaultFillQuality', 'Fill quality')}
+      </div>
     </section>
   )
 }
@@ -587,7 +757,6 @@ function QualitySelect({
   value,
   field,
   label,
-  hint,
   disabled,
   error,
   onChange,
@@ -595,7 +764,6 @@ function QualitySelect({
   value: Settings['streams'][StreamsField]
   field: StreamsField
   label: string
-  hint: string
   disabled: boolean
   error: IpcError | null
   onChange: (value: string) => void
@@ -617,7 +785,6 @@ function QualitySelect({
       >
         <QualityOptions />
       </select>
-      <p className="field__hint">{hint}</p>
       {error === null ? null : <p className="field__error">{error.message}</p>}
     </div>
   )

@@ -323,8 +323,7 @@ export function cameraListNotice(cameras: readonly Camera[], links: DoorLinks): 
   if (cameras.length > 0) return null
   return Object.keys(links).length === 0
     ? 'Connect to the console to list cameras.'
-    : 'Connect to the console to list cameras. The links below are kept and show camera ids ' +
-        'until the cameras load.'
+    : 'Connect to the console to list cameras; linked ones show by id until then.'
 }
 
 /**
@@ -360,8 +359,6 @@ export function doorListNotice(list: DoorListState): string | null {
     case 'failed':
       return null
     case 'loaded':
-      return list.doors.length === 0
-        ? 'The Access console reports no doors, so there is nothing to add yet.'
-        : null
+      return list.doors.length === 0 ? 'The Access console reports no doors.' : null
   }
 }

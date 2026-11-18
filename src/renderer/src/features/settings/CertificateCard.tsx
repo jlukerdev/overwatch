@@ -83,9 +83,10 @@ export function CertificateCard({
   }
 
   return (
-    <section className="card">
+    // A block inside the Console group's Certificate subsection (SettingsPage), not a card of its own.
+    <section className="settings__cert" aria-label={`${label} certificate`}>
       <div className="row settings__cardHead">
-        <h3 className="card__title">{label} certificate</h3>
+        <h4 className="settings__certTitle">{label}</h4>
         <span className="settings__factValue">{status.pinned ? 'pinned' : 'not accepted yet'}</span>
         <button
           type="button"
@@ -151,8 +152,8 @@ function CheckPanel({
     return (
       <div className="settings__certBody">
         <p className="card__hint">
-          Nothing is pinned for this address yet. Compare this fingerprint with the one your console
-          shows, then trust it — the app will accept no other certificate afterwards.
+          Compare this fingerprint with your console&rsquo;s before trusting it; no other will be
+          accepted afterwards.
         </p>
         <p className="mono settings__fingerprint">{formatFingerprint(check.cert.fingerprint256)}</p>
         <p className="field__hint">{describeCert(check.cert)}</p>
@@ -184,9 +185,8 @@ function CheckPanel({
       </dl>
       <p className="field__hint">{describeCert(check.cert)}</p>
       <p className="settings__mismatchText">
-        This is what a console that was reinstalled or had its certificate renewed looks like — and
-        also what someone intercepting the connection looks like. Only continue if you know why it
-        changed.
+        A reinstall or a renewed certificate looks like this, and so does an interception: continue
+        only if you know why it changed.
       </p>
       <div className="row">
         <input

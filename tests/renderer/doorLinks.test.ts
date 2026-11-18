@@ -361,7 +361,7 @@ describe('domId', () => {
 describe('cameraListNotice', () => {
   it('asks to connect while there is no inventory, and says the links are kept', () => {
     expect(cameraListNotice([], {})).toBe('Connect to the console to list cameras.')
-    expect(cameraListNotice([], { 'cam-1': 'd-front' })).toMatch(/kept.*camera ids/)
+    expect(cameraListNotice([], { 'cam-1': 'd-front' })).toMatch(/linked ones show by id/)
     expect(cameraListNotice([DRIVEWAY], { 'cam-1': 'd-front' })).toBeNull()
   })
 })

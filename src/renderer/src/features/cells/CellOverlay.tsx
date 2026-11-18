@@ -12,7 +12,7 @@
 // comes last, and only where no picker already shows the quality: a package-channel cell (the user's
 // call, 2026-11-16; the pickers carry the per-quality colour instead). The back control used to sit
 // apart, top centre; it is in the strip now, after "100%", by the same call. A later task adds
-// unlock (P5.3, DOOR); a per-cell motion badge was deferred to after the prototype (user
+// unlock (P5.4, DOOR); a per-cell motion badge was deferred to after the prototype (user
 // decision 2026-11-15). No placeholder buttons until then, and no control shown while it would do
 // nothing (the 100% control at 1×, next / previous on a one-camera cell): a control that does
 // nothing is a control someone presses. A strip with no controls draws no empty slot (cells.css).

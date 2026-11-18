@@ -32,7 +32,7 @@ import {
   type CameraEvent,
   type CameraStateChange,
 } from './models'
-import { QualitySchema, StreamQualitySchema } from './quality'
+import { PACKAGE_CHANNEL, QualitySchema, StreamQualitySchema } from './quality'
 import {
   StreamHandleSchema,
   StreamRuntimeSchema,
@@ -423,6 +423,12 @@ export const SnapshotInputSchema = z.object({
    * `400 BAD_REQUEST` and sends no smaller image instead (SPEC §5.1). Main checks the flag too.
    */
   highQuality: z.boolean().default(false),
+  /**
+   * CAM-4: `package` asks for a doorbell's package camera (`channel=package`). Only for a camera
+   * whose `hasPackageCamera` is set; main checks the flag and drops it otherwise. Absent means the
+   * main channel, which is all the Cameras tab ever asks for (P5.2: the View editor asks for both).
+   */
+  channel: z.enum(['main', PACKAGE_CHANNEL]).optional(),
 })
 export type SnapshotInput = z.infer<typeof SnapshotInputSchema>
 

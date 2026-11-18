@@ -145,13 +145,14 @@ CELL-2
 ---
 
 ## Phase 5 — Audio & door unlock
-AUD-1…3, DOOR-0…5
+AUD-1…3, VIEW-3, DOOR-0…5
 
 | # | Task |
 |---|---|
 | P5.1 | Single-active-audio controller, volume in fill mode, `M` mute-all. User decisions (2026-11-16): a camera change in the unmuted cell (rotation, step, trigger, camera missing) mutes it, so audio never follows a cell onto another camera; one app-wide volume, session only, 100% on launch, slider only while filled; `M` mutes all and is not a toggle (no-op with nothing unmuted), ignored while typing, with Ctrl/Cmd/Alt and on repeat, Live screen only. Review decisions (2026-11-16): the mute toggle shows only while the camera is connected, and a heard camera going offline is muted; filling a cell mutes every other cell; no mute on package-channel cells; switching off the heard camera's mic mutes it. Audio/video offset seen in-app matches Protect's own web app (camera-side), not pursued |
-| P5.2 | "Enable UniFi Access" switch (DOOR-0) + token field + Access base URL override, then door link settings (camera → door), all hidden while disabled |
-| P5.3 | Press-and-hold unlock control + result toast + `unlock.log` |
+| P5.2 | Camera snapshots in the View editor (VIEW-3; user request 2026-11-17). A camera dropped (or picked) into a cell shows that camera's snapshot in the cell, behind its chip, so the user can see what it looks at; opening an existing View in the editor fills every cell with a camera the same way. The thumbnails the Cameras tab loads (CAM-1, P4.5) move from `CameraList`'s local reducer into a shared renderer store, so the editor shows a cached image at once when one exists, of any age, and fetches only the cameras that have none, through the same `snapshot` IPC and main's shared rate limiter (R9), default quality (never `highQuality`), never on a timer, and no stream is opened (QUAL-8). A multi-camera cell shows the camera at the head of its list, a package ref (`<id>:package`) its package channel (`channel=package`), and an offline camera, a failed snapshot or a missing camera keeps the text-only cell with its label. A fetch the editor makes lands in the shared store, so the Cameras tab can reuse it too; Refresh on that tab still refetches everything. SPEC VIEW-3 updated to match. Review decisions (2026-11-17): the editor fetches the snapshot only, no feed-state GET (the Cameras tab fills a missing feed state itself); a failed or unavailable snapshot is retried once each time the editor opens, never in a loop; the editor leaves a camera to a Cameras-tab load in flight; re-opening the Cameras tab keeps the cached grid up while it reloads, like Refresh. User request (2026-11-17): the camera palette marks each entry whose exact ref heads at least one cell of the draft with a green check mark (first built as an "In use" pill, replaced at the user's request), live with the draft, still draggable; the editor's selection toolbar puts Merge / Split / Clear cameras at the far left with the selected-cell count after them (user request 2026-11-17) |
+| P5.3 | "Enable UniFi Access" switch (DOOR-0) + token field + Access base URL override, then door link settings (camera → door), all hidden while disabled |
+| P5.4 | Press-and-hold unlock control + result toast + `unlock.log` |
 
 **Gate G5:** unmuting a second cell mutes the first. With Access disabled, no door UI shows and no Access calls are made. With Access enabled against the mock, unlocking from a camera cell unlocks the right mock door, and the attempt is logged.
 

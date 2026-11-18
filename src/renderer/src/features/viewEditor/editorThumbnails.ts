@@ -24,6 +24,22 @@ export function cellShownRef(cell: { readonly cameraIds: readonly string[] }): s
   return cell.cameraIds[0] ?? null
 }
 
+/**
+ * Which palette entries are in use (P5.2, VIEW-3; user request 2026-11-17): each ref that heads at
+ * least one cell, with how many cells it heads. Exact refs, so a doorbell's `<id>` and
+ * `<id>:package` count separately; a camera only 2nd or later in a cell's list does not count.
+ */
+export function inUseRefs(
+  cells: readonly { readonly cameraIds: readonly string[] }[],
+): ReadonlyMap<string, number> {
+  const counts = new Map<string, number>()
+  for (const cell of cells) {
+    const ref = cellShownRef(cell)
+    if (ref !== null) counts.set(ref, (counts.get(ref) ?? 0) + 1)
+  }
+  return counts
+}
+
 /** A cached image, ready to draw. */
 export type ReadySnapshot = Extract<ThumbnailEntry, { status: 'ready' }>
 

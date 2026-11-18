@@ -3,6 +3,10 @@
 // Each entry is a native HTML5 drag source carrying its camera ref as `CAMERA_DRAG_TYPE`; dropping
 // it on a canvas cell makes that cell show that camera alone (`dropCameraOnCell`). The keyboard way
 // to do the same is the cell inspector's "Add camera" picker.
+//
+// An entry whose exact ref heads at least one cell of the draft is marked "In use" (P5.2, VIEW-3;
+// `inUseRefs`), with its label a little quieter. It stays draggable: one camera may head several
+// cells.
 import type { JSX } from 'react'
 import type { CameraChoice } from './editorModel'
 import { CAMERA_DRAG_TYPE } from './viewEditorHelpers'
@@ -10,9 +14,16 @@ import { CAMERA_DRAG_TYPE } from './viewEditorHelpers'
 export interface CameraPaletteProps {
   /** `cameraChoices(cameras)`, computed once by the editor and shared with the inspector. */
   readonly choices: readonly CameraChoice[]
+  /** `inUseRefs(draft.cells)`: ref → how many cells it heads. Absent means not in use. */
+  readonly inUse: ReadonlyMap<string, number>
 }
 
-export function CameraPalette({ choices }: CameraPaletteProps): JSX.Element {
+/** "In use in 1 cell", "In use in 3 cells". */
+function inUseText(count: number): string {
+  return `In use in ${String(count)} ${count === 1 ? 'cell' : 'cells'}`
+}
+
+export function CameraPalette({ choices, inUse }: CameraPaletteProps): JSX.Element {
   return (
     <section className="viewEditor__panel" aria-label="Cameras">
       <h3 className="viewEditor__panelTitle">Cameras</h3>
@@ -24,20 +35,32 @@ export function CameraPalette({ choices }: CameraPaletteProps): JSX.Element {
         <>
           <p className="viewEditor__hint">Drag a camera onto a cell.</p>
           <ul className="viewEditor__palette">
-            {choices.map((choice) => (
-              <li
-                key={choice.ref}
-                className="viewEditor__paletteItem"
-                draggable
-                title={choice.label}
-                onDragStart={(event) => {
-                  event.dataTransfer.setData(CAMERA_DRAG_TYPE, choice.ref)
-                  event.dataTransfer.effectAllowed = 'copy'
-                }}
-              >
-                {choice.label}
-              </li>
-            ))}
+            {choices.map((choice) => {
+              const count = inUse.get(choice.ref) ?? 0
+              return (
+                <li
+                  key={choice.ref}
+                  className={
+                    count > 0
+                      ? 'viewEditor__paletteItem viewEditor__paletteItem--inUse'
+                      : 'viewEditor__paletteItem'
+                  }
+                  draggable
+                  title={count > 0 ? `${choice.label} — ${inUseText(count)}` : choice.label}
+                  onDragStart={(event) => {
+                    event.dataTransfer.setData(CAMERA_DRAG_TYPE, choice.ref)
+                    event.dataTransfer.effectAllowed = 'copy'
+                  }}
+                >
+                  <span className="viewEditor__paletteLabel">{choice.label}</span>
+                  {count > 0 ? (
+                    <span className="viewEditor__inUse" aria-label={inUseText(count)}>
+                      {count > 1 ? `In use ×${String(count)}` : 'In use'}
+                    </span>
+                  ) : null}
+                </li>
+              )
+            })}
           </ul>
         </>
       )}

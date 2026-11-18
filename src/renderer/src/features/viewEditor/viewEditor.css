@@ -384,14 +384,38 @@
 }
 
 .viewEditor__paletteItem {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
   padding: 0.4rem 0.6rem;
-  overflow: hidden;
   border: 1px solid var(--border);
   border-radius: var(--radius);
   background: var(--bg-sunken);
-  text-overflow: ellipsis;
   white-space: nowrap;
   cursor: grab;
+}
+
+.viewEditor__paletteLabel {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* P5.2 (VIEW-3): the entry heads at least one cell. Quieter label, still readable; still draggable. */
+.viewEditor__paletteItem--inUse .viewEditor__paletteLabel {
+  color: color-mix(in srgb, var(--fg) 70%, var(--muted));
+}
+
+.viewEditor__inUse {
+  flex-shrink: 0;
+  padding: 0.05rem 0.4rem;
+  border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  color: var(--accent);
+  font-size: 0.7rem;
+  font-weight: 600;
 }
 
 .viewEditor__paletteItem:hover {

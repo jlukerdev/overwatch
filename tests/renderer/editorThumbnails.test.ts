@@ -11,6 +11,7 @@ import {
   cellSnapshot,
   editorRetryPlan,
   editorSnapshotPlan,
+  inUseRefs,
 } from '../../src/renderer/src/features/viewEditor/editorThumbnails'
 
 function camera(overrides: Partial<Camera> & { id: string }): Camera {
@@ -205,5 +206,29 @@ describe('editorRetryPlan (P5.2, once per open)', () => {
       cameraIds: [],
       packageIds: [],
     })
+  })
+})
+
+describe('inUseRefs (VIEW-3, palette "In use")', () => {
+  it('counts the cells each exact ref heads, and ignores the rest of a list', () => {
+    const used = inUseRefs([
+      cell('a', 'b'),
+      cell('a'),
+      cell('bell:package'),
+      cell(),
+      cell('c', 'a'),
+    ])
+    expect([...used]).toEqual([
+      ['a', 2],
+      ['bell:package', 1],
+      ['c', 1],
+    ])
+    // Second or later in a list is not in use, and the doorbell's main channel is its own ref.
+    expect(used.has('b')).toBe(false)
+    expect(used.has('bell')).toBe(false)
+  })
+
+  it('is empty for a View with no cameras', () => {
+    expect(inUseRefs([cell(), cell()]).size).toBe(0)
   })
 })

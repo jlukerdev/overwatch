@@ -70,7 +70,7 @@ import { setCellQuality } from '../quality/qualityChoice'
 import { CameraPalette } from './CameraPalette'
 import { CellInspector } from './CellInspector'
 import { EditorCanvas } from './EditorCanvas'
-import { cellSnapshot, editorRetryPlan, editorSnapshotPlan } from './editorThumbnails'
+import { cellSnapshot, editorRetryPlan, editorSnapshotPlan, inUseRefs } from './editorThumbnails'
 import {
   addCellCamera,
   cameraChoices,
@@ -309,6 +309,8 @@ function DraftEditor({
     requestCameras(snapshotPlan.cameraIds, { streams: false })
     requestPackages(snapshotPlan.packageIds)
   }, [snapshotPlan])
+  // Palette entries heading a cell are marked "In use" (VIEW-3), live with every draft change.
+  const inUse = useMemo(() => inUseRefs(draft.cells), [draft.cells])
   const cellSnapshots = useMemo(
     () =>
       draft.cells.map((cell) => cellSnapshot(cell, cameras, thumbnailEntries, packageSnapshots)),
@@ -706,7 +708,7 @@ function DraftEditor({
             edit(setCellMotionHold(draft, inspectedIndex, sec))
           }}
         />
-        <CameraPalette choices={choices} />
+        <CameraPalette choices={choices} inUse={inUse} />
       </aside>
     </section>
   )

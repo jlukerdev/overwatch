@@ -32,6 +32,7 @@ import {
   type StreamHandle,
   type StreamRuntime,
   type TestConnection,
+  type UnlockResult,
   type Unsubscribe,
   type ViewProtectApi,
 } from '@shared/ipc'
@@ -130,6 +131,7 @@ const impl: ViewProtectApi = {
     call(IPC.cameraStreamQualities, input),
   listDoors: (): Promise<IpcResult<Door[]>> => call(IPC.listDoors, undefined),
   setDoorLinks: (input): Promise<IpcResult<AppState>> => call(IPC.setDoorLinks, input),
+  unlockDoor: (input): Promise<IpcResult<UnlockResult>> => call(IPC.unlockDoor, input),
 
   onConnection: (listener: (status: ConnectionStatus) => void): Unsubscribe =>
     subscribe(IPC_EVENTS.connection, listener),

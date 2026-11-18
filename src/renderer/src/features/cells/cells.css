@@ -193,6 +193,25 @@
 }
 
 /*
+ * The bottom slot (P5.4, CellOverlay.tsx): the door unlock control, centred at the bottom of the
+ * cell. The slot itself takes no pointer; its button always does, since it never auto-hides (features/door/door.css). An
+ * empty slot (no button drawn) takes no space.
+ */
+.cellOverlay__bottom {
+  position: absolute;
+  right: 0;
+  bottom: 0.6rem;
+  left: 0;
+  display: flex;
+  justify-content: center;
+  pointer-events: none;
+}
+
+.cellOverlay__bottom:empty {
+  display: none;
+}
+
+/*
  * QUAL-7: the effective quality. Information, not a control, and only where no picker shows the
  * quality — in practice the package channel's `PKG` (Cell.tsx). Each quality has its own colour
  * (`data-quality`), shared with the pickers below, so a wall of cells reads at a glance: green for

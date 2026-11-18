@@ -58,6 +58,38 @@ export function pinFailure(err: unknown): PinMismatchError | PinRequiredError | 
   return null
 }
 
+/**
+ * The socket-level codes that mean the connection was **never made**: refused, no such host, DNS
+ * temporarily failing, no route. A request that failed with one of these never left this machine
+ * for the console, so it cannot have done anything there. Every other connection failure (a reset,
+ * a socket closed mid-answer, a TLS error after the connect) may have come after the request was
+ * written.
+ */
+export const NEVER_CONNECTED_CODES: ReadonlySet<string> = new Set([
+  'ECONNREFUSED',
+  'ENOTFOUND',
+  'EAI_AGAIN',
+  'EHOSTUNREACH',
+  'ENETUNREACH',
+])
+
+/**
+ * True when the `cause` chain shows the connection was never made ({@link NEVER_CONNECTED_CODES}).
+ * Node's address-family racing reports a failed connect as an `AggregateError` whose `errors` are
+ * the per-address attempts; it counts only when every attempt says "never connected".
+ */
+export function isNeverConnectedError(err: unknown): boolean {
+  for (const link of causeChain(err)) {
+    if (!(link instanceof Error)) continue
+    if (link instanceof AggregateError && link.errors.length > 0) {
+      return link.errors.every((inner) => isNeverConnectedError(inner))
+    }
+    const code = errorCodeOf(link)
+    if (code !== undefined && NEVER_CONNECTED_CODES.has(code)) return true
+  }
+  return false
+}
+
 /** An error as one line: its message plus its `code` when it has one. Never a stack. */
 export function describeError(err: unknown): string {
   if (!(err instanceof Error)) return String(err)

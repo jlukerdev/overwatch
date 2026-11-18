@@ -22,7 +22,8 @@
 // (`.gridCell`), native and attached in an effect (as CellOverlay's hover listeners are), so a wheel
 // or a drag that starts over the name chip works too. Native listeners on the cell run *before*
 // React's (React listens at the root), so the overlay slot's `stopPropagation` does not reach them:
-// a press, wheel, click or double-click on a control (`.cellOverlay__slot`) is skipped here by
+// a press, wheel, click or double-click on a control (`.cellOverlay__slot`, or the bottom slot's
+// unlock control, `.cellOverlay__bottom`, P5.4) is skipped here by
 // checking its target, which keeps pressing a button from ever panning and leaves the wheel to a
 // control that scrolls (the picker). Everywhere else `wheel` is `{ passive: false }` and always
 // `preventDefault`ed while filled, so Chromium's own Ctrl+wheel / pinch page zoom never fires over
@@ -98,8 +99,11 @@ import './zoom.css'
 const ZOOMED_CLASS = 'gridCell--zoomed'
 /** On the cell while a drag pans: `grabbing`. */
 const PANNING_CLASS = 'gridCell--panning'
-/** CellOverlay's controls slot: a press, wheel or click there is a control's, never zoom's (header). */
-const CONTROLS_SELECTOR = '.cellOverlay__slot'
+/**
+ * CellOverlay's control slots — the strip's and the bottom one (the unlock control, P5.4): a press,
+ * wheel or click there is a control's, never zoom's (header).
+ */
+const CONTROLS_SELECTOR = '.cellOverlay__slot, .cellOverlay__bottom'
 
 export interface ZoomPan {
   /** For the cell element (`.gridCell`): where every listener goes. */

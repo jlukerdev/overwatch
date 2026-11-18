@@ -555,6 +555,7 @@ function SlotContent({
         <Cell
           slotKey={slot.key}
           cameraId={slot.cameraId}
+          cameraRef={slot.ref}
           name={slot.name}
           showName={showNames}
           quality={filled ? fillQuality : slot.quality}

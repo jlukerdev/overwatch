@@ -483,6 +483,13 @@ export function createIpcRouter(deps: IpcRouterDeps): ReadonlyMap<string, IpcHan
     return state(ready)
   })
 
+  // DOOR-3/4/5 (P5.4). Only the camera ref crosses; the manager resolves the door from the saved
+  // links, applies DOOR-0, makes the one PUT and writes the unlock log, and answers an `IpcResult`
+  // with `retryable: false` on every failure, so it is passed through as is. No perf-run block: the
+  // harness never presses the unlock control, and nothing it shows the renderer (`settingsView`)
+  // touches `doorLinks` or the Access switch, so an unlock during a run is the user's own.
+  on(IPC.unlockDoor, (input, ready) => ready.manager.unlockDoor(input.cameraRef))
+
   on(IPC.ensureStream, async (input) => {
     const registry = deps.getRegistry()
     if (registry === null) {

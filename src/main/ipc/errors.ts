@@ -45,9 +45,11 @@ const PROTECT_KINDS: Readonly<Record<Exclude<ProtectErrorKind, 'pin'>, IpcErrorK
 
 /**
  * `AccessErrorKind` → `IpcErrorKind`, same exhaustiveness rule. `forbidden` becomes `auth`: the
- * contract's `auth` covers 401 **and** 403, and every Access call the UI makes today is a read, for
- * which a refusal means the token lacks the door scopes — which is Settings' business (DOOR-1). The
- * message still says exactly what the console refused.
+ * contract's `auth` covers 401 **and** 403, and for the door reads a refusal means the token lacks
+ * the door scopes — which is Settings' business (DOOR-1). For an unlock (P5.4) a refusal can also
+ * mean the door has no Door Hub; the kind stays `auth` (the contract has no `forbidden`, and the
+ * community sources cannot tell the two apart, OS-1), but the message names both causes, and the
+ * connection manager keeps the Access status `connected` for it, since the console did answer.
  */
 const ACCESS_KINDS: Readonly<Record<Exclude<AccessErrorKind, 'pin'>, IpcErrorKind>> = {
   disabled: 'disabled',

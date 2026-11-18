@@ -16,6 +16,7 @@ import {
   type AppState,
   type IpcError,
   type IpcResult,
+  type UnlockResult,
 } from '@shared/ipc'
 import {
   CameraSchema,
@@ -197,6 +198,19 @@ function setup(options: SetupOptions = {}) {
     // in connectionManager.test.ts, and here it is injected where a test needs it.
     doors: vi.fn((): Promise<IpcResult<Door[]>> =>
       Promise.resolve({ ok: true, value: [FRONT_DOOR] }),
+    ),
+    // DOOR-3: the real manager's refusals, logging and single PUT are tested in
+    // connectionManager.test.ts; here it answers a success unless a test injects otherwise.
+    unlockDoor: vi.fn<(cameraRef: string) => Promise<IpcResult<UnlockResult>>>(() =>
+      Promise.resolve({
+        ok: true,
+        value: {
+          doorId: 'door-1',
+          cameraName: 'Front Door Cam',
+          outcome: 'unlocked',
+          reason: null,
+        },
+      }),
     ),
     applyConsoleChange: vi.fn((next: Config['console']) => {
       current = { ...current, console: next }
@@ -466,6 +480,8 @@ function payloadFor(channel: string): unknown {
       return { viewId: null }
     case IPC.setDoorLinks.channel:
       return { links: {} }
+    case IPC.unlockDoor.channel:
+      return { cameraRef: 'cam-1' }
     default:
       return undefined
   }
@@ -1111,6 +1127,45 @@ describe('listDoors (DOOR-1, P5.3)', () => {
     h.manager.doors.mockRejectedValueOnce(new Error('a bug in main'))
     const result = await h.call(IPC.listDoors)
     expect(failure(result)).toMatchObject({ kind: 'internal', message: 'a bug in main' })
+  })
+})
+
+describe('unlockDoor (DOOR-3/4/5, P5.4)', () => {
+  it('passes only the camera ref to the manager and its answer back', async () => {
+    const result = await h.call(IPC.unlockDoor, { cameraRef: 'cam-1:package' })
+    expect(h.manager.unlockDoor).toHaveBeenCalledExactlyOnceWith('cam-1:package')
+    expect(result).toEqual({
+      ok: true,
+      value: { doorId: 'door-1', cameraName: 'Front Door Cam', outcome: 'unlocked', reason: null },
+    })
+  })
+
+  it('refuses a payload without a camera ref, or one carrying only a door id, before acting', async () => {
+    for (const payload of [{}, { cameraRef: '' }, { doorId: 'door-1' }, undefined]) {
+      const result = await h.call(IPC.unlockDoor, payload)
+      expect(failure(result).kind).toBe('invalid-request')
+    }
+    expect(h.manager.unlockDoor).not.toHaveBeenCalled()
+  })
+
+  it("passes the manager's failure through unchanged", async () => {
+    const error: IpcError = {
+      kind: 'auth',
+      message: 'PUT /doors/door-1/unlock failed with HTTP 403 CODE_OPERATION_FORBIDDEN.',
+      endpoint: '192.0.2.10:12445',
+      retryable: false,
+    }
+    h.manager.unlockDoor.mockResolvedValueOnce({ ok: false, error })
+    const result = await h.call(IPC.unlockDoor, { cameraRef: 'cam-1' })
+    expect(failure(result)).toEqual(error)
+    expect(h.manager.unlockDoor).toHaveBeenCalledTimes(1)
+  })
+
+  it('still never throws if the manager does', async () => {
+    h.manager.unlockDoor.mockRejectedValueOnce(new Error('a bug in main'))
+    const result = await h.call(IPC.unlockDoor, { cameraRef: 'cam-1' })
+    expect(failure(result)).toMatchObject({ kind: 'internal', message: 'a bug in main' })
+    expect(h.manager.unlockDoor).toHaveBeenCalledTimes(1)
   })
 })
 

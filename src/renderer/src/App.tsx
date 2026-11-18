@@ -33,6 +33,7 @@ import { useAppStore } from './state/appStore'
 import { blockUnload, confirmLeave } from './state/unsavedGuard'
 import { ConfirmHost, confirmDialog } from './ui/ConfirmDialog'
 import { AlertIcon, CameraIcon, GearIcon, GridIcon, RefreshIcon } from './ui/icons'
+import { ToastHost } from './ui/Toast'
 
 export function App(): JSX.Element {
   const phase = useAppStore((s) => s.phase)
@@ -200,6 +201,8 @@ export function App(): JSX.Element {
         )}
       </main>
       <ConfirmHost />
+      {/* Outcomes of actions away from any form, e.g. a cell's unlock (P5.4). */}
+      <ToastHost />
     </div>
   )
 }

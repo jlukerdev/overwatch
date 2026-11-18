@@ -65,6 +65,7 @@
 //    audio rule's identity (slot + camera id) exact, since a package ref shares its camera's id: a
 //    switch between `<id>` and `<id>:package` in one cell still mutes, because the package side is
 //    never an audio source.
+import { packageRef, parseCameraRef, type CameraRef } from '@shared/cameraRef'
 import type { Camera } from '@shared/ipc'
 import type { Fit, View } from '@shared/models'
 import {
@@ -83,32 +84,9 @@ import type { SchedulerEntry } from '../cells/schedulerSet'
 // -------------------------------------------------------------------------------------------------
 // Camera refs (CAM-4)
 
-/** What a `cameraIds` entry points at: a camera, or a doorbell's package channel. */
-export interface CameraRef {
-  /** The Protect camera id — the one the inventory and `ensureStream` know. */
-  readonly cameraId: string
-  /** `true` for `<cameraId>:package` (CAM-4): play the camera's {@link PACKAGE_CHANNEL} stream. */
-  readonly packageChannel: boolean
-}
-
-const PACKAGE_SUFFIX = `:${PACKAGE_CHANNEL}`
-
-/** The ref of a camera's package channel (CAM-4): `<cameraId>:package`, as `parseCameraRef` reads it. */
-export function packageRef(cameraId: string): string {
-  return `${cameraId}${PACKAGE_SUFFIX}`
-}
-
-/**
- * Splits a cell's camera ref. Only the exact suffix `:package` with a non-empty id before it is the
- * package channel; anything else is a plain camera id, passed through as is (Protect ids are hex and
- * never contain a colon, so nothing real is misread).
- */
-export function parseCameraRef(ref: string): CameraRef {
-  if (ref.length > PACKAGE_SUFFIX.length && ref.endsWith(PACKAGE_SUFFIX)) {
-    return { cameraId: ref.slice(0, -PACKAGE_SUFFIX.length), packageChannel: true }
-  }
-  return { cameraId: ref, packageChannel: false }
-}
+// The grammar lives in `@shared/cameraRef` (main resolves the unlock's door with it too); re-exported
+// here for the renderer modules and tests that import it from the grid.
+export { packageRef, parseCameraRef, type CameraRef }
 
 // -------------------------------------------------------------------------------------------------
 // Slots
@@ -120,6 +98,11 @@ export type GridSlot =
       readonly key: string
       readonly placement: CellPlacement
       readonly cameraId: string
+      /**
+       * The shown entry of the cell's `cameraIds` as written: `<cameraId>` or `<cameraId>:package`.
+       * What the door unlock control names to main, which resolves the door from it (P5.4, DOOR-2/4).
+       */
+      readonly ref: string
       readonly name: string
       /** The **effective** stream: QUAL-3's chain, or the package channel (CAM-4). Never a literal. */
       readonly quality: StreamQuality
@@ -293,6 +276,7 @@ export function buildViewSlots(input: {
       key,
       placement,
       cameraId: ref.cameraId,
+      ref: refText,
       name: slotName(camera, ref),
       quality: gridQuality(ref),
       fillQuality: ref.packageChannel ? PACKAGE_CHANNEL : resolveFillQuality({ view, streams }),

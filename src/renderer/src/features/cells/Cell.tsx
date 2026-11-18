@@ -41,6 +41,18 @@
 // is one, comes last. Mute and volume sit together just before the picker: the camera's own
 // controls, after the ones that move between cameras.
 //
+// **Door unlock (P5.4; DOOR-0/2/3/4).** Not in the strip: the overlay's bottom slot gets
+// `<UnlockButton>` (features/door), a rounded-rectangle door button at the bottom centre of the cell, in the grid
+// and in fill. It draws itself only while Access is saved as on, the camera (a package-channel
+// cell: its doorbell) has a door link, the camera is connected, and this cell's picture is live —
+// `streaming`, which the visible `<LivePlayer>` reports through `onPlayingChange` (memoised per
+// camera, so the players' memo holds; the pre-warmed player reports nothing until it is the visible
+// one, and is then handed the callback and re-reports). What was live is forgotten whenever the
+// shown camera changes, so after a rotation the control waits for the new player's own report.
+// It is keyed by the shown camera ref, so a rotation gives the next camera a fresh, idle control. A
+// missing camera's placeholder (`<MissingCell>`) has none. The hold, the request and the toast are
+// the button's; its presses never reach this cell's click handlers (CellOverlay's bottom slot).
+//
 // **Name (VIEW-8).** The camera's name is drawn only when the View's `showNames` is on (`showName`);
 // off, the overlay has no name chip, in the grid and in fill alike.
 //
@@ -76,12 +88,13 @@
 // the cell fills that box. The player then fits the camera inside it by the View's `fit` (contain or
 // cover, player.css), which is how a camera whose shape differs from the View's `aspect` — or a
 // spanned cell a few px off it because of the gap (VIEW-7) — is never distorted.
-import { memo, useMemo, type JSX } from 'react'
+import { memo, useCallback, useMemo, useState, type JSX } from 'react'
 import type { Fit } from '@shared/models'
 import type { Quality, StreamQuality } from '@shared/quality'
 import { LivePlayer } from '../../player/LivePlayer'
 import { ZoomResetIcon } from '../../ui/icons'
 import { MuteToggle, VolumeSlider } from './AudioControls'
+import { UnlockButton } from '../door/UnlockButton'
 import { toFillClick, type FillClickEvent } from '../fill/fillMode'
 import { useZoomPan, ZoomPanLayer } from '../zoom/ZoomPan'
 import { BackToGridButton } from './BackToGridButton'
@@ -95,6 +108,8 @@ export interface CellProps {
   /** The grid slot this cell is in (`GridSlot.key`), handed back with each click. */
   readonly slotKey: string
   readonly cameraId: string
+  /** The shown ref as written, `<cameraId>` or `<cameraId>:package`: the unlock names it (P5.4). */
+  readonly cameraRef: string
   readonly name: string
   /** VIEW-8: the View's `showNames`; `false` draws no name over the picture. */
   readonly showName: boolean
@@ -181,6 +196,7 @@ const ZOOM_RESET_TITLE = navigator.userAgent.includes('Mac')
 export const Cell = memo(function Cell({
   slotKey,
   cameraId,
+  cameraRef,
   name,
   showName,
   quality,
@@ -207,6 +223,26 @@ export const Cell = memo(function Cell({
   onVolumeChange,
 }: CellProps): JSX.Element {
   const { cellRef, layerRef, zoomed, resetZoom } = useZoomPan(filled)
+  // The visible player shows live video (header, "Door unlock"). Kept as *which* camera is live, so
+  // the render that switches camera never shows the unlock control on the previous one's word.
+  const [streamingCameraId, setStreamingCameraId] = useState<string | null>(null)
+  // And forgotten whenever the shown camera changes (React's "adjust state on a prop change", in
+  // render): rotating A → B → A must not find A's old "live" and show the button over A's fresh
+  // "Connecting…" player. The new player's own report — made in its effect, after this — sets it.
+  const [streamingFor, setStreamingFor] = useState(cameraId)
+  if (streamingFor !== cameraId) {
+    setStreamingFor(cameraId)
+    setStreamingCameraId(null)
+  }
+  const streaming = streamingFor === cameraId && streamingCameraId === cameraId
+  const onPlayingChange = useCallback(
+    (playing: boolean): void => {
+      setStreamingCameraId((current) =>
+        playing ? cameraId : current === cameraId ? null : current,
+      )
+    },
+    [cameraId],
+  )
   // The same element object across renders that change nothing of the player's own, so a flip of
   // `zoomed` (or of `filled` alone) re-renders the overlay and never the player.
   // Keyed by camera (P4.2; CELL-2), on the wrapper: when a multi-camera cell rotates or a motion
@@ -239,10 +275,11 @@ export const Cell = memo(function Cell({
             muted={entry.hidden || !audible}
             volume={volume}
             fit={fit}
+            onPlayingChange={entry.hidden ? undefined : onPlayingChange}
           />
         </div>
       )),
-    [cameraId, quality, prewarmCameraId, prewarmQuality, fit, audible, volume],
+    [cameraId, quality, prewarmCameraId, prewarmQuality, fit, audible, volume, onPlayingChange],
   )
   const qualityPicker =
     inheritedQuality === null ? null : filled ? (
@@ -313,6 +350,14 @@ export const Cell = memo(function Cell({
         // The badge only where no picker already shows the quality: a package-channel cell (header).
         quality={qualityPicker === null ? quality : undefined}
         autoHideMs={overlayAutoHideMs}
+        bottom={
+          <UnlockButton
+            key={cameraRef}
+            cameraRef={cameraRef}
+            cameraName={name}
+            streaming={streaming}
+          />
+        }
       >
         {/* Left to right (CellOverlay header). In fill: 100%, back, position, mute, volume,
             quality. In the grid: position, mute, quality. The step's zoom reset gives the next

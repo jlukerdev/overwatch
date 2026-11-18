@@ -649,7 +649,7 @@ if (!app.requestSingleInstanceLock()) {
       if (BrowserWindow.getAllWindows().length === 0) createWindow()
       if (perfConfig !== null) startPerf(perfConfig)
       // CON-4's launch exception: reconnect a console that worked last session, unless the user has
-      // since disconnected, cleared the key or moved the endpoint (the manager checks the flag, the
+      // since cleared or replaced the key or moved the endpoint (the manager checks the flag, the
       // key and the pin, and sends nothing otherwise). After the router and the window, so the
       // renderer's `getState` is answered meanwhile. Its pushes need no ordering: one sent before the
       // page has loaded is dropped by `sendToRenderer` and the load's `getState` reads the newer

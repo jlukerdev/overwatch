@@ -488,24 +488,6 @@ describe('the devices feed (CAM-2, R11)', () => {
   })
 })
 
-describe('disconnect', () => {
-  it('stops the feed, goes back to idle and keeps the inventory', async () => {
-    await h.manager.connect()
-    h.feeds.last().emitState('open')
-    await h.manager.disconnect()
-    expect(h.feeds.last().stops).toBe(1)
-    const status = h.manager.status()
-    expect(status.protect.phase).toBe('idle')
-    expect(status.protect.error).toBeNull()
-    expect(h.manager.cachedCameras()).toHaveLength(2)
-  })
-
-  it('is safe with nothing connected', async () => {
-    await h.manager.disconnect()
-    expect(h.manager.status().protect.phase).toBe('idle')
-  })
-})
-
 describe('a cleared credential (CON-1/2)', () => {
   it('closes the feed, empties the inventory and reports what the config now derives', async () => {
     await h.manager.connect()
@@ -616,6 +598,158 @@ describe('testConnection (CON-4)', () => {
     const result = await h.manager.testConnection()
     expect(result.protect.state).toBe('error')
     expect(result.connection.protect.phase).toBe('connected')
+  })
+})
+
+describe('doors (DOOR-1, P5.3)', () => {
+  const door = {
+    id: 'door-1',
+    name: 'Front Door',
+    fullName: 'Ground Floor - Front Door',
+    floorId: 'floor-1',
+    type: 'door',
+    boundToHub: true,
+    relay: 'lock' as const,
+    position: null,
+  }
+
+  it('makes no Access call at all while Access is off, and says disabled (DOOR-0)', async () => {
+    const access = vi.fn(() => h.access)
+    h.services.access = access
+    const result = await h.manager.doors()
+    expect(result).toMatchObject({ ok: false, error: { kind: 'disabled' } })
+    // Not even the client is resolved, let alone asked.
+    expect(access).not.toHaveBeenCalled()
+    expect(h.access.doors).not.toHaveBeenCalled()
+    expect(h.manager.status().access.phase).toBe('disabled')
+  })
+
+  it('answers the doors and marks Access connected, as the probe does', async () => {
+    const enabled = setup({ accessEnabled: true })
+    enabled.access.doors.mockResolvedValueOnce([door] as never)
+    await expect(enabled.manager.doors()).resolves.toEqual({ ok: true, value: [door] })
+    expect(enabled.access.doors).toHaveBeenCalledTimes(1)
+    expect(enabled.manager.status().access).toMatchObject({ phase: 'connected', error: null })
+    // The indicator learns of it at once, without waiting for an unrelated push.
+    const pushed = enabled.payloads(IPC_EVENTS.connection.channel).at(-1)
+    expect(pushed).toMatchObject({ access: { phase: 'connected' } })
+  })
+
+  it('answers the same mapped error it records in the status, endpoint included', async () => {
+    const enabled = setup({ accessEnabled: true })
+    const { AccessApiError } = await import('../../src/main/access/client')
+    enabled.access.doors.mockRejectedValueOnce(
+      new AccessApiError('GET /doors failed with HTTP 401 CODE_AUTH_FAILED.', {
+        kind: 'auth',
+        status: 401,
+      }),
+    )
+    const result = await enabled.manager.doors()
+    expect(result).toMatchObject({
+      ok: false,
+      error: { kind: 'auth', endpoint: '192.0.2.10:12445' },
+    })
+    const status = enabled.manager.status().access
+    expect(status.phase).toBe('error')
+    expect(!result.ok && result.error).toEqual(status.error)
+    const pushed = enabled.payloads(IPC_EVENTS.connection.channel).at(-1)
+    expect(pushed).toMatchObject({ access: { phase: 'error' } })
+  })
+
+  // Each failure family, mapped to the kind the door-link card gives its hint for.
+  const cases: { why: string; kind: string; err: () => Promise<unknown> }[] = [
+    {
+      why: 'an unpinned Access endpoint',
+      kind: 'pin-required',
+      err: async () => {
+        const { AccessApiError } = await import('../../src/main/access/client')
+        return new AccessApiError('pin', {
+          kind: 'pin',
+          cause: new PinRequiredError('192.0.2.10:12445'),
+        })
+      },
+    },
+    {
+      why: 'a token without the door scopes',
+      kind: 'auth',
+      err: async () => {
+        const { AccessApiError } = await import('../../src/main/access/client')
+        return new AccessApiError('GET /doors failed with HTTP 403.', { kind: 'forbidden' })
+      },
+    },
+    {
+      why: 'a console that is down',
+      kind: 'network',
+      err: async () => {
+        const { AccessApiError } = await import('../../src/main/access/client')
+        return new AccessApiError('GET /doors failed: ECONNREFUSED.', { kind: 'network' })
+      },
+    },
+  ]
+  for (const { why, kind, err } of cases) {
+    it(`maps ${why} to ${kind}`, async () => {
+      const enabled = setup({ accessEnabled: true })
+      enabled.access.doors.mockRejectedValueOnce(await err())
+      const result = await enabled.manager.doors()
+      expect(result).toMatchObject({ ok: false, error: { kind } })
+    })
+  }
+
+  it('maps an address that does not resolve to not-configured', async () => {
+    const enabled = setup({ accessEnabled: true })
+    const { ConsoleEndpointError } = await import('../../src/main/console/endpoints')
+    enabled.services.access = () => {
+      throw new ConsoleEndpointError('No console address is set yet.')
+    }
+    const result = await enabled.manager.doors()
+    expect(result).toMatchObject({ ok: false, error: { kind: 'not-configured' } })
+    expect(enabled.manager.status().access.error).toMatchObject({ kind: 'not-configured' })
+  })
+
+  it('leaves the status alone when the console changes while the read is in flight', async () => {
+    const enabled = setup({ accessEnabled: true })
+    const { AccessApiError } = await import('../../src/main/access/client')
+    let fail = (): void => undefined
+    enabled.access.doors.mockImplementationOnce(
+      () =>
+        new Promise<never[]>((_resolve, reject) => {
+          fail = () => {
+            reject(new AccessApiError('GET /doors failed with HTTP 401.', { kind: 'auth' }))
+          }
+        }),
+    )
+    const pending = enabled.manager.doors()
+    await enabled.manager.applyConsoleChange({ ...enabled.console, host: '192.0.2.20' })
+    fail()
+    // The caller still hears how its read went…
+    expect(await pending).toMatchObject({ ok: false, error: { kind: 'auth' } })
+    // …but the new console's indicator does not inherit the old one's failure.
+    expect(enabled.manager.status().access).toMatchObject({ phase: 'idle', error: null })
+  })
+
+  it('drops a stale success the same way, and so does Test connection', async () => {
+    const enabled = setup({ accessEnabled: true })
+    let answer = (): void => undefined
+    enabled.access.doors.mockImplementation(
+      () =>
+        new Promise<never[]>((resolve) => {
+          answer = () => {
+            resolve([])
+          }
+        }),
+    )
+    const pending = enabled.manager.testConnection()
+    // Let the Protect half finish so the Access read is the one in flight.
+    await flush()
+    await enabled.manager.applyConsoleChange({
+      ...enabled.console,
+      accessBaseUrl: null,
+      host: 'udm.local',
+    })
+    answer()
+    const result = await pending
+    expect(result.access).toEqual({ state: 'ok', doorCount: 0 })
+    expect(enabled.manager.status().access.phase).toBe('idle')
   })
 })
 
@@ -920,16 +1054,8 @@ describe('the connect-on-launch flag (CON-4)', () => {
     expect(h.disk.console.host).toBe('192.0.2.10')
   })
 
-  it('is cleared by a disconnect: the user said stop', async () => {
-    await connectAndOpen(h)
-    await h.manager.disconnect()
-    await flush()
-    expect(h.console.connectOnLaunch).toBe(false)
-    expect(h.disk.console.connectOnLaunch).toBe(false)
-  })
-
-  it('writes nothing on a disconnect when it was already off', async () => {
-    await h.manager.disconnect()
+  it('writes nothing on a key change when it was already off', async () => {
+    await h.manager.credentialReplaced()
     await flush()
     expect(flagWrites(h)).toBe(0)
   })
@@ -985,7 +1111,7 @@ describe('the connect-on-launch flag (CON-4)', () => {
     expect(flagWrites(h)).toBe(0)
   })
 
-  it('survives shutdown: quitting is not disconnecting', async () => {
+  it('survives shutdown: quitting does not clear it', async () => {
     await connectAndOpen(h)
     await h.manager.shutdown()
     await flush()
@@ -1003,12 +1129,11 @@ describe('the connect-on-launch flag (CON-4)', () => {
   it('puts memory back after a failed write, so the next change retries it', async () => {
     await connectAndOpen(h)
     h.update.mockRejectedValueOnce(new Error('EACCES'))
-    await h.manager.disconnect()
+    await h.manager.credentialReplaced()
     await flush()
-    // The disk still says true, so memory must too — or the next disconnect would skip the write.
+    // The disk still says true, so memory must too — or the next key change would skip the write.
     expect(h.console.connectOnLaunch).toBe(true)
-    await h.manager.connect()
-    await h.manager.disconnect()
+    await h.manager.credentialReplaced()
     await flush()
     expect(h.disk.console.connectOnLaunch).toBe(false)
   })
@@ -1018,7 +1143,6 @@ describe('the connect-on-launch flag (CON-4)', () => {
     await h.manager.credentialReplaced()
     await flush()
     expect(h.disk.console.connectOnLaunch).toBe(false)
-    await h.manager.disconnect()
     await connectAndOpen(h)
     expect(h.disk.console.connectOnLaunch).toBe(true)
   })
@@ -1026,7 +1150,8 @@ describe('the connect-on-launch flag (CON-4)', () => {
   it('ignores an `open` from a feed that is no longer the live one', async () => {
     await h.manager.connect()
     const stale = h.feeds.last()
-    await h.manager.disconnect()
+    delete h.services.credentials.protectApiKey
+    await h.manager.credentialCleared()
     stale.emitState('open')
     await flush()
     expect(h.console.connectOnLaunch).toBe(false)
@@ -1243,7 +1368,6 @@ describe('the events feed (CELL-2, P4.2)', () => {
   })
 
   const stoppers: { name: string; run: (harness: Harness) => Promise<void> }[] = [
-    { name: 'disconnect', run: (harness) => harness.manager.disconnect() },
     {
       name: 'credentialCleared',
       run: async (harness) => {
@@ -1276,7 +1400,9 @@ describe('the events feed (CELL-2, P4.2)', () => {
   it('a stop we asked for does not forget a feed opened after it', async () => {
     await h.manager.connect()
     const first = h.events.last()
-    await h.manager.disconnect()
+    delete h.services.credentials.protectApiKey
+    await h.manager.credentialCleared()
+    h.services.credentials.protectApiKey = API_KEY
     await h.manager.connect()
     // A late `stopped` from the old socket must not drop the new handle.
     first.emitState('stopped')

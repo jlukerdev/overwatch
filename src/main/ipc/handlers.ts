@@ -415,11 +415,6 @@ export function createIpcRouter(deps: IpcRouterDeps): ReadonlyMap<string, IpcHan
     return state(ready)
   })
 
-  on(IPC.disconnect, async (_input, ready) => {
-    await ready.manager.disconnect()
-    return state(ready)
-  })
-
   on(IPC.listCameras, async (_input, ready) => ipcOk(await ready.manager.cameras()))
 
   on(IPC.snapshot, async (input, ready) => ipcOk(await ready.manager.snapshot(input)))
@@ -471,6 +466,23 @@ export function createIpcRouter(deps: IpcRouterDeps): ReadonlyMap<string, IpcHan
     return state(ready)
   })
 
+  // DOOR-1 (P5.3). The DOOR-0 check is the manager's, before the client is even resolved, so a
+  // switched-off Access answers `disabled` with no request made. Every other failure arrives
+  // already mapped (`not-configured`, `pin-required`, `auth`, …) — the same `IpcError` the manager
+  // put in the Access status, endpoint included — so it is passed through rather than re-mapped.
+  on(IPC.listDoors, (_input, ready) => ready.manager.doors())
+
+  on(IPC.setDoorLinks, async (input, ready) => {
+    // DOOR-2: local config only, so no Access call and no DOOR-0 refusal — the links are kept while
+    // Access is off (DOOR-0) and a save is as valid then as at any other time. Nothing is checked
+    // against the inventory or the door list on purpose: a link whose camera or door the app cannot
+    // see right now is the user's to remove, never main's to prune. No perf-run block either: the
+    // harness's `settingsView` does not touch `doorLinks`, so what the renderer sends back is the
+    // user's own map, not a value the harness put on screen.
+    await saveFields(ready, { doorLinks: input.links })
+    return state(ready)
+  })
+
   on(IPC.ensureStream, async (input) => {
     const registry = deps.getRegistry()
     if (registry === null) {
@@ -501,8 +513,8 @@ export function createIpcRouter(deps: IpcRouterDeps): ReadonlyMap<string, IpcHan
 }
 
 /**
- * VIEW-6, QUAL-1: persists top-level settings fields (the View list, the active View, the stream
- * quality defaults), then makes them the live config.
+ * VIEW-6, QUAL-1, DOOR-2: persists top-level settings fields (the View list, the active View, the
+ * stream quality defaults, the door links), then makes them the live config.
  *
  * Both halves touch only the fields in `patch`. On disk, `config.update` applies them to the latest
  * stored config inside the store's write queue, so a console or pin write queued ahead of this one
@@ -512,7 +524,7 @@ export function createIpcRouter(deps: IpcRouterDeps): ReadonlyMap<string, IpcHan
  * into `current` before its own write is queued, so `current` can be ahead of anything this write
  * returned.
  */
-type SavedField = 'views' | 'lastViewId' | 'streams'
+type SavedField = 'views' | 'lastViewId' | 'streams' | 'doorLinks'
 
 async function saveFields(ready: Ready, patch: Partial<Pick<Config, SavedField>>): Promise<void> {
   const { services } = ready
@@ -522,6 +534,7 @@ async function saveFields(ready: Ready, patch: Partial<Pick<Config, SavedField>>
     ...('views' in patch ? { views: saved.views } : {}),
     ...('lastViewId' in patch ? { lastViewId: saved.lastViewId } : {}),
     ...('streams' in patch ? { streams: saved.streams } : {}),
+    ...('doorLinks' in patch ? { doorLinks: saved.doorLinks } : {}),
   }
 }
 

@@ -16,6 +16,7 @@ import {
   type CameraStateChange,
   type ConnectionStatus,
   type ConsoleInput,
+  type Door,
   type IpcError,
   type IpcResult,
   type PinCheck,
@@ -23,6 +24,7 @@ import {
   type SecretInput,
   type SecretKeyInput,
   type SecretsStored,
+  type SetDoorLinksInput,
   type SetStreamsInput,
   type SetViewsInput,
   type Settings,
@@ -63,7 +65,6 @@ export interface AppStoreState {
   repinCertificate: (input: AcceptCertInput) => Promise<IpcResult<AppState>>
   testConnection: () => Promise<IpcResult<TestConnection>>
   connect: () => Promise<IpcResult<AppState>>
-  disconnect: () => Promise<IpcResult<AppState>>
   refreshCameras: () => Promise<IpcResult<Camera[]>>
   snapshot: (input: SnapshotInput) => Promise<IpcResult<SnapshotResult>>
   /**
@@ -80,6 +81,14 @@ export interface AppStoreState {
   setViews: (input: SetViewsInput) => Promise<IpcResult<AppState>>
   /** VIEW-4/6: switch the active View. */
   setLastView: (viewId: string | null) => Promise<IpcResult<AppState>>
+  /**
+   * DOOR-1: read the Access doors. Not folded into the store: the list belongs to Settings'
+   * door-link card, which reads it once per visit (SPEC §5.2). The Access status it moves arrives
+   * as the usual `connection` push.
+   */
+  listDoors: () => Promise<IpcResult<Door[]>>
+  /** DOOR-2: persist the whole camera → door map. */
+  setDoorLinks: (input: SetDoorLinksInput) => Promise<IpcResult<AppState>>
 }
 
 const NO_SECRETS: SecretsStored = { protectApiKey: false, accessToken: false }
@@ -173,7 +182,6 @@ export const useAppStore = create<AppStoreState>()((set, get) => {
     acceptCertificate: async (input) => fold(await bridge().acceptCertificate(input)),
     repinCertificate: async (input) => fold(await bridge().repinCertificate(input)),
     connect: async () => fold(await bridge().connect()),
-    disconnect: async () => fold(await bridge().disconnect()),
 
     testConnection: async () => {
       const result = await bridge().testConnection()
@@ -193,6 +201,8 @@ export const useAppStore = create<AppStoreState>()((set, get) => {
     setStreams: async (input) => fold(await bridge().setStreams(input)),
     setViews: async (input) => fold(await bridge().setViews(input)),
     setLastView: async (viewId) => fold(await bridge().setLastView({ viewId })),
+    listDoors: async () => bridge().listDoors(),
+    setDoorLinks: async (input) => fold(await bridge().setDoorLinks(input)),
   }
 })
 

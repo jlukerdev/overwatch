@@ -24,6 +24,7 @@ import {
   SECRET_KEYS,
   SecretInputSchema,
   RtspsAvailabilitySchema,
+  SetDoorLinksInputSchema,
   SetLastViewInputSchema,
   SetStreamsInputSchema,
   SetViewsInputSchema,
@@ -300,8 +301,46 @@ describe('request schemas', () => {
     expect(CameraIdInputSchema.safeParse({ cameraId: '' }).success).toBe(false)
   })
 
+  it('takes the whole door-link map, and never defaults a missing one (DOOR-2)', () => {
+    const links = { 'cam-1': 'door-1', 'cam-2': 'door-1' }
+    expect(SetDoorLinksInputSchema.parse({ links })).toEqual({ links })
+    expect(SetDoorLinksInputSchema.parse({ links: {} })).toEqual({ links: {} })
+    for (const bad of [
+      // The persisted schema would fill in `{}`; the request must not, or it erases every link.
+      {},
+      { links: null },
+      { links: { 'cam-1': '' } },
+      { links: { '': 'door-1' } },
+      { links: { 'cam-1': 1 } },
+    ]) {
+      expect(SetDoorLinksInputSchema.safeParse(bad).success, JSON.stringify(bad)).toBe(false)
+    }
+  })
+
+  it('answers listDoors with the trimmed Door shape, never the wire one (DOOR-1)', () => {
+    const door = {
+      id: 'door-1',
+      name: 'Front Door',
+      fullName: 'Ground Floor - Front Door',
+      floorId: 'floor-1',
+      type: 'door',
+      boundToHub: false,
+      relay: 'lock',
+      position: null,
+    }
+    expect(IPC.listDoors.value.parse([door])).toEqual([door])
+    // `is_bind_hub`'s string form is normalized in main (SPEC §5.2): only a boolean crosses.
+    expect(IPC.listDoors.value.safeParse([{ ...door, boundToHub: 'false' }]).success).toBe(false)
+  })
+
   it('accepts undefined for the calls that take no payload', () => {
-    for (const spec of [IPC.getState, IPC.testConnection, IPC.connect, IPC.listCameras]) {
+    for (const spec of [
+      IPC.getState,
+      IPC.testConnection,
+      IPC.connect,
+      IPC.listCameras,
+      IPC.listDoors,
+    ]) {
       expect(spec.request.safeParse(undefined).success).toBe(true)
       expect(spec.request.safeParse({ sneaky: true }).success).toBe(false)
     }

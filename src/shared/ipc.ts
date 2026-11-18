@@ -26,11 +26,14 @@ import {
   CameraEventSchema,
   CameraSchema,
   CameraStateChangeSchema,
+  DoorLinksSchema,
+  DoorSchema,
   SettingsSchema,
   ViewSchema,
   type Camera,
   type CameraEvent,
   type CameraStateChange,
+  type Door,
 } from './models'
 import { PACKAGE_CHANNEL, QualitySchema, StreamQualitySchema } from './quality'
 import {
@@ -173,7 +176,8 @@ export type SecretsStored = z.infer<typeof SecretsStoredSchema>
  * - `unconfigured`: no host, no key, or an address that cannot be parsed (CON-1).
  * - `idle`: configured and pinned, but nothing has been asked of it yet. Nothing connects at
  *   startup on purpose (CON-4, and R9's budget) — unless a previous session's connect worked and
- *   the user has not disconnected since (`console.connectOnLaunch`), when main connects itself.
+ *   neither the key nor the address has changed since (`console.connectOnLaunch`), when main
+ *   connects itself.
  * - `connecting` / `connected` / `reconnecting`: the live device feed's state (CAM-2).
  * - `error`: the last attempt failed. `error` carries why.
  */
@@ -526,6 +530,22 @@ export const SetStreamsInputSchema = z.object({
 })
 export type SetStreamsInput = z.infer<typeof SetStreamsInputSchema>
 
+/**
+ * DOOR-2 (P5.3): the whole camera → door map, `{ "<cameraId>": "<accessDoorId>" }`, as Settings'
+ * door-link card computed it. The whole map rather than one link per call for the same reason
+ * `setViews` sends the whole list: every save is one atomic "this is the new truth" write, and a
+ * map of a few dozen ids costs nothing next to the file write. Unlinking a camera is its key
+ * missing from the map.
+ *
+ * `DoorLinksSchema` with its default **unwrapped**: the persisted schema fills in `{}` for an older
+ * config file, but here a missing `links` is a bug on the renderer's side, and defaulting it would
+ * silently erase every link (the same reasoning as {@link SetStreamsInputSchema}). Keys and values
+ * stay non-empty strings, exactly what `config.json` can hold. No check against the inventory or the
+ * door list: a link to a camera or door the app cannot see right now is kept, never pruned (DOOR-0/2).
+ */
+export const SetDoorLinksInputSchema = z.object({ links: DoorLinksSchema.unwrap() })
+export type SetDoorLinksInput = z.infer<typeof SetDoorLinksInputSchema>
+
 // -------------------------------------------------------------------------------------------------
 // The channel table
 //
@@ -569,8 +589,6 @@ export const IPC = {
   testConnection: call('vp:connection/test', NoInput, TestConnectionSchema),
   /** Load the inventory and open the devices feed (CAM-1/2). Idempotent. */
   connect: call('vp:connection/start', NoInput, AppStateSchema),
-  /** Close the devices feed and go back to `idle`. The app stays configured. */
-  disconnect: call('vp:connection/stop', NoInput, AppStateSchema),
   /** CAM-1: re-read `GET /v1/cameras`. The authoritative inventory, per R11. */
   listCameras: call('vp:cameras/list', NoInput, z.array(CameraSchema)),
   /** CAM-1/3: one thumbnail. */
@@ -603,6 +621,20 @@ export const IPC = {
    * demand, alongside them in one all-at-once load (P4.5), again on Refresh, never on a timer.
    */
   cameraStreamQualities: call('vp:cameras/rtsps', CameraIdInputSchema, RtspsAvailabilitySchema),
+  /**
+   * DOOR-1 (P5.3): `GET /doors`, for Settings' door-link card. DOOR-0 first: while Access is off main
+   * makes **no** Access call and answers `disabled`. Otherwise one request through the pinned client
+   * (no pacing of its own, SPEC §5.2), and the Access endpoint status follows it the way Test
+   * connection's probe does. The card reads it once per Settings visit and on its Refresh button,
+   * never on a timer.
+   */
+  listDoors: call('vp:doors/list', NoInput, z.array(DoorSchema)),
+  /**
+   * DOOR-2 (P5.3): replace the camera → door links and persist them to `config.json`. Local config
+   * only — no Access call — and allowed whether Access is on or off, because the links are kept
+   * while it is off (DOOR-0); the UI only shows the editor while it is on.
+   */
+  setDoorLinks: call('vp:doors/links', SetDoorLinksInputSchema, AppStateSchema),
 } as const
 
 /**
@@ -688,7 +720,6 @@ export interface ViewProtectApi {
   repinCertificate(input: AcceptCertInput): Promise<IpcResult<AppState>>
   testConnection(): Promise<IpcResult<TestConnection>>
   connect(): Promise<IpcResult<AppState>>
-  disconnect(): Promise<IpcResult<AppState>>
   listCameras(): Promise<IpcResult<Camera[]>>
   snapshot(input: SnapshotInput): Promise<IpcResult<SnapshotResult>>
   /** QUAL-8: on demand, per camera/quality pair, and again after a `streamRuntime` event. */
@@ -701,6 +732,10 @@ export interface ViewProtectApi {
   setStreams(input: SetStreamsInput): Promise<IpcResult<AppState>>
   /** QUAL-7: which RTSPS qualities exist for a camera. Booleans only. */
   cameraStreamQualities(input: CameraIdInput): Promise<IpcResult<RtspsAvailability>>
+  /** DOOR-1: the Access doors, or `disabled` with no call made while Access is off (DOOR-0). */
+  listDoors(): Promise<IpcResult<Door[]>>
+  /** DOOR-2: the whole camera → door map, persisted. */
+  setDoorLinks(input: SetDoorLinksInput): Promise<IpcResult<AppState>>
 
   onConnection(listener: (status: ConnectionStatus) => void): Unsubscribe
   onCameras(listener: (cameras: Camera[]) => void): Unsubscribe
@@ -712,6 +747,15 @@ export interface ViewProtectApi {
 
 // Imported for the signatures above; re-exported so the renderer can take the whole contract plus
 // the domain types it carries from one module.
-export type { Camera, CameraEvent, CameraStateChange, Cell, Settings, View } from './models'
+export type {
+  Camera,
+  CameraEvent,
+  CameraStateChange,
+  Cell,
+  Door,
+  DoorLinks,
+  Settings,
+  View,
+} from './models'
 export type { StreamHandle, StreamRuntime } from './streams'
 export type { Quality, StreamQuality } from './quality'

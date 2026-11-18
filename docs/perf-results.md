@@ -137,3 +137,5 @@ Nothing recorded contains a URL, the console address, the go2rtc port or credent
 5. Each run prints its `summary.md`. Paste its table row into the macOS table above, replacing the placeholder row for that quality, and commit the doc. Keep `summary.json` if anything needs a second look.
 
 A quick check that everything works: `npm run perf -- --quality low --duration 60 --warmup 15`.
+
+**Pending re-run (UX polish, 2026-11-17).** The cell overlay restyle, the placeholder compositions (size containment on every cell) and the fill / back transition changed what the wall draws. The tables above predate them; re-run P2.5 against a real console before relying on these numbers.

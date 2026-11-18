@@ -1,6 +1,7 @@
 // The View editor's cell inspector (P3.3; VIEW-2, VIEW-3): the cameras of the one selected cell, in
 // order, with ▲/▼ to reorder, a remove button each, and an "Add camera" picker — the keyboard way to
-// assign cameras, beside the palette's drag-and-drop.
+// assign cameras, beside the palette's drag-and-drop. It is the side panel's **Cell** tab (UX polish
+// 2026-11-17; the tab names it, so the no-selection hint has no heading of its own).
 //
 // Every edit is a call into ./editorModel (`addCellCamera`, `removeCellCamera`, `moveCellCamera`)
 // made by the editor; this component only says which one. A cell holds several cameras already
@@ -119,11 +120,10 @@ export function CellInspector({
   if (cell === null) {
     return (
       <section className="viewEditor__panel" aria-label="Cell">
-        <h3 className="viewEditor__panelTitle">Cell</h3>
         <p className="viewEditor__hint">
           {selectedCount === 0
-            ? 'Select a cell to see its cameras. Drag across cells, or Shift-click, to select several.'
-            : `${String(selectedCount)} cells selected. Select one cell to edit its cameras.`}
+            ? 'Select a cell on the canvas to see and change its cameras. Drag across cells, or Shift-click, to select several.'
+            : `${String(selectedCount)} cells are selected. Select a single cell to change its cameras.`}
         </p>
       </section>
     )
@@ -143,7 +143,9 @@ export function CellInspector({
           : ''}
       </h3>
       {cell.cameraIds.length === 0 ? (
-        <p className="viewEditor__hint">No cameras.</p>
+        <p className="viewEditor__hint">
+          This cell has no cameras yet. Drag one onto it, or add one below.
+        </p>
       ) : (
         <ol className="viewEditor__cameraList">
           {cell.cameraIds.map((ref, position) => {
@@ -287,7 +289,7 @@ function MultiCameraSettings({
   const smartOn = cell.motionTriggers.includes('smartDetect')
 
   return (
-    <fieldset className="viewEditor__group viewEditor__group--stack">
+    <fieldset className="viewEditor__group">
       <legend className="viewEditor__groupTitle">Multi-camera</legend>
 
       <div className="viewEditor__checkRow">
@@ -359,7 +361,7 @@ function MultiCameraSettings({
           {smartOn ? (
             <fieldset className="viewEditor__subgroup">
               <legend className="field__label">Smart detection types</legend>
-              <p className="viewEditor__hint">None checked = any type.</p>
+              <p className="viewEditor__hint">Leave them all unchecked to switch on any type.</p>
               {smartDetectChoices.map((type, i) => (
                 <div key={type} className="viewEditor__checkRow">
                   <input

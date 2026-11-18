@@ -17,6 +17,11 @@
 //    cell index as `CELL_DRAG_TYPE`). A pointerdown on the chip never reaches the button, so
 //    starting a drag never starts a selection.
 // The whole cell is the drop target, for palette cameras (`CAMERA_DRAG_TYPE`) and for other cells.
+// The cell a drag is over is tinted and ringed in the accent colour, over its snapshot too.
+//
+// **Empty cells (UX polish 2026-11-17).** A cell with no camera shows a plus mark and "Drop a
+// camera"; a cell too small for the words (`EMPTY_TEXT_MIN_*`) shows the plus alone. Decorative:
+// the selection button's label already says the cell is empty.
 //
 // **Snapshots (P5.2, VIEW-3).** A cell whose head camera has a cached snapshot draws it as the
 // bottom layer, under the selection button, with `pointer-events: none`, so it never takes a click,
@@ -27,6 +32,7 @@ import { useEffect, useRef, useState, type DragEvent, type JSX } from 'react'
 import type { Camera } from '@shared/ipc'
 import type { View } from '@shared/models'
 import { cellRect, layoutGrid, type CellPlacement, type Rect } from '@shared/viewLayout'
+import { PlusIcon } from '../../ui/icons'
 import { SnapshotImage } from '../../ui/SnapshotImage'
 import { cameraRefLabel, cellsInRect, type Slot } from './editorModel'
 import type { ReadySnapshot } from './editorThumbnails'
@@ -49,6 +55,10 @@ export interface EditorCanvasProps {
   readonly onDropCamera: (cellIndex: number, ref: string) => void
   readonly onSwapCells: (from: number, to: number) => void
 }
+
+/** The smallest cell, in px, that still has room for "Drop a camera" beside the plus mark. */
+const EMPTY_TEXT_MIN_WIDTH = 132
+const EMPTY_TEXT_MIN_HEIGHT = 40
 
 interface BoxSize {
   readonly width: number
@@ -126,6 +136,7 @@ export function EditorCanvas({
             const labels = cell.cameraIds.map((ref) => cameraRefLabel(ref, cameras))
             const first = labels[0]
             const image = snapshots[index] ?? null
+            const rect = cellRect(layout, cell)
             const classes = ['editorCanvas__cell']
             if (image !== null) classes.push('editorCanvas__cell--image')
             if (selected.has(index)) classes.push('editorCanvas__cell--selected')
@@ -136,7 +147,7 @@ export function EditorCanvas({
                 // The top-left slot: unique in a tiled View, and stable across camera edits.
                 key={`${String(cell.col)},${String(cell.row)}`}
                 className={classes.join(' ')}
-                style={rectStyle(cellRect(layout, cell))}
+                style={rectStyle(rect)}
                 onDragOver={(event) => {
                   if (!acceptsDrop(event)) return
                   event.preventDefault()
@@ -194,7 +205,12 @@ export function EditorCanvas({
                 />
                 <div className="editorCanvas__content">
                   {first === undefined ? (
-                    <span className="editorCanvas__empty">Empty</span>
+                    <span className="editorCanvas__empty" aria-hidden="true">
+                      <PlusIcon />
+                      {rect.width >= EMPTY_TEXT_MIN_WIDTH && rect.height >= EMPTY_TEXT_MIN_HEIGHT
+                        ? 'Drop a camera'
+                        : null}
+                    </span>
                   ) : (
                     <span
                       className="editorCanvas__chip"

@@ -17,15 +17,31 @@
 // **no** `data-view-id`, so the harness selector above still matches View buttons only. The list
 // scrolls in its own region (`viewSwitcher__list`) so the actions, and an error above them, stay
 // in view however many Views there are.
-import { useCallback, useEffect, useRef, useState, type JSX } from 'react'
+//
+// **Collapsed** (UX polish 2026-11-17). The toggle in the pane's head folds the sidebar to a slim
+// rail: each View is its number alone (a dot from the tenth on) with the name as its accessible
+// name and tooltip, and New View / Edit View are icon-only. It is the same tree with another
+// class, so the buttons — the harness's selector, `aria-pressed`, the keyboard focus — are the
+// same elements in both states. The choice is remembered per machine (`switcherPrefs.ts`,
+// localStorage), not in the config.
+//
+// **Focus mode** (./focusMode). The head's other button asks the Live screen to hide the header
+// and this switcher. The screen then passes `hidden`: the component stays mounted and draws
+// nothing, so the `1`–`9` shortcuts keep working without a sidebar to click.
+import { useCallback, useEffect, useRef, useState, type JSX, type Ref } from 'react'
 import type { View } from '@shared/models'
 import { selectionNeedsStore, useLastViewId, viewsActions } from '../../state/viewsStore'
-import { PencilIcon, PlusIcon } from '../../ui/icons'
+import { ExpandIcon, PencilIcon, PlusIcon, SidebarIcon } from '../../ui/icons'
+import { StatusLine } from '../../ui/StatusLine'
 import { nextViewName } from '../viewEditor/viewEditorHelpers'
+import {
+  readSwitcherCollapsed,
+  switcherStorage,
+  viewItemTitle,
+  viewShortcutKey,
+  writeSwitcherCollapsed,
+} from './switcherPrefs'
 import { keyEventTarget, viewShortcutIndex } from './viewShortcut'
-
-/** Views 1–9 have a key; a tenth and later are reachable by click only. */
-const SHORTCUT_COUNT = 9
 
 export interface ViewSwitcherProps {
   readonly views: readonly View[]
@@ -33,11 +49,25 @@ export interface ViewSwitcherProps {
   readonly activeViewId: string | null
   /** Opens the View editor on View `id`. */
   readonly onEditView: (id: string) => void
+  /** Focus mode is on: draw nothing, keep the `1`–`9` shortcuts (see the header). */
+  readonly hidden: boolean
+  /** The focus-mode button was pressed. */
+  readonly onEnterFocusMode: () => void
+  /** The focus-mode button, so the screen can hand the focus back to it on the way out. */
+  readonly focusModeButtonRef?: Ref<HTMLButtonElement>
 }
 
-export function ViewSwitcher({ views, activeViewId, onEditView }: ViewSwitcherProps): JSX.Element {
+export function ViewSwitcher({
+  views,
+  activeViewId,
+  onEditView,
+  hidden,
+  onEnterFocusMode,
+  focusModeButtonRef,
+}: ViewSwitcherProps): JSX.Element | null {
   const [error, setError] = useState<string | null>(null)
   const [creating, setCreating] = useState(false)
+  const [collapsed, setCollapsed] = useState(() => readSwitcherCollapsed(switcherStorage()))
   // The stored id, not `activeViewId`: the latter may be a fallback that was never stored, and
   // choosing it must still be written (`selectionNeedsStore`). Only the skip reads it; which button
   // is marked still comes from `activeViewId`.
@@ -56,44 +86,97 @@ export function ViewSwitcher({ views, activeViewId, onEditView }: ViewSwitcherPr
 
   useViewShortcuts(views, select)
 
+  // Focus mode: no switcher, but a failed `1`–`9` switch must still be seen (grid.css).
+  if (hidden) {
+    return error === null ? null : (
+      <StatusLine kind="error" role="alert" className="viewSwitcher__floatingError">
+        {error}
+      </StatusLine>
+    )
+  }
+
+  const toggleCollapsed = (): void => {
+    const next = !collapsed
+    setCollapsed(next)
+    writeSwitcherCollapsed(switcherStorage(), next)
+  }
+  const toggleLabel = collapsed ? 'Expand the View list' : 'Collapse the View list'
+
   return (
-    <nav className="viewSwitcher" aria-label="Views">
+    <nav
+      className={collapsed ? 'viewSwitcher viewSwitcher--collapsed' : 'viewSwitcher'}
+      aria-label="Views"
+    >
+      <div className="viewSwitcher__head">
+        {collapsed ? null : <span className="viewSwitcher__caption">Views</span>}
+        <button
+          ref={focusModeButtonRef}
+          type="button"
+          className="button button--ghost button--icon button--sm"
+          aria-label="Focus mode: hide the header and the View list"
+          aria-keyshortcuts="F"
+          title="Focus mode (F)"
+          onClick={onEnterFocusMode}
+        >
+          <ExpandIcon />
+        </button>
+        <button
+          type="button"
+          className="button button--ghost button--icon button--sm"
+          aria-label={toggleLabel}
+          aria-expanded={!collapsed}
+          title={toggleLabel}
+          onClick={toggleCollapsed}
+        >
+          <SidebarIcon />
+        </button>
+      </div>
       <div className="viewSwitcher__list">
-        {views.length === 0 ? <p className="viewSwitcher__empty">No Views</p> : null}
+        {views.length === 0 && !collapsed ? <p className="viewSwitcher__empty">No Views</p> : null}
         {views.map((view, index) => {
-          const active = view.id === activeViewId
-          const key = index < SHORTCUT_COUNT ? String(index + 1) : null
+          const key = viewShortcutKey(index)
           return (
             <button
               key={view.id}
               type="button"
-              className="viewSwitcher__item"
+              className="sideItem viewSwitcher__item"
               data-view-id={view.id}
-              aria-pressed={active}
+              aria-pressed={view.id === activeViewId}
               aria-keyshortcuts={key ?? undefined}
-              title={key === null ? view.name : `${view.name} (${key})`}
+              // Collapsed, the name is not drawn, so it is the label; expanded, it is the content.
+              aria-label={collapsed ? view.name : undefined}
+              title={viewItemTitle(view.name, index)}
               onClick={() => {
                 select(view.id)
               }}
             >
               <span className="viewSwitcher__key" aria-hidden="true">
-                {key ?? ''}
+                {key ?? (collapsed ? '•' : '')}
               </span>
-              <span className="viewSwitcher__name">{view.name}</span>
+              {collapsed ? null : <span className="viewSwitcher__name">{view.name}</span>}
             </button>
           )
         })}
       </div>
       {error === null ? null : (
-        <p className="viewSwitcher__error" role="alert">
-          {error}
+        <p className="viewSwitcher__error" role="alert" title={collapsed ? error : undefined}>
+          {collapsed ? (
+            <>
+              <span aria-hidden="true">!</span>
+              <span className="visuallyHidden">{error}</span>
+            </>
+          ) : (
+            error
+          )}
         </p>
       )}
       <div className="viewSwitcher__actions">
         <button
           type="button"
-          className="button button--primary"
+          className={collapsed ? 'button button--primary button--icon' : 'button button--primary'}
           disabled={creating}
+          aria-label={collapsed ? 'New View' : undefined}
+          title={collapsed ? 'New View' : undefined}
           onClick={() => {
             setCreating(true)
             void viewsActions.createView(nextViewName(views)).then((result) => {
@@ -110,18 +193,20 @@ export function ViewSwitcher({ views, activeViewId, onEditView }: ViewSwitcherPr
           }}
         >
           <PlusIcon />
-          New View
+          {collapsed ? null : 'New View'}
         </button>
         <button
           type="button"
-          className="button"
+          className={collapsed ? 'button button--icon' : 'button'}
           disabled={activeViewId === null}
+          aria-label={collapsed ? 'Edit View' : undefined}
+          title={collapsed ? 'Edit View' : undefined}
           onClick={() => {
             if (activeViewId !== null) onEditView(activeViewId)
           }}
         >
           <PencilIcon />
-          Edit View
+          {collapsed ? null : 'Edit View'}
         </button>
       </div>
     </nav>
@@ -129,7 +214,8 @@ export function ViewSwitcher({ views, activeViewId, onEditView }: ViewSwitcherPr
 }
 
 /**
- * VIEW-4: `1`–`9` select View N while the switcher is mounted, i.e. while the Live screen is up.
+ * VIEW-4: `1`–`9` select View N while the switcher is mounted, i.e. while the Live screen is up
+ * (drawn or not: focus mode hides it and keeps it mounted).
  * The listener is installed once; the latest Views and `select` are read through a ref, so a View
  * switch does not remove and re-add a window listener.
  */

@@ -8,7 +8,9 @@
 //
 // Every action reports where it happened. The store hands back the `IpcResult` as well as folding it
 // in, so each failure is rendered next to the control that caused it and stays there: no toast, no
-// thrown error, no stack. A failed Test connection is information (CON-4), not a crash.
+// thrown error, no stack. A failed Test connection is information (CON-4), not a crash. Every
+// outcome of an action is drawn the same way, as a `.status` line (./StatusLine); only a field's
+// own validation message stays under the field as `.field__error`.
 //
 // Secrets are write-only (CON-2, NFR-9): the two password fields start empty, are never seeded, and
 // each has its own Save — `setConsole` carries no credential at all.
@@ -26,8 +28,9 @@
 // Layout (user request 2026-11-17): a section sidebar on the left and the groups in their own
 // scroll container on the right — the keystore warning (only without a keystore), **Console**
 // (address and credentials, then Certificate, then Connection), **Streams**, and **Door links**
-// last. The sidebar highlights the group in view (IntersectionObserver on the scroll container,
-// decided by ./settingsSections.ts) and scrolls to a group on click. Help text is one short line at
+// last. The sidebar highlights the group in view (measured against the scroll container, decided
+// by ./settingsSections.ts) and scrolls to a group on click; its rows are the shared `.sideItem`,
+// and the app version sits quietly at its foot. Help text is one short line at
 // most; what a requirement mandates (CON-2's keystore notice, CON-3's compare-the-fingerprint prompt,
 // DOOR-0's "the token and links are kept") is kept, only shorter.
 import { useCallback, useEffect, useRef, useState, type JSX, type ReactNode } from 'react'
@@ -37,6 +40,7 @@ import { useAppStore } from '../../state/appStore'
 import { CheckIcon, PlugIcon, PulseIcon, TrashIcon } from '../../ui/icons'
 import { CertificateCard } from './CertificateCard'
 import { DoorLinksCard } from './DoorLinksCard'
+import { StatusLine, type StatusKind } from '../../ui/StatusLine'
 import { doorListKey } from './doorLinks'
 import { QualityOptions } from '../quality/QualityOptions'
 import {
@@ -137,6 +141,7 @@ function SettingsLayout({
   const frame = useRef<number | null>(null)
   const lock = useRef<{ id: string; release: () => void } | null>(null)
   const [active, setActive] = useState<string | null>(sections[0]?.id ?? null)
+  const version = useAppStore((s) => s.version)
   // The list's identity changes every render; its ids are what the callbacks depend on.
   const ids = sections.map((section) => section.id).join(' ')
 
@@ -222,7 +227,7 @@ function SettingsLayout({
           <button
             key={section.id}
             type="button"
-            className="settings__navItem"
+            className="sideItem settings__navItem"
             aria-current={active === section.id ? 'true' : undefined}
             onClick={() => {
               go(section)
@@ -231,6 +236,8 @@ function SettingsLayout({
             {section.label}
           </button>
         ))}
+        {/* Empty until the first state lands; the header no longer carries it. */}
+        {version === '' ? null : <p className="settings__version">View Protect v{version}</p>}
       </nav>
       <div className="settings__content" ref={content}>
         {children}
@@ -251,10 +258,10 @@ function KeystoreWarning(): JSX.Element {
       aria-labelledby={sectionTitleId(KEYSTORE_SECTION)}
       role="alert"
     >
-      <GroupTitle section={KEYSTORE_SECTION}>The OS keystore is not available</GroupTitle>
+      <GroupTitle section={KEYSTORE_SECTION}>Secure storage is not available</GroupTitle>
       <p className="settings__mismatchText">
-        Credentials can&rsquo;t be saved without Keychain or DPAPI, so they are asked for at every
-        launch; they are never stored in plain text.
+        Keys and tokens can&rsquo;t be saved without Keychain or DPAPI, so you&rsquo;ll be asked for
+        them each time the app opens; they are never stored as plain text.
       </p>
     </section>
   )
@@ -321,7 +328,9 @@ function ConsoleCard({
     >
       <GroupTitle section={CONSOLE_SECTION}>Console</GroupTitle>
       <h3 className="settings__subhead">Address and credentials</h3>
-      <p className="card__hint">Saving does not connect.</p>
+      <p className="card__hint">
+        Saving only stores these details; press Connect below to connect.
+      </p>
 
       <div className="field">
         <label className="field__label" htmlFor="console-host">
@@ -340,7 +349,7 @@ function ConsoleCard({
           }}
         />
         <p className="field__hint">
-          IP or host name, no https://; add a port only if it isn&rsquo;t 443.
+          The IP address or host name, without https://. Add a port only if it isn&rsquo;t 443.
         </p>
         {errors.host === undefined ? null : <p className="field__error">{errors.host}</p>}
       </div>
@@ -348,7 +357,7 @@ function ConsoleCard({
       <SecretField
         secretKey="protectApiKey"
         label="Protect Integration API key"
-        hint="From Protect → Integrations. Never shown again once saved."
+        hint="Create one in Protect → Integrations. It is never shown again once saved."
         stored={secretsStored.protectApiKey}
         keystoreAvailable={keystoreAvailable}
         value={draft.protectApiKey}
@@ -374,7 +383,7 @@ function ConsoleCard({
           <label htmlFor="access-enabled">Enable UniFi Access</label>
         </div>
         <p className="field__hint">
-          While off, no Access calls are made; a saved token and door links are kept.
+          While this is off the app never contacts Access; a saved token and door links are kept.
         </p>
       </div>
 
@@ -383,7 +392,7 @@ function ConsoleCard({
           <SecretField
             secretKey="accessToken"
             label="Access API token"
-            hint="From Access → Settings → Advanced → API Token. Never shown again once saved."
+            hint="Create one in Access → Settings → Advanced → API Token. It is never shown again once saved."
             stored={secretsStored.accessToken}
             keystoreAvailable={keystoreAvailable}
             value={draft.accessToken}
@@ -413,7 +422,8 @@ function ConsoleCard({
               }}
             />
             <p className="field__hint">
-              Empty uses port 12445 on the console; set it for a proxy or the dev mock.
+              Leave empty to use port 12445 on the console; set it only for a proxy or a test
+              server.
             </p>
             {errors.accessBaseUrl === undefined ? null : (
               <p className="field__error">{errors.accessBaseUrl}</p>
@@ -434,9 +444,13 @@ function ConsoleCard({
           <CheckIcon />
           {saving ? 'Saving…' : 'Save console'}
         </button>
-        {dirty ? <span className="field__hint">Unsaved changes</span> : null}
+        {dirty ? <StatusLine kind="muted">Unsaved changes</StatusLine> : null}
       </div>
-      {saveError === null ? null : <p className="field__error">{saveError.message}</p>}
+      {saveError === null ? null : (
+        <StatusLine kind="error" className="settings__outcome">
+          {saveError.message}
+        </StatusLine>
+      )}
 
       {children}
     </section>
@@ -445,8 +459,8 @@ function ConsoleCard({
 
 /**
  * One write-only credential (CON-2). The field is always empty on arrival: the renderer can store a
- * secret and can clear it, but there is no channel that reads one back — "stored" next to the label
- * is the whole of what it may know (`AppState.secretsStored`).
+ * secret and can clear it, but there is no channel that reads one back — the "Saved" check chip
+ * beside the label is the whole of what it may know (`AppState.secretsStored`).
  */
 function SecretField({
   secretKey,
@@ -501,10 +515,17 @@ function SecretField({
 
   return (
     <div className="field">
-      <label className="field__label" htmlFor={inputId}>
-        {label}
-        {stored ? <span className="settings__stored"> stored</span> : null}
-      </label>
+      <div className="row settings__labelRow">
+        <label className="field__label" htmlFor={inputId}>
+          {label}
+        </label>
+        {stored ? (
+          <span className="settings__chip settings__chip--ok">
+            <CheckIcon />
+            Saved
+          </span>
+        ) : null}
+      </div>
       <div className="row">
         <input
           id={inputId}
@@ -512,7 +533,7 @@ function SecretField({
           type="password"
           autoComplete="off"
           spellCheck={false}
-          placeholder={stored ? 'Enter a new value to replace it' : ''}
+          placeholder={stored ? 'Enter a new one to replace it' : ''}
           value={value}
           onChange={(event) => {
             onChange(event.target.value)
@@ -545,7 +566,7 @@ function SecretField({
       </div>
       <p className="field__hint">{hint}</p>
       {error === undefined ? null : <p className="field__error">{error}</p>}
-      {callError === null ? null : <p className="field__error">{callError.message}</p>}
+      {callError === null ? null : <StatusLine kind="error">{callError.message}</StatusLine>}
     </div>
   )
 }
@@ -612,8 +633,8 @@ function ConnectionCard({ accessEnabled }: { accessEnabled: boolean }): JSX.Elem
     <div className="settings__subsection">
       <h3 className="settings__subhead">Connection</h3>
       <p className="card__hint">
-        After a connect works, the app reconnects at launch until you change the address or replace
-        the key.
+        Once a connection works, the app connects by itself each time it opens, until you change the
+        address or replace the key.
       </p>
 
       <dl className="settings__facts">
@@ -651,35 +672,49 @@ function ConnectionCard({ accessEnabled }: { accessEnabled: boolean }): JSX.Elem
           {busy === 'connect' ? 'Connecting…' : 'Connect'}
         </button>
       </div>
-      {connectError === null ? null : <p className="field__error">{connectError.message}</p>}
-      {testError === null ? null : <p className="field__error">{testError.message}</p>}
+      {connectError === null ? null : (
+        <StatusLine kind="error" className="settings__outcome">
+          {connectError.message}
+        </StatusLine>
+      )}
+      {testError === null ? null : (
+        <StatusLine kind="error" className="settings__outcome">
+          {testError.message}
+        </StatusLine>
+      )}
 
       {probes === null ? null : (
         <dl className="settings__facts settings__probes">
           <dt className="field__label">Protect</dt>
-          <dd className={probes.protect.state === 'ok' ? 'settings__ok' : 'field__error'}>
-            {probes.protect.state === 'ok'
-              ? `Reachable — Protect ${probes.protect.applicationVersion}`
-              : probes.protect.error.message}
+          <dd>
+            <StatusLine kind={probes.protect.state === 'ok' ? 'ok' : 'error'}>
+              {probes.protect.state === 'ok'
+                ? `Reachable. Protect version ${probes.protect.applicationVersion}.`
+                : probes.protect.error.message}
+            </StatusLine>
           </dd>
           <dt className="field__label">Access</dt>
-          <dd className={accessProbeClass(probes.access)}>{describeAccessProbe(probes.access)}</dd>
+          <dd>
+            <StatusLine kind={accessProbeKind(probes.access)}>
+              {describeAccessProbe(probes.access)}
+            </StatusLine>
+          </dd>
         </dl>
       )}
     </div>
   )
 }
 
-function accessProbeClass(probe: AccessProbe): string {
-  if (probe.state === 'ok') return 'settings__ok'
-  return probe.state === 'error' ? 'field__error' : 'settings__factValue'
+function accessProbeKind(probe: AccessProbe): StatusKind {
+  if (probe.state === 'ok') return 'ok'
+  return probe.state === 'error' ? 'error' : 'muted'
 }
 
 function describeAccessProbe(probe: AccessProbe): string {
-  if (probe.state === 'disabled') return 'Switched off — no Access calls were made.'
+  if (probe.state === 'disabled') return 'Access is off, so it was not contacted.'
   if (probe.state === 'error') return probe.error.message
   const count = String(probe.doorCount)
-  return probe.doorCount === 1 ? 'Reachable — 1 door' : `Reachable — ${count} doors`
+  return probe.doorCount === 1 ? 'Reachable. 1 door.' : `Reachable. ${count} doors.`
 }
 
 // -------------------------------------------------------------------------------------------------
@@ -727,8 +762,8 @@ function StreamsCard({ streams }: { streams: Settings['streams'] }): JSX.Element
     >
       <GroupTitle section={STREAMS_SECTION}>Streams</GroupTitle>
       <p className="card__hint">
-        Defaults for the grid and for a filled cell; a View can override both, a cell its grid
-        quality.
+        The default quality in the grid and when a camera fills the window. A View can set its own,
+        and a cell its own grid quality.
       </p>
       <div className="settings__streamsGrid">
         {select('defaultGridQuality', 'Grid quality')}
@@ -775,7 +810,7 @@ function QualitySelect({
       >
         <QualityOptions />
       </select>
-      {error === null ? null : <p className="field__error">{error.message}</p>}
+      {error === null ? null : <StatusLine kind="error">{error.message}</StatusLine>}
     </div>
   )
 }

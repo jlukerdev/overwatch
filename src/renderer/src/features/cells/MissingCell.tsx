@@ -1,8 +1,9 @@
 // A cell whose shown camera cannot play (CAM-2, CAM-4): the camera is gone from the console, or a
 // package ref names a camera without a package camera (features/grid/gridLayout.ts, `missing`). It
-// draws the label ("Camera not found (<id>)" / "No package camera (<name>)") centred on an empty
-// cell, asks for no stream, and is not fillable — there is nothing to enlarge, so in the grid it has
-// no click handler at all.
+// draws the camera-off icon and the label ("Camera not found (<id>)" / "No package camera (<name>)")
+// centred on an empty cell — the same composition as a player with no picture (player/NoPicture, CAM-3),
+// scaling with the cell the same way — asks for no stream, and is not fillable — there is nothing to
+// enlarge, so in the grid it has no click handler at all.
 //
 // **In a multi-camera cell it keeps the position and next / previous** (P4.3; CELL-2, CELL-3). The
 // scheduler runs over the View's `cameraIds` as stored, so a missing camera takes its turn here; in
@@ -25,6 +26,7 @@
 // Memoised on primitives and the grid's stable `onStep`, like `<Cell>`: the slot list is rebuilt on
 // every camera-state push.
 import { memo, type JSX } from 'react'
+import { NoPicture } from '../../player/NoPicture'
 import { toFillClick, type FillClickEvent } from '../fill/fillMode'
 import { BackToGridButton } from './BackToGridButton'
 import { CellOverlay } from './CellOverlay'
@@ -88,9 +90,8 @@ export const MissingCell = memo(function MissingCell({
           : undefined
       }
     >
-      <span className="gridCell__missing" title={cameraRef}>
-        {label}
-      </span>
+      {/* The ref in the tooltip, as before: the label may be cut short, the ref never is. */}
+      <NoPicture tone="offline" label={label} title={cameraRef} />
       {showsStepControls(cameraCount) ? (
         <CellOverlay autoHideMs={overlayAutoHideMs}>
           {/* Back first while filled, then the position, as on a camera cell (Cell.tsx). */}

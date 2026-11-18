@@ -35,3 +35,16 @@ Phase gates (`G0`…`G6`) still apply. The last task of a phase includes the gat
 - Feature folders in `src/renderer/src/features/`. Shared types in `src/shared/`.
 - If behaviour changes, update `docs/SPEC.md` in the same change.
 - Perf-related changes: re-run the P2.5 harness and update `docs/perf-results.md`.
+
+## UI conventions (renderer)
+The look is defined once, in `src/renderer/src/styles.css` and `src/renderer/src/ui/`. Reuse it; do not restyle per feature.
+
+- **Tokens only.** Colours, radius, control heights and font sizes come from the `:root` tokens in `styles.css`. Font sizes are the five `--font-xs` … `--font-xl` tokens: never write a raw `font-size`, and add a new size as a token, not a number in a feature stylesheet. Dark theme only (`color-scheme: dark`).
+- **Shared primitives before new CSS.** `.button` (+ `--primary`, `--danger`, `--danger-solid`, `--ghost`, `--icon`, `--sm`), `.card`, `.field__*`, `.row`, `.badge`, `.sideItem` (any row in a sidebar), `.emptyState` (a screen with nothing to show: centred icon, title, one line, one primary action), `.checklist`, `.status`, `.spinner`, `.dialog`, `.visuallyHidden`. Feature CSS lives next to its feature and holds only what is specific to it.
+- **Shared components.** `ui/StatusLine` is the one way to report an action's outcome (field validation stays under its field as `.field__error`). `ui/ConfirmDialog` (`confirmDialog()`) is the one way to ask; never `window.confirm` / `alert`, and name the action on the confirm button ("Delete View", not "OK"). `ui/SetupChecklist` for the setup steps. `ui/SnapshotImage` for camera stills.
+- **Icons** are the inline SVGs in `ui/icons.tsx` (16×16 grid, `currentColor`, decorative). Add new ones there in the same style; no icon packages or image assets. An icon-only button needs `aria-label` and `title`.
+- **Over live video.** Chips sit on `--scrim`, 28 px tall, buttons at least 28 × 28 px (`features/cells/cells.css`). The quality-coloured select is the one opaque chip (user decision 2026-11-16). No `backdrop-filter` and no per-frame React state over video; animate `transform` / `opacity` only.
+- **States.** Every interactive element has hover, active and a visible `:focus-visible` ring (2 px `--accent`). Disabled controls are dimmed and, where it is not obvious, say why in `title`. Any animation is off or reduced under `prefers-reduced-motion`.
+- **Copy.** Plain sentences a homeowner would read, sentence case, one short line of help at most. Product names exact (Protect, Access, API key). The certificate UI says "accepted", not "pinned".
+- **Do not rename** the header nav buttons' text ("Cameras", "Live", "Settings"): the perf harness clicks them by text. Grep `tests/` and `scripts/perf/` before changing any visible string.
+- **Check it on screen.** For a visual change, launch the app on a blank profile (`npm run build`, then `npx electron out/main/index.js --user-data-dir=<empty dir>`) and look at the screens you touched; say in the PR what could not be seen without a console.

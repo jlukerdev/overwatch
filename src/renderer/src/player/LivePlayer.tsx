@@ -31,17 +31,29 @@
 // the controller, never effect dependencies of the stream: a mute or a volume drag never reconnects.
 // Whatever `muted` says, only the visible layer can be heard: an incoming (`--pending`) layer is
 // always muted (`applyLayerRoles`).
+//
+// **The placeholder is a small composition, not a line of text** (CAM-3, UX polish; ./NoPicture): an
+// icon by kind (`placeholderTone`), the machine's label, and — only while connecting, only if the
+// renderer's thumbnail cache already has one — a dimmed, blurred still of the camera behind the
+// spinner (./placeholderSnapshot has the rules; nothing is ever fetched or timed for it). It is
+// rendered only when the machine asks for a placeholder, which it never does over live video
+// (playerMachine.ts, rule 1), and the cache is read only while one is shown, so a playing cell
+// holds no subscription to it.
 import { useEffect, useRef, useState, type JSX } from 'react'
 import type { IpcError } from '@shared/ipc'
 import type { Fit } from '@shared/models'
 import type { StreamQuality } from '@shared/quality'
 import { useAppStore } from '../state/appStore'
+import { useThumbnails } from '../state/thumbnailsStore'
+import { NoPicture } from './NoPicture'
+import { placeholderSnapshot } from './placeholderSnapshot'
 import { createMsePlayer, type MsePlayer } from './MsePlayer'
 import {
   cameraAvailability,
   initialPlayerState,
   placeholderDetail,
   placeholderText,
+  placeholderTone,
   playerStep,
   type PlayerCommand,
   type PlayerEvent,
@@ -151,11 +163,38 @@ export function LivePlayer({
     <div className={fit === 'cover' ? 'livePlayer livePlayer--cover' : 'livePlayer'}>
       <div className="livePlayer__layers" ref={containerRef} />
       {placeholder === null ? null : (
-        <div className="livePlayer__placeholder" title={placeholderDetail(placeholder)}>
-          {placeholderText(placeholder)}
-        </div>
+        <PlayerPlaceholderView placeholder={placeholder} cameraId={cameraId} quality={quality} />
       )}
     </div>
+  )
+}
+
+/**
+ * The placeholder the machine asked for (header). Its own component so the thumbnail cache is
+ * subscribed to only while a placeholder is on screen. The selector returns the cache's own entry
+ * (or `null`), so this re-renders when that one camera's image changes and for nothing else.
+ */
+function PlayerPlaceholderView({
+  placeholder,
+  cameraId,
+  quality,
+}: {
+  readonly placeholder: PlayerPlaceholder
+  readonly cameraId: string
+  readonly quality: StreamQuality
+}): JSX.Element {
+  const snapshot = useThumbnails((state) =>
+    placeholderSnapshot(placeholder, cameraId, quality, state.thumbnails.entries, state.packages),
+  )
+  return (
+    <NoPicture
+      className="livePlayer__placeholder"
+      tone={placeholderTone(placeholder)}
+      label={placeholderText(placeholder)}
+      // The detail where there is one (a mime); otherwise the label, for a cell too small to show it.
+      title={placeholderDetail(placeholder)}
+      snapshot={snapshot}
+    />
   )
 }
 

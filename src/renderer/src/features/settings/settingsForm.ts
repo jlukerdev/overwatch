@@ -217,7 +217,7 @@ function formatDate(value: string): string {
 export function describeEndpointStatus(status: EndpointStatus): string {
   const parts = [
     status.hostPort ?? 'no address yet',
-    status.pinned ? 'certificate pinned' : 'certificate not accepted yet',
+    status.pinned ? 'certificate accepted' : 'certificate not accepted yet',
     status.credentialStored ? 'credential stored' : 'no credential stored',
   ]
   if (status.version !== null) parts.push(`version ${status.version}`)

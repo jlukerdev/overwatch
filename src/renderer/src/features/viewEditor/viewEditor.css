@@ -4,10 +4,12 @@
  * (features/grid/grid.css): `.editorCanvas` is measured and every cell is placed absolutely in px.
  *
  * Three columns filling the body: the Views list (its footer — New / Duplicate / Delete — pinned
- * under it), the main column (header with the name and Close, the grouped settings, the selection
- * toolbar, the canvas taking whatever height is left, and the save bar under it), and the
- * inspector + palette. The list and the side column scroll on their own; the canvas never scrolls,
- * it letterboxes like the Live grid. Buttons are the shared ones (styles.css, P3.8).
+ * under it), the main column (a compact header with the name, the Grid controls and Close, the
+ * selection toolbar, the canvas taking whatever height is left, and the save bar under it), and
+ * the side column: the View | Cell tabs, the open tab's panel, and the camera palette under it.
+ * The list, the tab panel and the palette each scroll on their own; the canvas never scrolls, it
+ * letterboxes like the Live grid. Buttons, sidebar rows (`.sideItem`), status lines (`.status`)
+ * and the empty state are the shared ones (styles.css). Every font size is a `--font-*` token.
  */
 
 .viewEditor {
@@ -16,13 +18,8 @@
   min-height: 0;
 }
 
-.viewEditor--empty {
-  align-items: flex-start;
-  padding: 1rem;
-}
-
-.viewEditor__emptyCard {
-  max-width: 60ch;
+.viewEditor > .emptyState {
+  flex: 1;
 }
 
 /* --- left: the Views list ---------------------------------------------------------------------- */
@@ -72,7 +69,7 @@
   margin: 0.25rem 0 0;
   overflow: hidden;
   color: var(--muted);
-  font-size: 0.8rem;
+  font-size: var(--font-sm);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -107,30 +104,14 @@
   gap: 0.25rem;
 }
 
+/* The look — hover, focus ring, the current View's accent bar — is `.sideItem` (styles.css). */
 .viewEditor__listItem {
   flex: 1;
   min-width: 0;
-  padding: 0.35rem 0.5rem;
+  padding: 0.35rem 0.6rem;
   overflow: hidden;
-  border: 1px solid transparent;
-  border-radius: var(--radius);
-  background: none;
-  color: var(--muted);
-  font: inherit;
-  text-align: left;
   text-overflow: ellipsis;
   white-space: nowrap;
-  cursor: pointer;
-}
-
-.viewEditor__listItem:hover {
-  color: var(--fg);
-}
-
-.viewEditor__listItem[aria-pressed='true'] {
-  border-color: var(--border);
-  background: var(--bg-sunken);
-  color: var(--fg);
 }
 
 /* --- main column ------------------------------------------------------------------------------- */
@@ -139,62 +120,83 @@
   display: flex;
   flex: 1;
   flex-direction: column;
-  gap: 1rem;
+  gap: 0.75rem;
   min-width: 0;
   min-height: 0;
-  padding: 1rem 1.25rem 0;
+  padding: 0.85rem 1.25rem 0;
 }
 
-/* The name on the left, Close at the far right. */
+/*
+ * One row: the name, the Grid controls beside it, Close at the far right. Each control has its
+ * small label over it; in a narrow window the Grid controls wrap under the name.
+ */
 .viewEditor__header {
   display: flex;
+  flex-wrap: wrap;
   align-items: flex-end;
-  justify-content: space-between;
-  gap: 1rem;
+  gap: 0.6rem 1.25rem;
 }
 
 .viewEditor__nameField {
   display: flex;
+  flex: 0 1 18rem;
   flex-direction: column;
-  gap: 0.3rem;
-  min-width: 0;
+  gap: 0.25rem;
+  min-width: 10rem;
+}
+
+.viewEditor__nameField .field__label {
+  font-size: var(--font-sm);
 }
 
 .viewEditor__name {
-  width: 22rem;
-  max-width: 100%;
-  font-size: 1.05rem;
+  width: 100%;
+  font-size: var(--font-md);
   font-weight: 600;
 }
 
-/* The save bar's error: one line between the status and the buttons, cut short with an ellipsis. */
+.viewEditor__gridSettings {
+  display: flex;
+  align-items: flex-end;
+  gap: 0.6rem;
+  min-width: 0;
+}
+
+.viewEditor__close {
+  margin-left: auto;
+}
+
+/*
+ * The save bar's error: one line between the status and the buttons, cut short with an ellipsis
+ * (the whole message is its tooltip). A `.status` line, kept from wrapping.
+ */
 .viewEditor__message {
   flex: 1;
+  align-items: center;
   min-width: 0;
-  margin: 0;
+}
+
+.viewEditor__message > span {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-/* Three groups side by side, wrapping onto a second line in a narrow window. */
-.viewEditor__settings {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 1rem 1.5rem;
-}
-
+/*
+ * A bordered group with its caption on the border: the inspector's Multi-camera settings
+ * (CELL-2), one control per line in the narrow side column.
+ */
 .viewEditor__group {
   display: flex;
-  flex-wrap: wrap;
-  align-items: flex-end;
-  gap: 0.75rem 1rem;
+  flex-direction: column;
+  gap: 0.45rem;
   min-width: 0;
   margin: 0;
-  padding: 0.6rem 0.9rem 0.85rem;
+  padding: 0.6rem 0.75rem 0.75rem;
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  background: var(--bg-raised);
+  background: var(--bg-sunken);
 }
 
 /*
@@ -205,7 +207,7 @@
 .viewEditor__panelTitle {
   margin: 0;
   color: var(--muted);
-  font-size: 0.72rem;
+  font-size: var(--font-xs);
   font-weight: 600;
   letter-spacing: 0.06em;
   text-transform: uppercase;
@@ -215,14 +217,16 @@
   padding: 0 0.35rem;
 }
 
+/* A label over its control: the header's Grid controls and the View tab's settings. */
 .viewEditor__setting {
   display: flex;
   flex-direction: column;
-  gap: 0.3rem;
+  gap: 0.25rem;
+  min-width: 0;
 }
 
 .viewEditor__setting .field__label {
-  font-size: 0.85rem;
+  font-size: var(--font-sm);
 }
 
 .viewEditor__number {
@@ -239,10 +243,12 @@
 .viewEditor__selectionCount {
   min-width: 9rem;
   color: var(--muted);
-  font-size: 0.85rem;
+  font-size: var(--font-sm);
 }
 
+/* What the last edit cost (cameras lost to a merge or a layout change): a `.status` line. */
 .viewEditor__note {
+  align-items: center;
   margin-left: 0.5rem;
 }
 
@@ -296,18 +302,80 @@
   gap: 0.5rem;
 }
 
-/* --- right: inspector and palette --------------------------------------------------------------- */
+/* --- right: the tabs, the open panel, the palette ---------------------------------------------- */
 
 .viewEditor__side {
   display: flex;
   flex-direction: column;
   flex-shrink: 0;
-  width: 17rem;
-  gap: 1.5rem;
-  padding: 0.85rem 0.75rem;
-  overflow-y: auto;
+  width: 18rem;
+  min-height: 0;
   border-left: 1px solid var(--border);
   background: var(--bg-raised);
+}
+
+/* View | Cell: two equal tabs across the column, the open one underlined in the accent colour. */
+.viewEditor__tabs {
+  display: flex;
+  flex-shrink: 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.viewEditor__tab {
+  flex: 1 1 0;
+  min-height: 2.4rem;
+  padding: 0 0.5rem;
+  border: none;
+  border-bottom: 2px solid transparent;
+  background: none;
+  color: var(--muted);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+  transition:
+    background-color 120ms ease,
+    color 120ms ease,
+    border-color 120ms ease;
+}
+
+.viewEditor__tab:hover {
+  background: var(--hover-tint);
+  color: var(--fg);
+}
+
+.viewEditor__tab:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.viewEditor__tab[aria-selected='true'] {
+  border-bottom-color: var(--accent);
+  color: var(--fg);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .viewEditor__tab {
+    transition: none;
+  }
+}
+
+/*
+ * The open tab's panel: as tall as its content, up to a little over half the column, then it
+ * scrolls, so the palette under it always keeps room. Both panels stay mounted; `hidden` must
+ * beat the `display` below.
+ */
+.viewEditor__tabPanel {
+  display: flex;
+  flex: 0 1 auto;
+  flex-direction: column;
+  min-height: 0;
+  max-height: 58%;
+  padding: 0.85rem 0.75rem;
+  overflow-y: auto;
+}
+
+.viewEditor__tabPanel[hidden] {
+  display: none;
 }
 
 .viewEditor__panel {
@@ -316,10 +384,97 @@
   gap: 0.6rem;
 }
 
+/* The View tab: the Display and Quality sections, one under the other. */
+.viewEditor__viewSettings {
+  display: flex;
+  flex-direction: column;
+  gap: 1.1rem;
+}
+
+/* A `fieldset` drawn as a plain section: the caption, then one control per line. */
+.viewEditor__section {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.viewEditor__section > legend {
+  margin-bottom: 0.5rem;
+  padding: 0;
+}
+
+/* A control with companions on its line: the aspect select and its w:h pair, the gap slider and
+   its number. Wraps rather than spill out of the column. */
+.viewEditor__settingRow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.viewEditor__settingRow > select {
+  flex: 1 1 6rem;
+  min-width: 0;
+}
+
+.viewEditor__range {
+  flex: 1 1 4rem;
+  min-width: 0;
+  accent-color: var(--accent);
+}
+
+.viewEditor__aspectPair {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+}
+
+.viewEditor__aspectPair .viewEditor__number {
+  width: 3.75rem;
+}
+
+/* The palette: the rest of the column, under a rule; its list scrolls, its caption stays. */
+.viewEditor__palettePanel {
+  flex: 1 1 0;
+  min-height: 9rem;
+  padding: 0.85rem 0.75rem 0;
+  border-top: 1px solid var(--border);
+}
+
+/* The first panel in the column (no tab panel open above it cannot happen, but keep it tidy). */
+.viewEditor__tabs + .viewEditor__palettePanel {
+  border-top: 0;
+}
+
+.viewEditor__palettePanel > .viewEditor__palette {
+  flex: 1;
+  min-height: 0;
+  margin: 0 -0.75rem;
+  padding: 0 0.75rem 0.75rem;
+  overflow-y: auto;
+}
+
 .viewEditor__hint {
   margin: 0;
   color: var(--muted);
-  font-size: 0.85rem;
+  font-size: var(--font-sm);
+}
+
+/* The palette's hint while the View has no camera anywhere: the first step, in the foreground. */
+.viewEditor__paletteStart {
+  padding: 0.5rem 0.6rem;
+  border: 1px solid color-mix(in srgb, var(--accent) 45%, var(--border));
+  border-radius: var(--radius);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  color: var(--fg);
+}
+
+.viewEditor__paletteStart .icon {
+  color: var(--accent);
 }
 
 .viewEditor__cameraList,
@@ -330,14 +485,6 @@
   margin: 0;
   padding: 0;
   list-style: none;
-}
-
-/* The inspector's Multi-camera group (CELL-2): one control per line in the narrow side column. */
-.viewEditor__group--stack {
-  flex-direction: column;
-  flex-wrap: nowrap;
-  align-items: stretch;
-  gap: 0.45rem;
 }
 
 .viewEditor__subgroup {
@@ -352,7 +499,7 @@
 
 .viewEditor__subgroup .field__label {
   padding: 0;
-  font-size: 0.85rem;
+  font-size: var(--font-sm);
 }
 
 /* checkRow: a checkbox and its label (for Rotate, the interval after them). inlineRow: a label
@@ -362,7 +509,7 @@
   display: flex;
   align-items: center;
   gap: 0.4rem;
-  font-size: 0.9rem;
+  font-size: var(--font-md);
 }
 
 .viewEditor__cameraRow {
@@ -383,16 +530,59 @@
   white-space: nowrap;
 }
 
+/* A palette entry: thumbnail, name, and the in-use check. The whole row is the drag source. */
 .viewEditor__paletteItem {
   display: flex;
   align-items: center;
-  gap: 0.4rem;
-  padding: 0.4rem 0.6rem;
+  gap: 0.5rem;
+  padding: 0.3rem 0.5rem 0.3rem 0.3rem;
   border: 1px solid var(--border);
   border-radius: var(--radius);
   background: var(--bg-sunken);
   white-space: nowrap;
   cursor: grab;
+  transition:
+    border-color 120ms ease,
+    background-color 120ms ease;
+}
+
+.viewEditor__paletteItem:hover {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 8%, var(--bg-sunken));
+}
+
+.viewEditor__paletteItem:active {
+  cursor: grabbing;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .viewEditor__paletteItem {
+    transition: none;
+  }
+}
+
+/* The 16:9 thumbnail: the cached snapshot, or a camera icon on the tile. Never takes the pointer,
+   so pressing on it drags the entry. */
+.viewEditor__paletteThumb {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  width: 3.6rem;
+  aspect-ratio: 16 / 9;
+  overflow: hidden;
+  border-radius: calc(var(--radius) - 2px);
+  background: var(--bg-raised);
+  color: var(--muted);
+  pointer-events: none;
+}
+
+.viewEditor__paletteImage {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  user-select: none;
 }
 
 .viewEditor__paletteLabel {
@@ -411,10 +601,6 @@
   display: inline-flex;
   flex-shrink: 0;
   color: var(--ok);
-}
-
-.viewEditor__paletteItem:hover {
-  border-color: var(--accent);
 }
 
 /* --- the canvas -------------------------------------------------------------------------------- */
@@ -440,8 +626,26 @@
   background: color-mix(in srgb, var(--accent) 18%, var(--bg-sunken));
 }
 
+/*
+ * The cell a drag is over: an accent ring and tint drawn on top of everything in the cell (the
+ * snapshot included) without moving its content, and an accent border under it.
+ */
 .editorCanvas__cell--drop {
-  border: 2px solid var(--accent);
+  border-style: solid;
+  border-color: var(--accent);
+}
+
+.editorCanvas__cell--drop::after {
+  position: absolute;
+  inset: 0;
+  background: color-mix(in srgb, var(--accent) 24%, transparent);
+  box-shadow: inset 0 0 0 3px var(--accent);
+  content: '';
+  pointer-events: none;
+}
+
+.editorCanvas__cell--drop .editorCanvas__empty {
+  color: var(--fg);
 }
 
 /* P5.2 (VIEW-3): the head camera's snapshot, the bottom layer of the cell, fitted with the View's
@@ -466,7 +670,7 @@
 }
 
 /* The selected tint is the cell's background, which the image covers: draw it over the image on
- * the selection layer instead. The drop highlight is the cell's border, which the image never covers. */
+ * the selection layer instead. The drop highlight is an overlay above the image already. */
 .editorCanvas__cell--image.editorCanvas__cell--selected .editorCanvas__select {
   background: color-mix(in srgb, var(--accent) 30%, transparent);
 }
@@ -526,7 +730,16 @@
 .editorCanvas__empty {
   flex-shrink: 0;
   color: var(--muted);
-  font-size: 0.85rem;
+  font-size: var(--font-sm);
+}
+
+/* An empty cell's invitation: a plus mark, and "Drop a camera" where the cell has room for it. */
+.editorCanvas__empty {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  opacity: 0.85;
+  white-space: nowrap;
 }
 
 .editorCanvas__selection {

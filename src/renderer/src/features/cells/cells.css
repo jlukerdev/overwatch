@@ -8,6 +8,14 @@
  * so its text's `title` works and a click between its buttons is not a cell click). Everything else
  * here is `pointer-events: none`, so the player under it, and the cell around it, still get the
  * pointer.
+ *
+ * One chip look (UX polish). Everything drawn over the picture — the name, the position text, every
+ * button, the volume's backing, the selects, the badge — is the same chip: `--chip-size` tall, on
+ * `--scrim` (styles.css), one hairline border, one radius, `--font-xs` text (the name `--font-sm`).
+ * The quality colours (QUAL-7) are accents on that chip, text and border, never its backing. While
+ * the strip is shown a soft gradient darkens the top of the picture under the chips
+ * (`.cellOverlay::before`), so they read against bright video; no `backdrop-filter` anywhere, which
+ * would cost a blur per cell per frame over sixteen streams.
  */
 
 /*
@@ -43,14 +51,48 @@
 }
 
 .cellOverlay {
+  /* Buttons and selects are at least 28 × 28 CSS px to press; the icons inside stay small. */
+  --chip-size: 28px;
+  --chip-border: rgb(255 255 255 / 14%);
+  --chip-border-hover: rgb(255 255 255 / 34%);
+  --chip-bg-hover: color-mix(in srgb, var(--fg) 14%, var(--scrim));
+  --chip-bg-active: color-mix(in srgb, var(--fg) 24%, var(--scrim));
+
   position: absolute;
   inset: 0;
   pointer-events: none;
 }
 
 /*
+ * The top scrim: a gradient over the top of the picture, shown with the strip and faded with it
+ * (same duration), so the chips read against bright video (a sky, snow, a white wall). It never
+ * takes the pointer, and it is painted before the top row, so under the chips.
+ */
+.cellOverlay::before {
+  position: absolute;
+  top: 0;
+  right: 0;
+  left: 0;
+  height: min(6rem, 70%);
+  background: linear-gradient(to bottom, rgb(0 0 0 / 55%), rgb(0 0 0 / 0%));
+  content: '';
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 150ms ease-out;
+}
+
+.cellOverlay--controlsShown::before {
+  opacity: 1;
+}
+
+/*
  * The top row: the name on the left, the strip on the right. One flex row so a long name stops at
  * the strip with an ellipsis instead of running under it. The row's empty space is the cell's.
+ *
+ * In a small cell (a 4×4 wall in a small window) name and strip do not fit side by side: the row
+ * wraps, the name keeps the first line (with its ellipsis if it is longer than the cell) and the
+ * strip takes the next, still right-aligned; a strip wider than the cell wraps its own controls the
+ * same way. Nothing overflows the cell.
  */
 .cellOverlay__top {
   position: absolute;
@@ -58,9 +100,36 @@
   right: 0.35rem;
   left: 0.35rem;
   display: flex;
+  flex-wrap: wrap;
   align-items: flex-start;
   gap: 0.35rem;
   pointer-events: none;
+}
+
+/* The chip (header): shared by everything the overlay draws over the picture. */
+.cellOverlay__name,
+.cellOverlay__badge,
+.cellOverlay__positionText,
+.cellOverlay__back,
+.cellOverlay__select,
+.cellOverlay__volume {
+  box-sizing: border-box;
+  height: var(--chip-size);
+  border: 1px solid var(--chip-border);
+  border-radius: var(--radius);
+  background: var(--scrim);
+  color: var(--fg);
+  font: inherit;
+  font-size: var(--font-xs);
+  font-weight: 600;
+}
+
+/* Text chips: one line, centred in the chip's height (its box less the two borders). */
+.cellOverlay__name,
+.cellOverlay__badge,
+.cellOverlay__positionText {
+  line-height: calc(var(--chip-size) - 2px);
+  white-space: nowrap;
 }
 
 /*
@@ -70,26 +139,29 @@
 .cellOverlay__name {
   flex: 0 1 auto;
   min-width: 0;
+  max-width: 100%;
   overflow: hidden;
-  padding: 0.1rem 0.4rem;
-  border-radius: var(--radius);
-  background: rgb(0 0 0 / 55%);
-  color: var(--fg);
-  font-size: 0.8rem;
+  padding: 0 0.5rem;
+  font-size: var(--font-sm);
+  font-weight: 500;
   text-overflow: ellipsis;
-  white-space: nowrap;
   pointer-events: auto;
 }
 
 /*
  * The auto-hiding strip, top right. Faded rather than removed, so its controls stay in the tab order
- * and focusing one reveals it (CellOverlay.tsx, "Keyboard").
+ * and focusing one reveals it (CellOverlay.tsx, "Keyboard"). It may shrink and wrap (see the top
+ * row): its controls then fill lines from the right.
  */
 .cellOverlay__controls {
   display: flex;
-  flex: none;
+  flex: 0 1 auto;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 0.25rem;
+  justify-content: flex-end;
+  gap: 0.35rem;
+  min-width: 0;
+  max-width: 100%;
   margin-left: auto;
   opacity: 0;
   pointer-events: none;
@@ -102,8 +174,11 @@
 
 .cellOverlay__slot {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 0.25rem;
+  justify-content: flex-end;
+  gap: 0.35rem;
+  min-width: 0;
 }
 
 /* A cell with no controls to offer (one camera, no picker) draws no slot, so no stray gap. */
@@ -121,20 +196,17 @@
  * QUAL-7: the effective quality. Information, not a control, and only where no picker shows the
  * quality — in practice the package channel's `PKG` (Cell.tsx). Each quality has its own colour
  * (`data-quality`), shared with the pickers below, so a wall of cells reads at a glance: green for
- * HIGH, amber for MED, blue for LOW, violet for the doorbell's package channel.
+ * HIGH, amber for MED, blue for LOW, violet for the doorbell's package channel. The colour is the
+ * chip's text and border; its backing is the scrim, like every chip.
  */
 .cellOverlay__badge {
   --quality-colour: var(--muted);
 
   flex-shrink: 0;
-  padding: 0.1rem 0.35rem;
-  border: 1px solid color-mix(in srgb, var(--quality-colour) 70%, transparent);
-  border-radius: var(--radius);
-  background: color-mix(in srgb, var(--quality-colour) 22%, rgb(0 0 0 / 65%));
+  padding: 0 0.45rem;
+  border-color: color-mix(in srgb, var(--quality-colour) 70%, transparent);
   color: var(--quality-colour);
-  font-size: 0.7rem;
   font-variant-numeric: tabular-nums;
-  font-weight: 600;
   letter-spacing: 0.04em;
 }
 
@@ -158,37 +230,45 @@
   --quality-colour: var(--quality-package);
 }
 
-/* A chip button holding an icon: the back control, the zoom reset, Save, next / previous. */
+/*
+ * A chip button (the class is the back control's, P3.5, and every button in the strip has it): the
+ * back control, the zoom reset, Save, next / previous, mute. Brighter on hover, brighter still while
+ * pressed, the accent ring for keyboard focus.
+ */
+.cellOverlay__back {
+  flex-shrink: 0;
+  min-width: var(--chip-size);
+  padding: 0 0.5rem;
+  cursor: pointer;
+  transition:
+    background-color 120ms ease,
+    border-color 120ms ease;
+}
+
+/* A chip button holding only an icon: a square, at least 28 × 28 to press. */
 .cellOverlay__iconButton {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 0.3rem;
-  padding: 0.2rem 0.35rem;
+  width: var(--chip-size);
+  padding: 0;
   line-height: 0;
 }
 
-/* The overlay's icons (ui/icons.tsx) at a fixed 14 px, whatever the chip's small font size. */
+/* The overlay's icons (ui/icons.tsx) at a fixed 15 px, whatever the chip's size or font. */
 .cellOverlay__icon {
-  width: 14px;
-  height: 14px;
-}
-
-/* FILL-1's back control (P3.5), shown only while filled. The badge's chip, as a button. */
-.cellOverlay__back {
-  padding: 0.1rem 0.45rem;
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  background: var(--bg-raised);
-  color: var(--fg);
-  font: inherit;
-  font-size: 0.75rem;
-  font-weight: 600;
-  cursor: pointer;
+  width: 15px;
+  height: 15px;
 }
 
 .cellOverlay__back:hover:not(:disabled) {
-  border-color: var(--accent);
+  border-color: var(--chip-border-hover);
+  background: var(--chip-bg-hover);
+}
+
+.cellOverlay__back:active:not(:disabled) {
+  border-color: var(--chip-border-hover);
+  background: var(--chip-bg-active);
 }
 
 /* A control that would do nothing now (the zoom reset at 1×): still there, visibly inert. */
@@ -197,83 +277,75 @@
   cursor: default;
 }
 
-.cellOverlay__back:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 1px;
-}
-
-/*
- * AUD-2's mute toggle (P5.1, AudioControls.tsx): the back control's chip. While the cell is the one
- * heard it takes the accent, so the one audible cell on a wall is easy to find.
- */
-.cellOverlay__back[data-audible='true'] {
-  border-color: var(--accent);
-  color: var(--accent);
-}
-
-/*
- * AUD-3's volume slider, filled only: a compact native range on the chips' dark backing, the
- * accent for its track and thumb.
- */
-.cellOverlay__volume {
-  width: 5.5rem;
-  height: 1.25rem;
-  margin: 0;
-  padding: 0 0.35rem;
-  border-radius: var(--radius);
-  background: rgb(0 0 0 / 55%);
-  accent-color: var(--accent);
-  cursor: pointer;
-}
-
+.cellOverlay__back:focus-visible,
+.cellOverlay__select:focus-visible,
 .cellOverlay__volume:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 1px;
 }
 
 /*
- * A multi-camera cell's previous / position / next (P4.3; CELL-3, CellStepControls.tsx): the back
- * control's chips either side of the position, drawn like the name's chip. Tighter than the strip's
- * own gap so the three read as one control.
+ * AUD-2's mute toggle (P5.1, AudioControls.tsx): a chip button. While the cell is the one heard it
+ * takes the accent, so the one audible cell on a wall is easy to find; hovered or pressed it keeps
+ * the accent border.
  */
-.cellOverlay__position {
-  display: flex;
-  align-items: center;
-  gap: 0.15rem;
-}
-
-.cellOverlay__positionText {
-  padding: 0.1rem 0.35rem;
-  border-radius: var(--radius);
-  background: rgb(0 0 0 / 55%);
-  color: var(--fg);
-  font-size: 0.75rem;
-  font-variant-numeric: tabular-nums;
-  font-weight: 600;
-  white-space: nowrap;
+.cellOverlay__back[data-audible='true'],
+.cellOverlay__back[data-audible='true']:hover,
+.cellOverlay__back[data-audible='true']:active {
+  border-color: var(--accent);
+  color: var(--accent);
 }
 
 /*
- * QUAL-4/5's quality picker (P3.7): a native select dressed as the chips around it (the dropdown
- * itself follows the app's `color-scheme: dark`, styles.css). Opaque, unlike the other chips: its
- * text carries the quality colour, which must read against any video behind it (user, 2026-11-16).
+ * AUD-3's volume slider, filled only: a compact native range in a chip, the accent for its track
+ * and thumb.
  */
-.cellOverlay__select {
-  max-width: 11rem;
-  padding: 0.1rem 0.3rem;
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  background: rgb(0 0 0 / 55%);
-  color: var(--fg);
-  font: inherit;
-  font-size: 0.75rem;
-  font-weight: 600;
+.cellOverlay__volume {
+  flex-shrink: 1;
+  width: 6rem;
+  min-width: 3.5rem;
+  margin: 0;
+  padding: 0 0.45rem;
+  accent-color: var(--accent);
   cursor: pointer;
 }
 
 /*
+ * A multi-camera cell's previous / position / next (P4.3; CELL-3, CellStepControls.tsx): chip
+ * buttons either side of the position. Tighter than the strip's own gap so the three read as one
+ * control, and never wrapped apart.
+ */
+.cellOverlay__position {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 0.2rem;
+}
+
+.cellOverlay__positionText {
+  padding: 0 0.45rem;
+  font-variant-numeric: tabular-nums;
+}
+
+/*
+ * QUAL-4/5's quality picker (P3.7): a native select dressed as a chip (the dropdown itself follows
+ * the app's `color-scheme: dark`, styles.css), at least 28 px tall to press.
+ */
+.cellOverlay__select {
+  min-width: 0;
+  max-width: 11rem;
+  padding: 0 0.35rem;
+  cursor: pointer;
+  transition:
+    background-color 120ms ease,
+    border-color 120ms ease;
+}
+
+/*
  * The select is the quality readout where there is no badge (QUAL-7, QualityPicker.tsx): text and
- * border in the playing quality's colour. The open dropdown's options keep the normal text colour.
+ * border in the playing quality's colour. Opaque and lightly tinted, unlike the other chips: its
+ * text carries the quality colour, which must read against any video behind it (user decision,
+ * 2026-11-16). The open dropdown's options keep the normal text colour.
  */
 .cellOverlay__select[data-quality] {
   border-color: color-mix(in srgb, var(--quality-colour) 70%, transparent);
@@ -285,17 +357,24 @@
   color: var(--fg);
 }
 
+/* Hover brightens the chip; a quality-coloured select keeps its border and gains tint (QUAL-7). */
 .cellOverlay__select:hover {
-  border-color: var(--accent);
+  background: var(--chip-bg-hover);
 }
 
-.cellOverlay__select:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 1px;
+.cellOverlay__select[data-quality]:hover {
+  background: color-mix(in srgb, var(--quality-colour) 24%, var(--bg-raised));
+}
+
+.cellOverlay__select:not([data-quality]):hover {
+  border-color: var(--chip-border-hover);
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .cellOverlay__controls {
+  .cellOverlay::before,
+  .cellOverlay__controls,
+  .cellOverlay__back,
+  .cellOverlay__select {
     transition: none;
   }
 }

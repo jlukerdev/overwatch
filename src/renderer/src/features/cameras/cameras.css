@@ -3,6 +3,9 @@
  * Settings over one file; the tokens and the primitives (.card, .button, .row, .badge, .mono) come
  * from src/renderer/src/styles.css.
  *
+ * Every font-size here is one of the type tokens (`--font-xs` … `--font-xl`, styles.css), and the
+ * screens with no grid use the shared `.emptyState` / `.checklist` primitives.
+ *
  * The grid is `auto-fill` rather than a fixed column count: this screen is an inventory, not a
  * View, and the real layout engine arrives with VIEW-5 in Phase 3.
  */
@@ -10,81 +13,99 @@
 .cameras {
   display: flex;
   flex-direction: column;
-  gap: 0.75rem;
-  padding: 1rem;
+  gap: 1rem;
+  /* Fills the body, so an empty state is centred in the screen and not under the header. */
+  box-sizing: border-box;
+  min-height: 100%;
+  padding: 1rem 1.25rem 1.5rem;
 }
 
 .cameras__header {
   gap: 0.75rem;
+  min-height: var(--control-height);
 }
 
 .cameras__title {
   margin: 0;
-  font-size: 1.1rem;
+  font-size: var(--font-lg);
   font-weight: 600;
 }
 
-/* Pushes Refresh and Settings to the right edge, as in the app header. */
+.cameras__count {
+  font-size: var(--font-sm);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Pushes Refresh (and the progress beside it) to the right edge, as in the app header. */
 .cameras__actions {
   margin-left: auto;
 }
 
-.cameras__notice {
-  max-width: 60ch;
+/* The shared empty state, taking whatever height the header and banners leave. */
+.cameras__empty {
+  flex: 1;
+  height: auto;
 }
 
-.cameras__gaps {
-  margin: 0 0 0.75rem;
-  padding-left: 1.2rem;
-  color: var(--warn);
-}
-
-/* Missing setup on a console that has already listed its cameras: a warning above the rows, not a
-   card instead of them. */
-.cameras__warning {
+/*
+ * What is reported above the grid — missing setup (warn) on a console that has already listed its
+ * cameras, or a failed request (error): a line above the cards, never instead of them. One shape,
+ * an alert icon in the kind's colour, and the text in the normal colour so it stays readable.
+ */
+.cameras__banner {
   display: flex;
   align-items: center;
-  gap: 0.75rem;
-  padding: 0.5rem 0.75rem;
-  border: 1px solid var(--warn);
+  gap: 0.6rem;
+  padding: 0.5rem 0.6rem 0.5rem 0.75rem;
+  border: 1px solid var(--border);
+  border-left-width: 3px;
   border-radius: var(--radius);
   background: var(--bg-raised);
 }
 
-.cameras__warningText {
-  flex: 1;
+.cameras__banner--warn {
+  border-left-color: var(--warn);
+}
+
+.cameras__banner--warn > .icon {
   color: var(--warn);
 }
 
-.cameras__problem {
-  display: flex;
-  align-items: center;
-  gap: 0.75rem;
-  padding: 0.5rem 0.75rem;
-  border: 1px solid var(--error);
-  border-radius: var(--radius);
-  background: var(--bg-raised);
+.cameras__banner--error {
+  border-left-color: var(--error);
 }
 
-.cameras__problemText {
-  flex: 1;
+.cameras__banner--error > .icon {
   color: var(--error);
+}
+
+.cameras__bannerText {
+  flex: 1;
+  min-width: 0;
+  font-size: var(--font-sm);
 }
 
 .cameras__grid {
   display: grid;
-  gap: 0.75rem;
+  gap: 1rem;
   margin: 0;
   padding: 0;
   grid-template-columns: repeat(auto-fill, minmax(15rem, 1fr));
   list-style: none;
 }
 
+/*
+ * A card: the picture edge to edge on top, the text underneath. Not interactive, so no hover or
+ * pointer; `overflow: hidden` clips the picture to the card's rounded top corners.
+ */
 .cameraCard {
   display: flex;
+  overflow: hidden;
   flex-direction: column;
-  gap: 0.35rem;
-  padding: 0.6rem;
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-raised);
 }
 
 /* A fixed 16:9 box, so the grid does not reflow as thumbnails of different sizes land — a default
@@ -95,8 +116,7 @@
   aspect-ratio: 16 / 9;
   align-items: center;
   justify-content: center;
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
+  border-bottom: 1px solid var(--border);
   background: var(--bg-sunken);
 }
 
@@ -108,8 +128,17 @@
 }
 
 .cameraCard__placeholder {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.4rem;
   color: var(--fg);
-  font-size: 0.9rem;
+  font-size: var(--font-sm);
+}
+
+.cameraCard__placeholder .icon {
+  width: 1.6rem;
+  height: 1.6rem;
 }
 
 /* "Loading…" and CAM-3's "No snapshot": states to read past, not to notice. */
@@ -117,58 +146,111 @@
   color: var(--muted);
 }
 
+/*
+ * CAM-3: a camera that is not online reads as such at a glance — its picture slot is hatched and
+ * its placeholder and name are dimmed. The state line keeps its full colour (the dot is the point).
+ */
+.cameraCard--offline .cameraCard__thumb {
+  background: repeating-linear-gradient(
+    135deg,
+    var(--bg-sunken) 0 10px,
+    color-mix(in srgb, var(--border) 45%, var(--bg-sunken)) 10px 11px
+  );
+}
+
+.cameraCard--offline .cameraCard__placeholder {
+  color: var(--muted);
+}
+
+.cameraCard--offline .cameraCard__name {
+  color: var(--muted);
+}
+
+.cameraCard__body {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  min-width: 0;
+  padding: 0.65rem 0.75rem 0.75rem;
+}
+
+.cameraCard__head {
+  gap: 0.4rem;
+}
+
 .cameraCard__name {
+  flex: 1;
   overflow: hidden;
+  min-width: 0;
   margin: 0;
-  font-size: 0.95rem;
+  font-size: var(--font-md);
   font-weight: 600;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.cameraCard__meta {
-  gap: 0.4rem;
+/* CAM-1: the camera has a working microphone. An icon with a label, not a text badge. */
+.cameraCard__audio {
+  display: inline-flex;
+  flex-shrink: 0;
+  color: var(--muted);
 }
 
-.cameraCard__audio {
-  color: var(--muted);
-  font-size: 0.75rem;
+/* The shared badge's dot and label without its pill (the dot colours stay styles.css's). */
+.badge.cameraCard__state {
+  align-self: flex-start;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  font-size: var(--font-sm);
 }
 
 .cameraCard__model {
   overflow: hidden;
   margin: 0;
   color: var(--muted);
-  font-size: 0.8rem;
+  font-size: var(--font-sm);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-/* QUAL-7: which RTSPS qualities exist on the console. A detail, so muted; an absent quality is
-   dimmed and struck through rather than hidden, so the row says what is missing too. */
+/* QUAL-7: which RTSPS qualities exist on the console, as small quiet chips. A detail, so muted;
+   an absent quality is dimmed rather than hidden, so the card says what is missing too. */
 .cameraCard__rtsps {
-  margin: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+  margin: 0.2rem 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.cameraCard__rtspsNote {
   color: var(--muted);
-  font-size: 0.75rem;
+  font-size: var(--font-xs);
 }
 
 .cameraCard__rtspsQuality {
+  padding: 0.05rem 0.4rem;
+  border: 1px solid var(--border);
+  border-radius: 999px;
   color: var(--fg);
-  font-weight: 600;
+  font-size: var(--font-xs);
+  letter-spacing: 0.02em;
 }
 
 .cameraCard__rtspsQuality--absent {
+  border-style: dashed;
   color: var(--muted);
-  font-weight: 400;
-  opacity: 0.6;
-  text-decoration: line-through;
+  opacity: 0.55;
 }
 
-/* P4.5: the list loads all at once. The first load shows this card in place of the grid; a
-   Refresh shows the compact version in the header, beside the button it disables, while the old
-   grid stays up. */
+/* P4.5: the list loads all at once. The first load shows this bar in the empty state, in place
+   of the grid; a Refresh shows the compact version in the header, beside the button, while the
+   old grid stays up. */
 .cameras__loading {
-  max-width: 28rem;
+  width: min(20rem, 100%);
 }
 
 .cameras__progress {
@@ -230,6 +312,6 @@
 }
 
 .cameras__progressLabel {
-  font-size: 0.8rem;
+  font-size: var(--font-sm);
   font-variant-numeric: tabular-nums;
 }

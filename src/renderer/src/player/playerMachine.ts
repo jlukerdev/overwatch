@@ -125,6 +125,30 @@ export function placeholderText(placeholder: PlayerPlaceholder): string {
   }
 }
 
+/**
+ * How the placeholder is drawn (CAM-3; NoPicture.tsx): what kind of "no picture" this is, so each
+ * reads at a glance on a wall of cells without reading the label.
+ *  - `progress`: a picture is on its way and nobody has to do anything (a spinner).
+ *  - `offline`: the camera itself is away (the camera-off icon, muted).
+ *  - `alert`: something on this side failed or is restarting (the alert icon).
+ */
+export type PlaceholderTone = 'progress' | 'offline' | 'alert'
+
+export function placeholderTone(placeholder: PlayerPlaceholder): PlaceholderTone {
+  switch (placeholder.kind) {
+    case 'camera-connecting':
+    case 'connecting':
+      return 'progress'
+    case 'camera-offline':
+      return 'offline'
+    case 'gateway-down':
+    case 'codec-unsupported':
+    case 'stream-error':
+    case 'stream-failed':
+      return 'alert'
+  }
+}
+
 /** The mime, the camera id or nothing: what a `title` attribute may add without leaking anything. */
 export function placeholderDetail(placeholder: PlayerPlaceholder): string | undefined {
   if (placeholder.kind === 'codec-unsupported') return placeholder.mime

@@ -19,12 +19,14 @@
 // Saving is the Streams card's pattern (SettingsPage): Add and ✕ save at once; one save at a time
 // for the whole card (every control is `aria-disabled` while it is in flight, keeping the focus); each payload is built from the
 // store's links at the moment of the change, so two quick changes cannot have the second write back
-// a link the first one replaced; and a failed save is reported on the door card it belongs to.
+// a link the first one replaced; and a failed save is reported on the door card it belongs to, as
+// a `.status` line (./StatusLine) like every other outcome in Settings.
 import { useCallback, useEffect, useMemo, useRef, useState, type JSX } from 'react'
 import type { DoorLinks, IpcError } from '@shared/ipc'
 import { useAppStore } from '../../state/appStore'
 import { RefreshIcon, XIcon } from '../../ui/icons'
 import { GroupTitle } from './GroupTitle'
+import { StatusLine } from '../../ui/StatusLine'
 import { DOORS_SECTION, sectionTitleId } from './settingsSections'
 import {
   addCameraOptions,
@@ -210,13 +212,18 @@ export function DoorLinksCard({ links }: { links: DoorLinks }): JSX.Element {
       </p>
 
       {notice === null ? null : (
-        <p className="field__hint settings__doorNotice" role="status">
+        <StatusLine
+          kind="muted"
+          busy={list.state === 'loading'}
+          role="status"
+          className="settings__doorStatus"
+        >
           {notice}
-        </p>
+        </StatusLine>
       )}
       {list.state === 'failed' ? (
         <div className="settings__doorNotice" role="alert">
-          <p className="field__error">{list.error.message}</p>
+          <StatusLine kind="error">{list.error.message}</StatusLine>
           {hint === null ? null : <p className="field__hint">{hint}</p>}
           <button
             type="button"
@@ -231,7 +238,9 @@ export function DoorLinksCard({ links }: { links: DoorLinks }): JSX.Element {
         </div>
       ) : null}
       {camerasNotice === null ? null : (
-        <p className="field__hint settings__doorNotice">{camerasNotice}</p>
+        <StatusLine kind="muted" className="settings__doorStatus">
+          {camerasNotice}
+        </StatusLine>
       )}
 
       <div className="field">
@@ -354,7 +363,7 @@ function DoorCardView({
       </div>
 
       {card.cameras.length === 0 ? (
-        <p className="field__hint">No cameras yet; nothing is saved until you add one.</p>
+        <p className="field__hint">No cameras yet. Nothing is saved until you add one.</p>
       ) : (
         <ul className="settings__doorCameras">
           {card.cameras.map((camera) => (
@@ -391,7 +400,7 @@ function DoorCardView({
           onAdd={onAddCamera}
         />
       )}
-      {error === null ? null : <p className="field__error">{error.message}</p>}
+      {error === null ? null : <StatusLine kind="error">{error.message}</StatusLine>}
     </li>
   )
 }

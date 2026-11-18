@@ -128,6 +128,10 @@ interface MeasuredCell {
 
 /** A layout read: only at a press, a wheel event or a resize, never per move (header). */
 function measureCell(cell: HTMLElement): MeasuredCell {
+  // The fill / back transition (GridView.tsx) runs a transform on the cell's slot for ~170 ms, and
+  // a rect read under it would be the shrunken, offset box. A wheel or a press in that window ends
+  // the transition at once, so the rect read below is the cell's real one.
+  for (const animation of cell.closest('.gridView__slot')?.getAnimations() ?? []) animation.finish()
   const rect = cell.getBoundingClientRect()
   return { left: rect.left, top: rect.top, box: { width: rect.width, height: rect.height } }
 }

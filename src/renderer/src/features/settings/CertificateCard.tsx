@@ -2,6 +2,9 @@
 // hard when it changes. One of these per endpoint, because pinning is per host:port — Protect is
 // behind 443 and the Access developer API answers on 12445, so one pin cannot cover both (SPEC §6).
 //
+// On screen a stored pin is called an "accepted" certificate: the user accepts one (CON-3), and
+// "pin" is the code's word for what that stores. Outcomes are `.status` lines (./StatusLine).
+//
 // The three `PinCheck` states are three different jobs, not three colours of the same message:
 //
 //  - `no-pin` is trust-on-first-use. The fingerprint is shown in `.mono` with the subject, issuer,
@@ -17,8 +20,9 @@
 import { useState, type JSX } from 'react'
 import type { EndpointName, EndpointStatus, IpcError, PinCheck } from '@shared/ipc'
 import { useAppStore } from '../../state/appStore'
-import { CheckIcon, ShieldIcon } from '../../ui/icons'
+import { AlertIcon, CheckIcon, ShieldIcon } from '../../ui/icons'
 import { describeCert, formatFingerprint } from './settingsForm'
+import { StatusLine } from '../../ui/StatusLine'
 
 /** Which call is in flight. Each button disables only itself, so the others stay usable. */
 type Busy = 'check' | 'pin' | null
@@ -77,8 +81,8 @@ export function CertificateCard({
     setRepinConfirmed(false)
     setNote(
       replacing
-        ? 'The new certificate is pinned. This console is now trusted again.'
-        : 'Certificate pinned. The app will refuse to connect if it changes.',
+        ? 'The new certificate is accepted. This console is trusted again.'
+        : 'Certificate accepted. The app will refuse to connect if it ever changes.',
     )
   }
 
@@ -87,7 +91,10 @@ export function CertificateCard({
     <section className="settings__cert" aria-label={`${label} certificate`}>
       <div className="row settings__cardHead">
         <h4 className="settings__certTitle">{label}</h4>
-        <span className="settings__factValue">{status.pinned ? 'pinned' : 'not accepted yet'}</span>
+        <span className={status.pinned ? 'settings__chip settings__chip--ok' : 'settings__chip'}>
+          {status.pinned ? <CheckIcon /> : null}
+          {status.pinned ? 'Accepted' : 'Not accepted yet'}
+        </span>
         <button
           type="button"
           className="button settings__push"
@@ -101,11 +108,19 @@ export function CertificateCard({
         </button>
       </div>
       <p className="card__hint">
-        {status.hostPort ?? 'No address yet — save a console host first.'}
+        {status.hostPort ?? 'No address yet. Save a console address first.'}
       </p>
 
-      {error === null ? null : <p className="field__error">{error.message}</p>}
-      {note === null ? null : <p className="settings__note">{note}</p>}
+      {error === null ? null : (
+        <StatusLine kind="error" className="settings__outcome">
+          {error.message}
+        </StatusLine>
+      )}
+      {note === null ? null : (
+        <StatusLine kind="ok" className="settings__outcome">
+          {note}
+        </StatusLine>
+      )}
 
       {check === null ? null : (
         <CheckPanel
@@ -141,7 +156,7 @@ function CheckPanel({
   if (check.state === 'match') {
     return (
       <div className="settings__certBody">
-        <p className="settings__ok">This certificate matches the stored pin.</p>
+        <StatusLine kind="ok">This certificate matches the one you accepted.</StatusLine>
         <p className="mono settings__fingerprint">{formatFingerprint(check.fingerprint256)}</p>
         <p className="field__hint">{describeCert(check.cert)}</p>
       </div>
@@ -167,7 +182,7 @@ function CheckPanel({
           }}
         >
           <CheckIcon />
-          {busy === 'pin' ? 'Pinning…' : 'Trust this certificate'}
+          {busy === 'pin' ? 'Accepting…' : 'Trust this certificate'}
         </button>
       </div>
     )
@@ -175,10 +190,13 @@ function CheckPanel({
 
   return (
     <div className="settings__certBody settings__mismatch" role="alert">
-      <p className="settings__mismatchTitle">Certificate does not match the pinned one</p>
+      <p className="settings__mismatchTitle">
+        <AlertIcon />
+        This certificate does not match the one you accepted
+      </p>
       <p className="settings__mismatchText">{check.message}</p>
       <dl className="settings__prints">
-        <dt className="field__label">Pinned</dt>
+        <dt className="field__label">Accepted before</dt>
         <dd className="mono settings__fingerprint">{formatFingerprint(check.expected)}</dd>
         <dt className="field__label">Presented now</dt>
         <dd className="mono settings__fingerprint">{formatFingerprint(check.actual)}</dd>
@@ -209,7 +227,7 @@ function CheckPanel({
           }}
         >
           <ShieldIcon />
-          {busy === 'pin' ? 'Re-pinning…' : 'Replace the pinned certificate'}
+          {busy === 'pin' ? 'Replacing…' : 'Replace the accepted certificate'}
         </button>
       ) : null}
     </div>

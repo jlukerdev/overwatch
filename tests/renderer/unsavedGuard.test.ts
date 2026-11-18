@@ -3,7 +3,7 @@ import {
   blockUnload,
   confirmLeave,
   hasUnsaved,
-  LEAVE_MESSAGE,
+  LEAVE_PROMPT,
   setUnsaved,
 } from '../../src/renderer/src/state/unsavedGuard'
 
@@ -20,18 +20,20 @@ describe('unsavedGuard', () => {
     expect(hasUnsaved()).toBe(false)
   })
 
-  it('lets the user leave without asking when nothing is unsaved', () => {
+  it('lets the user leave without asking when nothing is unsaved', async () => {
     const ask = vi.fn(() => false)
-    expect(confirmLeave(ask)).toBe(true)
+    expect(await confirmLeave(ask)).toBe(true)
     expect(ask).not.toHaveBeenCalled()
   })
 
-  it('asks while something is unsaved, and follows the answer', () => {
+  it('asks while something is unsaved, and follows the answer', async () => {
     setUnsaved(true)
     const no = vi.fn(() => false)
-    expect(confirmLeave(no)).toBe(false)
-    expect(no).toHaveBeenCalledWith(LEAVE_MESSAGE)
-    expect(confirmLeave(() => true)).toBe(true)
+    expect(await confirmLeave(no)).toBe(false)
+    expect(no).toHaveBeenCalledWith(LEAVE_PROMPT)
+    expect(await confirmLeave(() => true)).toBe(true)
+    // The app's dialog answers asynchronously.
+    expect(await confirmLeave(() => Promise.resolve(false))).toBe(false)
     // Asking does not clear the flag: the editor does that when it unmounts.
     expect(hasUnsaved()).toBe(true)
   })

@@ -1,5 +1,5 @@
-// Camera snapshots in the View editor (P5.2; VIEW-3, CAM-1, CAM-4): which image a cell shows, and
-// which snapshots the draft still needs fetched. Pure and unit-tested (no jsdom here, CLAUDE.md);
+// Camera snapshots in the View editor (P5.2; VIEW-3, CAM-1, CAM-4): which image a cell (and a
+// palette entry) shows, and which snapshots the draft still needs fetched. Pure and unit-tested (no jsdom here, CLAUDE.md);
 // the editor applies them against the shared cache (state/thumbnailsStore).
 //
 // The rules (SPEC VIEW-3):
@@ -14,6 +14,8 @@
 //  - Nothing is fetched (and no image shown) for a camera that is missing, not online (CAM-3), or —
 //    for a package ref — has no package camera. Those cells stay text-only, as do cells whose
 //    snapshot is loading, unavailable or failed.
+//  - The palette shows whatever the cache already holds for each entry and asks for nothing
+//    (`paletteSnapshots`).
 import type { Camera } from '@shared/ipc'
 import { isCameraOnline } from '@shared/models'
 import type { ListLoad, PackageSnapshots, ThumbnailEntry } from '../../state/camerasStore'
@@ -146,6 +148,22 @@ export function editorRetryPlan(
   return { cameraIds, packageIds }
 }
 
+/**
+ * The cached image for one camera ref, or `null` when there is none to draw: the camera is missing,
+ * offline or (for a package ref) has no package camera, or its snapshot is not `ready`.
+ */
+export function refSnapshot(
+  ref: string,
+  cameras: readonly Camera[],
+  entries: Readonly<Record<string, ThumbnailEntry>>,
+  packages: PackageSnapshots,
+): ReadySnapshot | null {
+  const slot = snapshotSlot(ref, cameras)
+  if (slot === null) return null
+  const entry = slot.packageChannel ? packages[slot.cameraId] : entries[slot.cameraId]
+  return entry?.status === 'ready' ? entry : null
+}
+
 /** The image a cell shows behind its name, or `null` for a text-only cell. */
 export function cellSnapshot(
   cell: { readonly cameraIds: readonly string[] },
@@ -154,9 +172,25 @@ export function cellSnapshot(
   packages: PackageSnapshots,
 ): ReadySnapshot | null {
   const ref = cellShownRef(cell)
-  if (ref === null) return null
-  const slot = snapshotSlot(ref, cameras)
-  if (slot === null) return null
-  const entry = slot.packageChannel ? packages[slot.cameraId] : entries[slot.cameraId]
-  return entry?.status === 'ready' ? entry : null
+  return ref === null ? null : refSnapshot(ref, cameras, entries, packages)
+}
+
+/**
+ * The palette's thumbnails (UX polish 2026-11-17, VIEW-3): for each palette ref that has a cached
+ * image, that image. **Read-only on the cache**: nothing is fetched for the palette, so an entry
+ * has a picture only once something else put it there — the Cameras tab's load, or the editor's
+ * own fetch for a cell the camera heads ({@link editorSnapshotPlan}). The rest get an icon tile.
+ */
+export function paletteSnapshots(
+  refs: readonly string[],
+  cameras: readonly Camera[],
+  entries: Readonly<Record<string, ThumbnailEntry>>,
+  packages: PackageSnapshots,
+): ReadonlyMap<string, ReadySnapshot> {
+  const out = new Map<string, ReadySnapshot>()
+  for (const ref of refs) {
+    const image = refSnapshot(ref, cameras, entries, packages)
+    if (image !== null) out.set(ref, image)
+  }
+  return out
 }

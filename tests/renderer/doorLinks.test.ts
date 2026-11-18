@@ -1,30 +1,37 @@
-// P5.3 (DOOR-1, DOOR-2): the door-link card's rows, tested where they live.
+// P5.3 (DOOR-1, DOOR-2): the Door links card's door cards, tested where they live.
 //
 // Like settingsForm.ts, the card's component cannot be tested here (no jsdom, vitest.config.mts), so
-// every rule about which rows exist, what they say and what a change sends is in doorLinks.ts. The
-// one that matters most is rule 1: a stored link is never pruned — not by a failed list, not by an
-// empty one, not by a door or a camera the app cannot see right now.
-import { CameraSchema, DoorSchema, type Camera, type Door } from '@shared/models'
-import { SettingsSchema } from '@shared/models'
+// every rule about which door cards exist, what is in them and what a change sends is in
+// doorLinks.ts. The one that matters most is rule 1: a stored link is never pruned — not by a
+// failed list, not by an empty one, not by a door or a camera the app cannot see right now.
+import { CameraSchema, DoorSchema, SettingsSchema, type Camera, type Door } from '@shared/models'
 import type { IpcError, SecretsStored } from '@shared/ipc'
 import { sortByLabel } from '@shared/cameraOrder'
 import { describe, expect, it } from 'vitest'
 import {
-  buildDoorLinkRows,
+  addCameraOptions,
+  addDoorOptions,
+  buildDoorCards,
+  cameraListNotice,
+  domId,
   doorLabel,
   doorListHint,
+  doorListKey,
   doorListNotice,
   doorsSelectable,
+  doorTitle,
+  addCameraPlaceholder,
+  linkCamera,
   NO_HUB_SUFFIX,
-  NOT_LINKED,
-  sameLink,
-  sortedDoors,
-  UNKNOWN_CAMERA_LABEL,
-  cameraListNotice,
-  doorLinkFieldId,
-  doorListKey,
+  pruneAddedDoors,
+  removeDoorAction,
+  withAddedDoor,
+  withoutAddedDoor,
   notLoadedCameraLabel,
-  withLink,
+  removeDoor,
+  sortedDoors,
+  unknownCameraLabel,
+  unlinkCamera,
   type DoorListState,
 } from '../../src/renderer/src/features/settings/doorLinks'
 
@@ -53,6 +60,7 @@ const error = (kind: IpcError['kind'], message = 'it failed'): IpcError => ({
 
 const FRONT = door('d-front', { name: 'Front', fullName: 'Ground Floor - Front Door' })
 const GARAGE = door('d-garage', { name: 'Garage', fullName: 'Ground Floor - Garage' })
+const SIDE = door('d-side', { fullName: 'Side Gate', boundToHub: false })
 const loaded = (...doors: Door[]): DoorListState => ({ state: 'loaded', doors })
 const LOADING: DoorListState = { state: 'loading' }
 const FAILED: DoorListState = { state: 'failed', error: error('network') }
@@ -61,23 +69,22 @@ const DRIVEWAY = camera('cam-drive', 'Driveway')
 const PORCH = camera('cam-porch', 'Porch', { hasPackageCamera: true })
 const CAM10 = camera('cam-10', 'Cam 10')
 const CAM2 = camera('cam-2', 'Cam 2')
+const ALL = [PORCH, CAM10, DRIVEWAY, CAM2]
 
-describe('doorLabel', () => {
+describe('door names', () => {
   it('uses full_name, then name, then the id', () => {
+    expect(doorTitle(FRONT)).toBe('Ground Floor - Front Door')
+    expect(doorTitle(door('x', { fullName: '  ', name: 'Back' }))).toBe('Back')
+    expect(doorTitle(door('x', { fullName: '', name: '' }))).toBe('x')
+  })
+
+  it('flags a door with no hub in the dropdown label, not in its title', () => {
+    expect(doorTitle(SIDE)).toBe('Side Gate')
+    expect(doorLabel(SIDE)).toBe(`Side Gate${NO_HUB_SUFFIX}`)
     expect(doorLabel(FRONT)).toBe('Ground Floor - Front Door')
-    expect(doorLabel(door('x', { fullName: '  ', name: 'Back' }))).toBe('Back')
-    expect(doorLabel(door('x', { fullName: '', name: '' }))).toBe('x')
   })
 
-  it('labels a door with no hub as unable to unlock remotely, but keeps it', () => {
-    const noHub = door('x', { fullName: 'Side Gate', boundToHub: false })
-    expect(doorLabel(noHub)).toBe(`Side Gate${NO_HUB_SUFFIX}`)
-    expect(NO_HUB_SUFFIX).toMatch(/remote unlock unavailable/)
-  })
-})
-
-describe('sortedDoors', () => {
-  it('sorts by label with numbers as numbers, keeping ties in console order', () => {
+  it('sorts doors by name with numbers as numbers, ties in console order', () => {
     const d10 = door('a', { fullName: 'Door 10' })
     const d2 = door('b', { fullName: 'Door 2' })
     const twinA = door('c', { fullName: 'Twin' })
@@ -86,178 +93,219 @@ describe('sortedDoors', () => {
   })
 })
 
-describe('buildDoorLinkRows', () => {
-  it('has one row per inventory camera, in camera-list order', () => {
-    const rows = buildDoorLinkRows([PORCH, CAM10, DRIVEWAY, CAM2], {}, loaded(FRONT))
-    expect(rows.map((row) => row.cameraLabel)).toEqual(['Cam 2', 'Cam 10', 'Driveway', 'Porch'])
-    expect(rows.every((row) => row.camera === 'inventory' && row.status === 'unlinked')).toBe(true)
+describe('buildDoorCards', () => {
+  it('has no cards with no links and nothing added', () => {
+    expect(buildDoorCards(ALL, {}, loaded(FRONT, GARAGE))).toEqual([])
   })
 
-  it('gives a doorbell one row: its package channel shares the link (CAM-4)', () => {
-    const rows = buildDoorLinkRows([PORCH], { 'cam-porch': 'd-front' }, loaded(FRONT))
-    expect(rows).toHaveLength(1)
-    expect(rows[0]).toMatchObject({ cameraId: 'cam-porch', doorId: 'd-front', status: 'linked' })
+  it('groups linked cameras under their door, in camera-list order', () => {
+    const links = { 'cam-drive': 'd-front', 'cam-10': 'd-front', 'cam-2': 'd-front' }
+    const [card] = buildDoorCards(ALL, links, loaded(FRONT))
+    expect(card).toMatchObject({
+      doorId: 'd-front',
+      kind: 'known',
+      title: 'Ground Floor - Front Door',
+      noHub: false,
+    })
+    expect(card?.cameras.map((c) => c.label)).toEqual(['Cam 2', 'Cam 10', 'Driveway'])
+    expect(card?.cameras.every((c) => c.kind === 'inventory')).toBe(true)
   })
 
-  it('falls back to the model, then the id, for a camera with no name (CAM-1)', () => {
-    const rows = buildDoorLinkRows(
-      [camera('cam-x', null, { model: 'G4 Doorbell' }), camera('cam-y', null)],
-      {},
-      LOADING,
-    )
-    expect(rows.map((row) => row.cameraLabel)).toEqual(['cam-y', 'G4 Doorbell'])
-  })
-
-  it('offers "Not linked" first and every door by label, no-hub doors included', () => {
-    const side = door('d-side', { fullName: 'Side Gate', boundToHub: false })
-    const [row] = buildDoorLinkRows([DRIVEWAY], {}, loaded(side, GARAGE, FRONT))
-    expect(row?.options).toEqual([
-      { value: NOT_LINKED, label: 'Not linked' },
-      { value: 'd-front', label: 'Ground Floor - Front Door' },
-      { value: 'd-garage', label: 'Ground Floor - Garage' },
-      { value: 'd-side', label: `Side Gate${NO_HUB_SUFFIX}` },
-    ])
-    expect(row?.selectable).toBe(true)
-    expect(row?.unlinkButton).toBe(false)
-  })
-
-  it('lets several cameras link to the same door', () => {
-    const rows = buildDoorLinkRows(
-      [DRIVEWAY, PORCH],
-      { 'cam-drive': 'd-front', 'cam-porch': 'd-front' },
-      loaded(FRONT),
-    )
-    expect(rows.map((row) => [row.status, row.doorLabel])).toEqual([
-      ['linked', 'Ground Floor - Front Door'],
-      ['linked', 'Ground Floor - Front Door'],
+  it('orders known doors by name, then unknown doors by id', () => {
+    const links = {
+      'cam-drive': 'd-garage',
+      'cam-porch': 'zz-gone',
+      'cam-10': 'aa-gone',
+      'cam-2': 'd-front',
+    }
+    const cards = buildDoorCards(ALL, links, loaded(GARAGE, FRONT))
+    expect(cards.map((card) => [card.doorId, card.kind])).toEqual([
+      ['d-front', 'known'],
+      ['d-garage', 'known'],
+      ['aa-gone', 'unknown'],
+      ['zz-gone', 'unknown'],
     ])
   })
 
-  it('shows a stored door the loaded list lacks as "Unknown door", still selected', () => {
-    const [row] = buildDoorLinkRows([DRIVEWAY], { 'cam-drive': 'd-gone' }, loaded(FRONT))
-    expect(row).toMatchObject({
+  it('gives a doorbell one entry: its package channel shares the door (CAM-4)', () => {
+    const [card] = buildDoorCards([PORCH], { 'cam-porch': 'd-front' }, loaded(FRONT))
+    expect(card?.cameras).toEqual([{ cameraId: 'cam-porch', label: 'Porch', kind: 'inventory' }])
+  })
+
+  it('marks a door with no hub, and still lets cameras be added to it', () => {
+    const [card] = buildDoorCards(ALL, { 'cam-drive': 'd-side' }, loaded(SIDE))
+    // `known`, so Add camera applies.
+    expect(card).toMatchObject({ title: 'Side Gate', noHub: true, kind: 'known' })
+  })
+
+  it('keeps a door the loaded list lacks as "Unknown door", with no Add camera', () => {
+    const [card] = buildDoorCards(ALL, { 'cam-drive': 'd-gone' }, loaded(FRONT))
+    expect(card).toMatchObject({
       doorId: 'd-gone',
-      status: 'unknown-door',
-      doorLabel: 'Unknown door (d-gone)',
-      selectable: true,
-      // "Not linked" in the select is the way to unlink it.
-      unlinkButton: false,
+      kind: 'unknown',
+      title: 'Unknown door (d-gone)',
     })
-    // Among the options, so the select can show it as the current value.
-    expect(row?.options?.map((option) => option.value)).toEqual([NOT_LINKED, 'd-gone', 'd-front'])
+    expect(card?.cameras.map((c) => c.cameraId)).toEqual(['cam-drive'])
   })
 
-  it('keeps every link through a failed list, with selects disabled and an Unlink button', () => {
-    const links = { 'cam-drive': 'd-front', 'cam-gone': 'd-garage' }
-    const rows = buildDoorLinkRows([DRIVEWAY, PORCH], links, FAILED)
-    expect(rows.map((row) => [row.cameraId, row.doorId, row.status])).toEqual([
-      ['cam-drive', 'd-front', 'pending'],
-      ['cam-porch', null, 'unlinked'],
-      ['cam-gone', 'd-garage', 'pending'],
-    ])
-    expect(rows.every((row) => !row.selectable)).toBe(true)
-    // Only a linked row has something to unlink.
-    expect(rows.map((row) => row.unlinkButton)).toEqual([true, false, true])
-    // The stored door is listed by id, since nothing else is known about it.
-    expect(rows[0]?.doorLabel).toBe('Door d-front')
-    expect(rows[0]?.options).toEqual([
-      { value: NOT_LINKED, label: 'Not linked' },
-      { value: 'd-front', label: 'Door d-front' },
+  it('keeps every link through a failed, loading or empty list, as "Door <id>" cards', () => {
+    const links = { 'cam-drive': 'd-front', 'cam-porch': 'd-garage' }
+    for (const list of [FAILED, LOADING]) {
+      const cards = buildDoorCards(ALL, links, list)
+      expect(cards.map((card) => [card.title, card.kind])).toEqual([
+        ['Door d-front', 'pending'],
+        ['Door d-garage', 'pending'],
+      ])
+    }
+    // An empty list has loaded, so these doors are known to be missing from it.
+    const empty = buildDoorCards(ALL, links, loaded())
+    expect(empty.map((card) => [card.title, card.kind])).toEqual([
+      ['Unknown door (d-front)', 'unknown'],
+      ['Unknown door (d-garage)', 'unknown'],
     ])
   })
 
-  it('treats a loading list the same way: links kept, nothing to pick yet', () => {
-    const [row] = buildDoorLinkRows([DRIVEWAY], { 'cam-drive': 'd-front' }, LOADING)
-    expect(row).toMatchObject({ status: 'pending', selectable: false, unlinkButton: true })
+  it('lists a camera the inventory lacks by id, after the known ones', () => {
+    const links = { 'cam-z': 'd-front', 'cam-a': 'd-front', 'cam-drive': 'd-front' }
+    const [card] = buildDoorCards([DRIVEWAY], links, loaded(FRONT))
+    expect(card?.cameras).toEqual([
+      { cameraId: 'cam-drive', label: 'Driveway', kind: 'inventory' },
+      { cameraId: 'cam-a', label: 'Unknown camera (cam-a)', kind: 'unknown' },
+      { cameraId: 'cam-z', label: 'Unknown camera (cam-z)', kind: 'unknown' },
+    ])
   })
 
-  it('keeps links through an empty list, as unknown doors that can be unlinked', () => {
-    const [row] = buildDoorLinkRows([DRIVEWAY], { 'cam-drive': 'd-front' }, loaded())
-    expect(row).toMatchObject({
-      status: 'unknown-door',
-      doorLabel: 'Unknown door (d-front)',
-      selectable: false,
-      unlinkButton: true,
-    })
-  })
-
-  it('gives a link whose camera is not in the inventory its own row, after the cameras', () => {
-    const links = { 'cam-z': 'd-front', 'cam-a': 'd-gone', 'cam-drive': 'd-garage' }
-    const rows = buildDoorLinkRows([DRIVEWAY], links, loaded(FRONT, GARAGE))
-    expect(rows.map((row) => row.cameraId)).toEqual(['cam-drive', 'cam-a', 'cam-z'])
-    expect(rows[1]).toMatchObject({
-      cameraLabel: UNKNOWN_CAMERA_LABEL,
-      camera: 'unknown',
-      status: 'unknown-door',
-      doorLabel: 'Unknown door (d-gone)',
-      options: null,
-      selectable: false,
-      unlinkButton: true,
-    })
-    expect(rows[2]).toMatchObject({ status: 'linked', doorLabel: 'Ground Floor - Front Door' })
-  })
-
-  it('lists stored links before the console is connected, as not loaded yet, not unknown', () => {
-    const rows = buildDoorLinkRows([], { 'cam-b': 'd-front', 'cam-a': 'd-garage' }, LOADING)
-    expect(rows).toEqual([
-      expect.objectContaining({
-        cameraId: 'cam-a',
-        cameraLabel: notLoadedCameraLabel('cam-a'),
-        camera: 'not-loaded',
-        unlinkButton: true,
-      }),
-      expect.objectContaining({ cameraId: 'cam-b', camera: 'not-loaded' }),
+  it('says "not loaded yet", not unknown, while the inventory is empty', () => {
+    const [card] = buildDoorCards([], { 'cam-a': 'd-front' }, loaded(FRONT))
+    expect(card?.cameras).toEqual([
+      { cameraId: 'cam-a', label: notLoadedCameraLabel('cam-a'), kind: 'not-loaded' },
     ])
     expect(notLoadedCameraLabel('cam-a')).toBe('Camera cam-a — not loaded yet')
-    expect(rows.some((row) => row.cameraLabel === UNKNOWN_CAMERA_LABEL)).toBe(false)
-    expect(buildDoorLinkRows([], {}, loaded(FRONT))).toEqual([])
+    expect(unknownCameraLabel('cam-a')).toBe('Unknown camera (cam-a)')
   })
 
-  it('calls a camera unknown only once there is an inventory it is missing from', () => {
-    const links = { 'cam-gone': 'd-front' }
-    expect(buildDoorLinkRows([], links, loaded(FRONT))[0]?.camera).toBe('not-loaded')
-    expect(buildDoorLinkRows([DRIVEWAY], links, loaded(FRONT))[1]).toMatchObject({
-      camera: 'unknown',
-      cameraLabel: UNKNOWN_CAMERA_LABEL,
-    })
+  it('shows an added door as an empty card until a camera is linked to it', () => {
+    const [card] = buildDoorCards(ALL, {}, loaded(FRONT, GARAGE), ['d-garage'])
+    expect(card).toMatchObject({ doorId: 'd-garage', kind: 'known', cameras: [] })
+    // Linked as well as added: one card, not two.
+    const both = buildDoorCards(ALL, { 'cam-2': 'd-garage' }, loaded(GARAGE), ['d-garage'])
+    expect(both).toHaveLength(1)
+  })
+
+  it('drops an added empty door the reloaded list lacks (it was never data), keeps it while loading', () => {
+    expect(buildDoorCards(ALL, {}, loaded(FRONT), ['d-garage'])).toEqual([])
+    expect(buildDoorCards(ALL, {}, LOADING, ['d-garage'])).toEqual([
+      expect.objectContaining({ doorId: 'd-garage', kind: 'pending', cameras: [] }),
+    ])
+  })
+
+  it('keeps a stored door as an empty card after its last camera is unlinked (added on unlink)', () => {
+    // What the card does on unlink: the door joins addedDoorIds, then the link goes.
+    const added = withAddedDoor([], 'd-front')
+    const [card] = buildDoorCards(
+      ALL,
+      unlinkCamera({ 'cam-2': 'd-front' }, 'cam-2'),
+      loaded(FRONT),
+      added,
+    )
+    expect(card).toMatchObject({ doorId: 'd-front', kind: 'known', cameras: [] })
   })
 
   it('does not read an inherited property as a link', () => {
-    const [row] = buildDoorLinkRows([camera('constructor', 'Odd id')], {}, loaded(FRONT))
-    expect(row?.doorId).toBeNull()
+    expect(buildDoorCards([camera('constructor', 'Odd id')], {}, loaded(FRONT))).toEqual([])
   })
 })
 
-describe('withLink / sameLink', () => {
-  const links = { 'cam-1': 'd-front', 'cam-2': 'd-garage' }
-
-  it('links, relinks and keeps every other link', () => {
-    expect(withLink(links, 'cam-3', 'd-front')).toEqual({ ...links, 'cam-3': 'd-front' })
-    expect(withLink(links, 'cam-1', 'd-garage')).toEqual({
-      'cam-1': 'd-garage',
-      'cam-2': 'd-garage',
-    })
+describe('the Add dropdowns', () => {
+  it('offers the loaded doors without a card, by name, no-hub label kept', () => {
+    const list = loaded(SIDE, GARAGE, FRONT)
+    const cards = buildDoorCards(ALL, { 'cam-2': 'd-garage' }, list)
+    expect(addDoorOptions(list, cards)).toEqual([
+      { value: 'd-front', label: 'Ground Floor - Front Door' },
+      { value: 'd-side', label: `Side Gate${NO_HUB_SUFFIX}` },
+    ])
+    // An empty added card is a card too, so it is not offered again.
+    const added = buildDoorCards(ALL, {}, list, ['d-front'])
+    expect(addDoorOptions(list, added).map((o) => o.value)).toEqual(['d-garage', 'd-side'])
   })
 
-  it('removes the key on unlink, by "Not linked" or by the button', () => {
-    expect(withLink(links, 'cam-1', NOT_LINKED)).toEqual({ 'cam-2': 'd-garage' })
-    expect(withLink(links, 'cam-1', null)).toEqual({ 'cam-2': 'd-garage' })
-    expect(Object.keys(withLink(links, 'cam-1', null))).not.toContain('cam-1')
+  it('offers no doors until a list has loaded', () => {
+    expect(addDoorOptions(LOADING, [])).toEqual([])
+    expect(addDoorOptions(FAILED, [])).toEqual([])
+    expect(addDoorOptions(loaded(), [])).toEqual([])
+  })
+
+  it('says why Add camera is empty: cameras not loaded, or none unlinked', () => {
+    expect(addCameraPlaceholder([], [])).toBe('Cameras not loaded yet')
+    expect(addCameraPlaceholder([DRIVEWAY], [])).toBe('No unlinked cameras')
+    expect(addCameraPlaceholder([DRIVEWAY], addCameraOptions([DRIVEWAY], {}))).toMatch(/Choose/)
+  })
+
+  it('offers only the cameras linked to no door, in camera-list order', () => {
+    expect(addCameraOptions(ALL, { 'cam-10': 'd-front', 'cam-x': 'd-front' })).toEqual([
+      { value: 'cam-2', label: 'Cam 2' },
+      { value: 'cam-drive', label: 'Driveway' },
+      { value: 'cam-porch', label: 'Porch' },
+    ])
+    expect(addCameraOptions([], {})).toEqual([])
+  })
+})
+
+describe('added doors (session-only empty cards)', () => {
+  it('prunes the ids a loaded list does not have, so they cannot come back', () => {
+    const added = ['d-front', 'd-gone']
+    const pruned = pruneAddedDoors(added, loaded(FRONT))
+    expect(pruned).toEqual(['d-front'])
+    // Gone for good: a later loading state or reload does not revive it.
+    expect(buildDoorCards(ALL, {}, LOADING, pruned).map((card) => card.doorId)).toEqual(['d-front'])
+  })
+
+  it('keeps them all while the list is loading or failed, and returns the same array', () => {
+    const added = ['d-front', 'd-gone']
+    expect(pruneAddedDoors(added, LOADING)).toBe(added)
+    expect(pruneAddedDoors(added, FAILED)).toBe(added)
+    expect(pruneAddedDoors(added, loaded(FRONT, door('d-gone')))).toBe(added)
+  })
+
+  it('adds and forgets a door without duplicates or needless copies', () => {
+    const added = ['d-front']
+    expect(withAddedDoor(added, 'd-front')).toBe(added)
+    expect(withAddedDoor(added, 'd-garage')).toEqual(['d-front', 'd-garage'])
+    expect(withoutAddedDoor(added, 'd-front')).toEqual([])
+    expect(withoutAddedDoor(added, 'd-garage')).toBe(added)
+  })
+
+  it('decides Remove door from the links as stored: save while a camera links to it', () => {
+    expect(removeDoorAction({ 'cam-1': 'd-front' }, 'd-front')).toBe('save')
+    expect(removeDoorAction({ 'cam-1': 'd-garage' }, 'd-front')).toBe('forget')
+    expect(removeDoorAction({}, 'd-front')).toBe('forget')
+  })
+})
+
+describe('link changes', () => {
+  const links = { 'cam-1': 'd-front', 'cam-2': 'd-front', 'cam-3': 'd-garage' }
+
+  it('links a camera, keeping every other link', () => {
+    expect(linkCamera(links, 'cam-4', 'd-garage')).toEqual({ ...links, 'cam-4': 'd-garage' })
+  })
+
+  it('unlinks one camera by removing its key', () => {
+    const next = unlinkCamera(links, 'cam-1')
+    expect(next).toEqual({ 'cam-2': 'd-front', 'cam-3': 'd-garage' })
+    expect(Object.keys(next)).not.toContain('cam-1')
+  })
+
+  it('removes a door by unlinking all its cameras in one map', () => {
+    expect(removeDoor(links, 'd-front')).toEqual({ 'cam-3': 'd-garage' })
+    expect(removeDoor(links, 'd-none')).toEqual(links)
   })
 
   it('never mutates the map it was given', () => {
     const before = structuredClone(links)
-    withLink(links, 'cam-1', null)
-    withLink(links, 'cam-9', 'd-front')
+    linkCamera(links, 'cam-9', 'd-front')
+    unlinkCamera(links, 'cam-1')
+    removeDoor(links, 'd-front')
     expect(links).toEqual(before)
-  })
-
-  it('tells a no-op change apart, so the card skips the save', () => {
-    expect(sameLink(links, 'cam-1', 'd-front')).toBe(true)
-    expect(sameLink(links, 'cam-1', 'd-garage')).toBe(false)
-    expect(sameLink(links, 'cam-3', NOT_LINKED)).toBe(true)
-    expect(sameLink(links, 'cam-3', null)).toBe(true)
-    expect(sameLink(links, 'cam-1', NOT_LINKED)).toBe(false)
   })
 })
 
@@ -297,23 +345,23 @@ describe('sortByLabel (shared with sortCameras)', () => {
   })
 })
 
-describe('doorLinkFieldId', () => {
-  it('builds a DOM id from the camera id, not the row position', () => {
-    expect(doorLinkFieldId('65a1f0c2')).toBe('door-link-65a1f0c2')
+describe('domId', () => {
+  it('builds a DOM id from the entity id, not a position', () => {
+    expect(domId('door-card', '65a1f0c2')).toBe('door-card-65a1f0c2')
   })
 
-  it('escapes everything else, one-to-one, so two cameras never share an id', () => {
+  it('escapes everything else, one-to-one, so two ids never collide', () => {
     const ids = ['a b', 'a_b', 'a_20_b', 'a.b', 'a:b', 'ä']
-    const dom = ids.map(doorLinkFieldId)
+    const dom = ids.map((id) => domId('x', id))
     expect(new Set(dom).size).toBe(ids.length)
-    for (const id of dom) expect(id).toMatch(/^door-link-[A-Za-z0-9_]+$/)
+    for (const id of dom) expect(id).toMatch(/^x-[A-Za-z0-9_]+$/)
   })
 })
 
 describe('cameraListNotice', () => {
   it('asks to connect while there is no inventory, and says the links are kept', () => {
     expect(cameraListNotice([], {})).toBe('Connect to the console to list cameras.')
-    expect(cameraListNotice([], { 'cam-1': 'd-front' })).toMatch(/kept.*camera id/)
+    expect(cameraListNotice([], { 'cam-1': 'd-front' })).toMatch(/kept.*camera ids/)
     expect(cameraListNotice([DRIVEWAY], { 'cam-1': 'd-front' })).toBeNull()
   })
 })

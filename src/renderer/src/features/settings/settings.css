@@ -138,13 +138,83 @@
   min-width: 10rem;
 }
 
-/* DOOR-2's per-camera door select: room for a "Floor - Door" name, never wider than the card. */
-.settings__doorSelect {
-  min-width: 14rem;
-  max-width: 100%;
+/*
+ * DOOR-2's door cards (P5.3, user request 2026-11-17): one small card per door with its cameras
+ * inside, flowing across the width and wrapping. `min(15rem, 100%)` lets a card shrink to the card
+ * it sits in at narrow widths instead of overflowing it.
+ */
+.settings__doorCards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(15rem, 100%), 1fr));
+  gap: 0.75rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
 }
 
-/* The door list's own state (loading, empty, failed + Retry), above the rows it governs. */
+.settings__doorCard {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  min-width: 0;
+  padding: 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-sunken);
+}
+
+.settings__doorCardHead {
+  align-items: flex-start;
+}
+
+.settings__doorTitle {
+  margin: 0;
+  font-size: 0.95rem;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.settings__doorCameras {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+/* One linked camera: its name and the ✕ that unlinks it. */
+.settings__doorCamera {
+  padding: 0.15rem 0.15rem 0.15rem 0.5rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-raised);
+  overflow-wrap: anywhere;
+}
+
+/* An "Add …" control: the pending-choice select and its Add button. */
+.settings__doorAdd {
+  max-width: 28rem;
+}
+
+/* The select takes the room the Add button leaves, never more than the card. */
+.settings__doorSelect {
+  flex: 1;
+  min-width: 0;
+}
+
+/*
+ * A control that cannot act right now but keeps the focus (a save in flight, nothing chosen): it
+ * looks like `.button:disabled` and ignores the pointer, while the keyboard press is ignored in
+ * code. `disabled` itself would throw the focus to the page body.
+ */
+.settings .button[aria-disabled='true'] {
+  opacity: 0.45;
+  cursor: default;
+  pointer-events: none;
+}
+
+/* The door list's own state (loading, empty, failed + Retry), above the cards it governs. */
 .settings__doorNotice {
   display: flex;
   flex-direction: column;

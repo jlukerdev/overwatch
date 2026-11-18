@@ -1,37 +1,307 @@
-// Settings' door-link card (P5.3; DOOR-1, DOOR-2), as pure functions over plain data.
+// Settings' Door links card (P5.3; DOOR-1, DOOR-2), as pure functions over plain data.
 //
-// The card is three inputs — the camera inventory, the stored camera → door map and wherever the
-// door list read has got to — and one output: the rows it draws. Everything that can be *wrong*
-// about that mapping lives here rather than in the component, for the same reason as
-// ./settingsForm.ts: the project has no jsdom, so a rule inside an onChange is a rule no test can
-// reach.
+// The card shows **one small card per door, with the cameras linked to it inside** (user request
+// 2026-11-17: a per-camera list grows too long on a wall with many cameras). Its inputs are the
+// camera inventory, the stored camera → door map, wherever the door list read has got to, and the
+// doors the user has added this session without linking a camera yet; its output is the door cards
+// and the options of the two "Add" dropdowns. Everything that can be *wrong* about that mapping
+// lives here rather than in the component, for the same reason as ./settingsForm.ts: the project
+// has no jsdom, so a rule inside an onChange is a rule no test can reach.
 //
-// Three rules this module keeps:
+// Four rules this module keeps:
 //
 //  1. **A stored link is never pruned.** A door list that failed, is still loading, came back empty
-//     or simply does not have a door any more must not cost the user a link: the row stays, shows
-//     what is known about the door ("Unknown door", or just its id while the list is not in), and
-//     only an explicit unlink removes it. The same for a link whose camera is not in the inventory
-//     (not connected yet, or the camera was removed): it gets its own row with an Unlink button.
-//  2. **One row per camera id.** The link is per camera (SPEC §6 `doorLinks`), so a doorbell's
-//     package channel (CAM-4) is not a row of its own — it shares the doorbell's link, which is
-//     what P5.4's unlock control reads for a package cell.
-//  3. **A door that cannot be unlocked remotely stays selectable**, labelled as such. Whether the
+//     or simply does not have a door any more must not cost the user a link: the door keeps its
+//     card, labelled with what is known about it ("Unknown door (<id>)", or "Door <id>" while the
+//     list is not in), and only an explicit unlink removes a camera from it. The same for a camera
+//     the inventory does not have: it stays in its door's card, by id.
+//  2. **The persisted model is unchanged**: `doorLinks` is still camera → door, one door per
+//     camera. A door card with no camera in it exists only as session UI state (`addedDoorIds`):
+//     the step between "Add door" and "Add camera", or what is left after its last camera was
+//     unlinked, until the user removes it or leaves Settings. Nothing is saved for it. So an
+//     empty door the reloaded list no longer has is pruned from that state (`pruneAddedDoors`):
+//     it was never data.
+//  3. **One entry per camera id.** The link is per camera (SPEC §6), so a doorbell's package
+//     channel (CAM-4) is not an entry of its own — it shares the doorbell's link, which is what
+//     P5.4's unlock control reads for a package cell.
+//  4. **A door that cannot be unlocked remotely can still be added**, labelled as such. Whether the
 //     door is bound to a hub (`is_bind_hub`, unverified, OS-1) can change on the console, and the
 //     link is the user's statement of which door the camera watches; DOOR-3's control is where
 //     "this door cannot be unlocked from here" is enforced.
 import type { Camera, Door, DoorLinks, IpcError, SecretsStored, Settings } from '@shared/ipc'
 import { cameraDisplayName, sortByLabel, sortCameras } from '@shared/cameraOrder'
 
-/** The `<select>` value that means "no link". Door ids are non-empty (DoorLinksSchema), so it cannot collide. */
-export const NOT_LINKED = ''
+/** The `<select>` value of an "Add …" dropdown's placeholder. Ids are non-empty, so it cannot collide. */
+export const PLACEHOLDER = ''
+
+/** Where the card's `GET /doors` has got to. */
+export type DoorListState =
+  | { readonly state: 'loading' }
+  | { readonly state: 'failed'; readonly error: IpcError }
+  | { readonly state: 'loaded'; readonly doors: readonly Door[] }
+
+export interface DropdownOption {
+  readonly value: string
+  readonly label: string
+}
+
+/**
+ * What a door card knows about its door:
+ * - `known` — the door is in the loaded list;
+ * - `unknown` — the list loaded and does not have it (deleted, or renumbered on the console). Its
+ *   cameras can be unlinked, but none can be added;
+ * - `pending` — the list is loading, failed or not read yet, so nothing is known beyond the id.
+ */
+export type DoorCardKind = 'known' | 'unknown' | 'pending'
+
+/**
+ * Where a linked camera stands:
+ * - `inventory` — in `AppState.cameras`, named by CAM-1's fallback chain;
+ * - `unknown` — the inventory has loaded (it is not empty) and does not have this camera;
+ * - `not-loaded` — the inventory is empty, i.e. the console has not been connected yet this session,
+ *   so nothing can be said about the camera beyond its id. Not called "unknown": it most likely
+ *   exists and simply has not been read.
+ */
+export type CardCameraKind = 'inventory' | 'unknown' | 'not-loaded'
+
+export interface DoorCardCamera {
+  readonly cameraId: string
+  readonly label: string
+  readonly kind: CardCameraKind
+}
+
+export interface DoorCard {
+  readonly doorId: string
+  readonly kind: DoorCardKind
+  /** The card's heading: the door's name, or what stands in for it (`unknown` / `pending`). */
+  readonly title: string
+  /** True for a known door with no Door Hub: the heading carries the "remote unlock unavailable" note. */
+  readonly noHub: boolean
+  /**
+   * Inventory cameras in camera-list order, then unknown / not-loaded ones by id. Cameras can be
+   * added only to a `known` door — which implies a loaded list that has it.
+   */
+  readonly cameras: readonly DoorCardCamera[]
+}
+
+export const NO_HUB_NOTE = 'No hub, remote unlock unavailable'
+export const NO_HUB_SUFFIX = ' — no hub, remote unlock unavailable'
+
+/** A door's name: `full_name`, then `name`, then the id. */
+export function doorTitle(door: Door): string {
+  const full = door.fullName.trim()
+  const short = door.name.trim()
+  return full !== '' ? full : short !== '' ? short : door.id
+}
+
+/** A door as the Add door dropdown lists it: its name, flagged when it has no hub. */
+export function doorLabel(door: Door): string {
+  return door.boundToHub ? doorTitle(door) : `${doorTitle(door)}${NO_HUB_SUFFIX}`
+}
+
+export function unknownDoorTitle(doorId: string): string {
+  return `Unknown door (${doorId})`
+}
+
+export function pendingDoorTitle(doorId: string): string {
+  return `Door ${doorId}`
+}
+
+export function unknownCameraLabel(cameraId: string): string {
+  return `Unknown camera (${cameraId})`
+}
+
+export function notLoadedCameraLabel(cameraId: string): string {
+  return `Camera ${cameraId} — not loaded yet`
+}
+
+/** The doors in the order the card lists them: by name, numbers as numbers, ties in console order. */
+export function sortedDoors(doors: readonly Door[]): Door[] {
+  return sortByLabel(doors, doorTitle)
+}
+
+/** True when the list has loaded with at least one door, i.e. there is something to add. */
+export function doorsSelectable(list: DoorListState): boolean {
+  return list.state === 'loaded' && list.doors.length > 0
+}
+
+/**
+ * Every door card, in order: the known doors by name (`sortByLabel`), then the unknown and pending
+ * ones by id. A door gets a card when at least one camera links to it (rule 1, whatever the list
+ * says) or when it is in `addedDoorIds` and the list can vouch for it — loaded and containing it,
+ * or not loaded at all, in which case it waits as a pending card (rule 2).
+ */
+export function buildDoorCards(
+  cameras: readonly Camera[],
+  links: DoorLinks,
+  list: DoorListState,
+  addedDoorIds: readonly string[] = [],
+): DoorCard[] {
+  const loaded = list.state === 'loaded' ? list.doors : null
+  const byId = new Map((loaded ?? []).map((door) => [door.id, door]))
+  const inventory = new Map(cameras.map((camera) => [camera.id, camera]))
+  const inventoryLoaded = cameras.length > 0
+
+  // Door id → its cameras, from the links (own keys only: `constructor` is not a camera).
+  const members = new Map<string, string[]>()
+  for (const [cameraId, doorId] of Object.entries(links)) {
+    const ids = members.get(doorId) ?? []
+    ids.push(cameraId)
+    members.set(doorId, ids)
+  }
+  for (const doorId of addedDoorIds) {
+    if (members.has(doorId)) continue
+    if (loaded !== null && !byId.has(doorId)) continue
+    members.set(doorId, [])
+  }
+
+  const cardCameras = (ids: readonly string[]): DoorCardCamera[] => {
+    const known = sortCameras(ids.flatMap((id) => inventory.get(id) ?? []))
+    const others = sortByLabel(
+      ids.filter((id) => !inventory.has(id)),
+      (id) => id,
+    )
+    return [
+      ...known.map((camera) => ({
+        cameraId: camera.id,
+        label: cameraDisplayName(camera),
+        kind: 'inventory' as const,
+      })),
+      ...others.map((cameraId) => ({
+        cameraId,
+        label: inventoryLoaded ? unknownCameraLabel(cameraId) : notLoadedCameraLabel(cameraId),
+        kind: inventoryLoaded ? ('unknown' as const) : ('not-loaded' as const),
+      })),
+    ]
+  }
+
+  const knownCards: DoorCard[] = []
+  const otherCards: DoorCard[] = []
+  for (const [doorId, ids] of members) {
+    const door = byId.get(doorId)
+    if (door !== undefined) {
+      knownCards.push({
+        doorId,
+        kind: 'known',
+        title: doorTitle(door),
+        noHub: !door.boundToHub,
+        cameras: cardCameras(ids),
+      })
+      continue
+    }
+    otherCards.push({
+      doorId,
+      kind: loaded === null ? 'pending' : 'unknown',
+      title: loaded === null ? pendingDoorTitle(doorId) : unknownDoorTitle(doorId),
+      noHub: false,
+      cameras: cardCameras(ids),
+    })
+  }
+  return [
+    ...sortByLabel(knownCards, (card) => card.title),
+    ...sortByLabel(otherCards, (card) => card.doorId),
+  ]
+}
+
+/** The Add door dropdown: every loaded door without a card yet, by name, no-hub doors flagged. */
+export function addDoorOptions(list: DoorListState, cards: readonly DoorCard[]): DropdownOption[] {
+  if (list.state !== 'loaded') return []
+  const shown = new Set(cards.map((card) => card.doorId))
+  return sortedDoors(list.doors)
+    .filter((door) => !shown.has(door.id))
+    .map((door) => ({ value: door.id, label: doorLabel(door) }))
+}
+
+/**
+ * The Add camera dropdown, the same for every card: the inventory cameras linked to **no** door
+ * (one door per camera), in camera-list order.
+ */
+export function addCameraOptions(cameras: readonly Camera[], links: DoorLinks): DropdownOption[] {
+  return sortCameras(cameras)
+    .filter((camera) => !Object.hasOwn(links, camera.id))
+    .map((camera) => ({ value: camera.id, label: cameraDisplayName(camera) }))
+}
+
+/**
+ * `addedDoorIds` after a door list landed: the doors a **loaded** list does not have are dropped,
+ * so an empty card for a door that has gone cannot come back on a later reload or while one is
+ * loading. A list that is loading or failed says nothing about which doors exist, so it keeps them
+ * all. The same array back when nothing changes, so React can skip the re-render.
+ */
+export function pruneAddedDoors(
+  addedDoorIds: readonly string[],
+  list: DoorListState,
+): readonly string[] {
+  if (list.state !== 'loaded') return addedDoorIds
+  const present = new Set(list.doors.map((door) => door.id))
+  const kept = addedDoorIds.filter((id) => present.has(id))
+  return kept.length === addedDoorIds.length ? addedDoorIds : kept
+}
+
+/** `addedDoorIds` with one more door (Add door, or a card whose cameras are being unlinked). */
+export function withAddedDoor(addedDoorIds: readonly string[], doorId: string): readonly string[] {
+  return addedDoorIds.includes(doorId) ? addedDoorIds : [...addedDoorIds, doorId]
+}
+
+/** `addedDoorIds` without a door (its card was removed). */
+export function withoutAddedDoor(
+  addedDoorIds: readonly string[],
+  doorId: string,
+): readonly string[] {
+  return addedDoorIds.includes(doorId) ? addedDoorIds.filter((id) => id !== doorId) : addedDoorIds
+}
+
+/**
+ * What Remove door does, decided from the links **as stored when the click happens**: `save` when
+ * any camera still links to the door (one save unlinks them all), `forget` when none does — the
+ * card is session state only, and there is nothing to write.
+ */
+export function removeDoorAction(links: DoorLinks, doorId: string): 'save' | 'forget' {
+  return Object.values(links).includes(doorId) ? 'save' : 'forget'
+}
+
+/** The Add camera placeholder: why it is empty when it is, otherwise the prompt. */
+export function addCameraPlaceholder(
+  cameras: readonly Camera[],
+  options: readonly DropdownOption[],
+): string {
+  if (cameras.length === 0) return 'Cameras not loaded yet'
+  return options.length === 0 ? 'No unlinked cameras' : 'Choose a camera…'
+}
+
+/** Links a camera to a door, replacing any link it had. A new map; every other link is kept. */
+export function linkCamera(links: DoorLinks, cameraId: string, doorId: string): DoorLinks {
+  return { ...links, [cameraId]: doorId }
+}
+
+/** Removes one camera's link. A new map; every other link is kept. */
+export function unlinkCamera(links: DoorLinks, cameraId: string): DoorLinks {
+  return Object.fromEntries(Object.entries(links).filter(([key]) => key !== cameraId))
+}
+
+/** Removes every camera's link to one door, in one map (so one save). Other doors are kept. */
+export function removeDoor(links: DoorLinks, doorId: string): DoorLinks {
+  return Object.fromEntries(Object.entries(links).filter(([, value]) => value !== doorId))
+}
+
+/**
+ * A DOM id built from an entity id rather than a position, so a control keeps its id (and its
+ * label association) when the cards around it change. Letters and digits pass through; anything
+ * else, `_` included, becomes `_<hex code>_`, which keeps the mapping one-to-one.
+ */
+export function domId(prefix: string, id: string): string {
+  const safe = Array.from(id, (char) =>
+    /^[A-Za-z0-9]$/.test(char) ? char : `_${(char.codePointAt(0) ?? 0).toString(16)}_`,
+  ).join('')
+  return `${prefix}-${safe}`
+}
 
 /**
  * What the door list depends on, as one string: the saved console host and Access API root (which
  * together decide the Access endpoint, SPEC §6), the accepted Access pin, and whether an Access
  * token is stored. SettingsPage keys the card on it, so a change to any of them throws the old list
- * away and reads the new endpoint's — door ids from one console must never be offered as links on
- * another, and an error the user has just fixed (a pin accepted, a token saved) must not linger.
+ * away and reads the new endpoint's — door ids from one console must never be offered on another,
+ * and an error the user has just fixed (a pin accepted, a token saved) must not linger.
  *
  * A token **replaced** by another keeps `accessToken: true` and so keeps the key: the renderer
  * cannot see that it changed (CON-2), and Refresh doors is there for that case.
@@ -45,214 +315,16 @@ export function doorListKey(settings: Settings, secretsStored: SecretsStored): s
   ])
 }
 
-/** Where the card's `GET /doors` has got to. */
-export type DoorListState =
-  | { readonly state: 'loading' }
-  | { readonly state: 'failed'; readonly error: IpcError }
-  | { readonly state: 'loaded'; readonly doors: readonly Door[] }
-
-export interface DoorOption {
-  readonly value: string
-  readonly label: string
-}
-
-/**
- * How a row's link reads:
- * - `unlinked` — no link stored;
- * - `linked` — the door is in the loaded list;
- * - `unknown-door` — the list loaded and that door is not in it (deleted, or renumbered on the
- *   console). Still selected, still stored, until the user unlinks it;
- * - `pending` — a link is stored but the list is loading or failed, so nothing is known about the
- *   door beyond its id.
- */
-export type LinkStatus = 'unlinked' | 'linked' | 'unknown-door' | 'pending'
-
-/**
- * Where a row's camera stands:
- * - `inventory` — in `AppState.cameras`, named by CAM-1's fallback chain;
- * - `unknown` — the inventory has loaded (it is not empty) and does not have this camera: removed
- *   from the console, or a link made against a different one;
- * - `not-loaded` — the inventory is empty, i.e. the console has not been connected yet this session,
- *   so nothing can be said about the camera beyond its id. Not called "unknown": it most likely
- *   exists and simply has not been read.
- */
-export type RowCamera = 'inventory' | 'unknown' | 'not-loaded'
-
-export interface DoorLinkRow {
-  readonly cameraId: string
-  /** The camera's display name (CAM-1's fallback chain), or the unknown / not-loaded label. */
-  readonly cameraLabel: string
-  readonly camera: RowCamera
-  /** The stored door id, or `null` when the camera is not linked. */
-  readonly doorId: string | null
-  readonly status: LinkStatus
-  /** What the row says the linked door is, or `null` when not linked. */
-  readonly doorLabel: string | null
-  /**
-   * The select's options, "Not linked" first, or `null` when the row has no select (an unknown
-   * camera: there is nothing to link it to, only a link to remove). The stored door is always among
-   * them, so the select can show it whatever the list's state.
-   */
-  readonly options: readonly DoorOption[] | null
-  /** The select may pick a door: only once a list with doors in it has loaded. */
-  readonly selectable: boolean
-  /** The row shows an Unlink button, for the cases its select cannot unlink (rule 1). */
-  readonly unlinkButton: boolean
-}
-
-export const UNKNOWN_CAMERA_LABEL = 'Unknown camera (not in the inventory)'
-
-/** The label for a stored link's camera while the inventory has not been read yet. */
-export function notLoadedCameraLabel(cameraId: string): string {
-  return `Camera ${cameraId} — not loaded yet`
-}
-export const NO_HUB_SUFFIX = ' — no hub, remote unlock unavailable'
-
-/** A door as the select shows it: `full_name`, then `name`, then the id; flagged when not hub-bound. */
-export function doorLabel(door: Door): string {
-  const full = door.fullName.trim()
-  const short = door.name.trim()
-  const base = full !== '' ? full : short !== '' ? short : door.id
-  return door.boundToHub ? base : `${base}${NO_HUB_SUFFIX}`
-}
-
-/** The label for a stored door id the loaded list does not have. */
-export function unknownDoorLabel(doorId: string): string {
-  return `Unknown door (${doorId})`
-}
-
-/** The label for a stored door id while the list is loading or failed: all that is known is the id. */
-export function pendingDoorLabel(doorId: string): string {
-  return `Door ${doorId}`
-}
-
-/** The doors in the order the select lists them: by label, numbers as numbers, ties in console order. */
-export function sortedDoors(doors: readonly Door[]): Door[] {
-  return sortByLabel(doors, doorLabel)
-}
-
-/** True when the list has loaded with at least one door, i.e. there is something to pick. */
-export function doorsSelectable(list: DoorListState): boolean {
-  return list.state === 'loaded' && list.doors.length > 0
-}
-
-/**
- * Every row the card draws: one per inventory camera, in the camera list's order (`sortCameras`),
- * then one per stored link whose camera the inventory does not have, by camera id — labelled
- * "Unknown camera" only when there is an inventory to be missing from (see {@link RowCamera}).
- */
-export function buildDoorLinkRows(
-  cameras: readonly Camera[],
-  links: DoorLinks,
-  list: DoorListState,
-): DoorLinkRow[] {
-  const loaded = list.state === 'loaded' ? list.doors : null
-  const byId = new Map((loaded ?? []).map((door) => [door.id, door]))
-  const doorOptions: DoorOption[] = sortedDoors(loaded ?? []).map((door) => ({
-    value: door.id,
-    label: doorLabel(door),
-  }))
-  const selectable = doorsSelectable(list)
-
-  /** The stored link as the row describes it. */
-  const describe = (doorId: string | null): { status: LinkStatus; label: string | null } => {
-    if (doorId === null) return { status: 'unlinked', label: null }
-    if (loaded === null) return { status: 'pending', label: pendingDoorLabel(doorId) }
-    const door = byId.get(doorId)
-    return door === undefined
-      ? { status: 'unknown-door', label: unknownDoorLabel(doorId) }
-      : { status: 'linked', label: doorLabel(door) }
-  }
-
-  const known = new Set(cameras.map((camera) => camera.id))
-  const rows: DoorLinkRow[] = sortCameras(cameras).map((camera) => {
-    const doorId = linkOf(links, camera.id)
-    const { status, label } = describe(doorId)
-    // The stored door stays an option whatever the list says, so the select keeps showing it.
-    const extra: DoorOption[] =
-      doorId !== null && status !== 'linked' && label !== null ? [{ value: doorId, label }] : []
-    return {
-      cameraId: camera.id,
-      cameraLabel: cameraDisplayName(camera),
-      camera: 'inventory',
-      doorId,
-      status,
-      doorLabel: label,
-      options: [{ value: NOT_LINKED, label: 'Not linked' }, ...extra, ...doorOptions],
-      selectable,
-      // Once the list is selectable, "Not linked" in the select is the unlink.
-      unlinkButton: doorId !== null && !selectable,
-    }
-  })
-
-  const inventoryLoaded = cameras.length > 0
-  const orphans = sortByLabel(
-    Object.keys(links).filter((cameraId) => !known.has(cameraId)),
-    (cameraId) => cameraId,
-  )
-  for (const cameraId of orphans) {
-    const doorId = linkOf(links, cameraId)
-    const { status, label } = describe(doorId)
-    rows.push({
-      cameraId,
-      cameraLabel: inventoryLoaded ? UNKNOWN_CAMERA_LABEL : notLoadedCameraLabel(cameraId),
-      camera: inventoryLoaded ? 'unknown' : 'not-loaded',
-      doorId,
-      status,
-      doorLabel: label,
-      options: null,
-      selectable: false,
-      unlinkButton: true,
-    })
-  }
-  return rows
-}
-
-/**
- * A DOM id for a row's select and label, from its camera id rather than its position, so a row
- * keeps its id (and its label association) when the rows above it change. Letters and digits pass
- * through; anything else, `_` included, becomes `_<hex code>_`, which keeps the mapping one-to-one —
- * two camera ids can never share a DOM id.
- */
-export function doorLinkFieldId(cameraId: string): string {
-  const safe = Array.from(cameraId, (char) =>
-    /^[A-Za-z0-9]$/.test(char) ? char : `_${(char.codePointAt(0) ?? 0).toString(16)}_`,
-  ).join('')
-  return `door-link-${safe}`
-}
-
 /**
  * The line about the cameras themselves, or `null` once the inventory is in. With no inventory
- * there are no rows to pick a door for, and any stored links are listed by camera id only.
+ * there is nothing to add to a door, and any linked cameras are shown by id only.
  */
 export function cameraListNotice(cameras: readonly Camera[], links: DoorLinks): string | null {
   if (cameras.length > 0) return null
   return Object.keys(links).length === 0
     ? 'Connect to the console to list cameras.'
-    : 'Connect to the console to list cameras. The links below are kept and are shown by camera ' +
-        'id until the cameras load.'
-}
-
-/** The stored door for a camera, or `null`. `Object.hasOwn`, so `constructor` is not a camera. */
-function linkOf(links: DoorLinks, cameraId: string): string | null {
-  return Object.hasOwn(links, cameraId) ? (links[cameraId] ?? null) : null
-}
-
-/**
- * The map after one select change: `doorId` links the camera (replacing any link it had), and
- * `NOT_LINKED` or `null` removes its key. A new object either way; every other link is kept as is.
- */
-export function withLink(links: DoorLinks, cameraId: string, doorId: string | null): DoorLinks {
-  if (doorId === null || doorId === NOT_LINKED) {
-    return Object.fromEntries(Object.entries(links).filter(([key]) => key !== cameraId))
-  }
-  return { ...links, [cameraId]: doorId }
-}
-
-/** True when `withLink` would change nothing, so the card can skip a pointless save. */
-export function sameLink(links: DoorLinks, cameraId: string, doorId: string | null): boolean {
-  const target = doorId === NOT_LINKED ? null : doorId
-  return linkOf(links, cameraId) === target
+    : 'Connect to the console to list cameras. The links below are kept and show camera ids ' +
+        'until the cameras load.'
 }
 
 /**
@@ -289,7 +361,7 @@ export function doorListNotice(list: DoorListState): string | null {
       return null
     case 'loaded':
       return list.doors.length === 0
-        ? 'The Access console reports no doors, so there is nothing to link yet.'
+        ? 'The Access console reports no doors, so there is nothing to add yet.'
         : null
   }
 }

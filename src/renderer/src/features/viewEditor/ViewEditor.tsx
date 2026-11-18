@@ -21,8 +21,8 @@
 // Layout (P3.8: each action sits by what it acts on). On the left, the list of Views (reorder on
 // each row) with a footer pinned under it: New View, and Duplicate / Delete for the View being
 // edited. In the middle: the header (the name, and Close at the far right), the settings in three
-// groups (Grid, Display, Quality), the selection toolbar (a count of the selected cells, Merge,
-// Split, Clear cameras), the canvas, and the save bar under it — the draft's state ("Unsaved
+// groups (Grid, Display, Quality), the selection toolbar (Merge, Split, Clear cameras at the left,
+// then the count of the selected cells), the canvas, and the save bar under it — the draft's state ("Unsaved
 // changes" / "All changes saved", and the last error beside it) with Discard and Save. The save bar is always
 // rendered so the canvas never jumps. It is also where every failure is reported — a refused
 // Save, a merge or split, and the list footer's New / Duplicate / Delete and the reorder buttons
@@ -563,13 +563,6 @@ function DraftEditor({
         />
 
         <div className="viewEditor__toolbar" role="toolbar" aria-label="Selected cells">
-          <span className="viewEditor__selectionCount">
-            {selectedCount === 0
-              ? 'No cells selected'
-              : selectedCount === 1
-                ? '1 cell selected'
-                : `${String(selectedCount)} cells selected`}
-          </span>
           <button
             type="button"
             className="button button--sm"
@@ -600,6 +593,13 @@ function DraftEditor({
             <EraserIcon />
             Clear cameras
           </button>
+          <span className="viewEditor__selectionCount">
+            {selectedCount === 0
+              ? 'No cells selected'
+              : selectedCount === 1
+                ? '1 cell selected'
+                : `${String(selectedCount)} cells selected`}
+          </span>
           {note === null ? null : (
             <span className="field__hint viewEditor__note" role="status">
               {note}

@@ -392,7 +392,7 @@ function ConsoleCard({
           <SecretField
             secretKey="accessToken"
             label="Access API token"
-            hint="Create one in Access → Settings → Advanced → API Token. It is never shown again once saved."
+            hint="Create one in Access → Settings → General → Advanced → API Token. It is never shown again once saved."
             stored={secretsStored.accessToken}
             keystoreAvailable={keystoreAvailable}
             value={draft.accessToken}

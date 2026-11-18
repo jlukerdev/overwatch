@@ -1,17 +1,16 @@
-// P5.4 (DOOR-3, DOOR-4): the unlock control's press-and-hold
+// P5.4, P5.5 (DOOR-3, DOOR-4, DOOR-6): the unlock control's press-and-hold
 // (src/renderer/src/features/door/unlockHold.ts).
 //
 // What these tests protect: only a completed hold of the primary pointer reaches `requesting` (the
 // one unlock request); any release, leave, cancel or abort before then goes back to idle; a second
-// pointer and every press while requesting are ignored; a result ends the request (green on
-// success for the shown time, idle on failure or an unknown outcome — never a second request);
-// and the toast copy.
+// pointer and every press while requesting are ignored; a result ends the request and goes back
+// to idle whatever it was (the green look is the door's pushed state since P5.5, not a phase here)
+// — never a second request; and the toast copy.
 import { describe, expect, it } from 'vitest'
 import {
   HOLD_MS,
   INITIAL_UNLOCK_HOLD,
   reduceUnlockHold,
-  UNLOCKED_SHOWN_MS,
   unlockFailureMessage,
   unlockResultEvent,
   unlockSuccessMessage,
@@ -36,9 +35,8 @@ const release = (pointerId = 1): UnlockHoldEvent => ({ type: 'release', pointerI
 const elapsed = (pointerId = 1): UnlockHoldEvent => ({ type: 'holdElapsed', pointerId })
 
 describe('constants', () => {
-  it('holds for 1 s and shows unlocked for 5 s', () => {
+  it('holds for 1 s', () => {
     expect(HOLD_MS).toBe(1000)
-    expect(UNLOCKED_SHOWN_MS).toBe(5000)
   })
 })
 
@@ -91,10 +89,35 @@ describe('reduceUnlockHold', () => {
     expect(reduceUnlockHold(requesting, elapsed(1))).toBe(requesting)
   })
 
-  it('a success shows unlocked, then idle when the shown time is up', () => {
-    const unlocked = run([press(), elapsed(), { type: 'result', ok: true }])
-    expect(unlocked).toEqual({ phase: 'unlocked' })
-    expect(reduceUnlockHold(unlocked, { type: 'shownElapsed' })).toEqual({ phase: 'idle' })
+  it('a success goes back to idle: there is no unlocked phase (DOOR-6)', () => {
+    const done = run([press(), elapsed(), { type: 'result', ok: true }])
+    expect(done).toEqual({ phase: 'idle' })
+    // Nothing follows by itself: no timer event, no second request.
+    expect(reduceUnlockHold(done, elapsed())).toBe(done)
+    expect(reduceUnlockHold(done, { type: 'result', ok: true })).toBe(done)
+  })
+
+  it('only idle, holding and requesting are ever reached', () => {
+    const events: UnlockHoldEvent[] = [
+      press(),
+      release(),
+      press(2),
+      elapsed(2),
+      press(3),
+      { type: 'result', ok: true },
+      press(4),
+      { type: 'abort' },
+      press(5),
+      elapsed(5),
+      { type: 'result', ok: false },
+    ]
+    const phases = new Set<string>()
+    let state = INITIAL_UNLOCK_HOLD
+    for (const event of events) {
+      state = reduceUnlockHold(state, event)
+      phases.add(state.phase)
+    }
+    expect([...phases].sort()).toEqual(['holding', 'idle', 'requesting'])
   })
 
   it('a failure goes back to idle and never requests again by itself', () => {
@@ -110,14 +133,26 @@ describe('reduceUnlockHold', () => {
     expect(reduceUnlockHold(holding, { type: 'result', ok: true })).toBe(holding)
   })
 
-  it('a press while unlocked starts a new hold', () => {
-    const unlocked = run([press(), elapsed(), { type: 'result', ok: true }])
-    expect(reduceUnlockHold(unlocked, press(3))).toEqual({ phase: 'holding', pointerId: 3 })
+  it('a press after a successful unlock starts a new hold, and that hold is one more request', () => {
+    // The door may still be unlocked (the button green, DOOR-6): holding again is allowed.
+    const done = run([press(), elapsed(), { type: 'result', ok: true }])
+    expect(reduceUnlockHold(done, press(3))).toEqual({ phase: 'holding', pointerId: 3 })
+    expect(run([press(3), elapsed(3)], done)).toEqual({ phase: 'requesting' })
   })
 
-  it('a stale shown timer does nothing outside unlocked', () => {
-    const holding = run([press()])
-    expect(reduceUnlockHold(holding, { type: 'shownElapsed' })).toBe(holding)
+  it('has no event but a completed primary-pointer hold that reaches requesting (DOOR-4)', () => {
+    // Every event the reducer knows, from idle and from a request just answered: none requests.
+    const others: UnlockHoldEvent[] = [
+      press(1, false),
+      release(),
+      elapsed(),
+      { type: 'result', ok: true },
+      { type: 'result', ok: false },
+      { type: 'abort' },
+    ]
+    for (const event of others) {
+      expect(reduceUnlockHold(INITIAL_UNLOCK_HOLD, event).phase).toBe('idle')
+    }
   })
 })
 
@@ -139,13 +174,13 @@ describe('toast copy', () => {
 describe('unlockResultEvent (user decision 2026-11-18)', () => {
   const value = { doorId: 'door-1', cameraName: 'Front Door' }
 
-  it('is green only for a confirmed unlock', () => {
+  it('is ok only for a confirmed unlock', () => {
     expect(
       unlockResultEvent({ ok: true, value: { ...value, outcome: 'unlocked', reason: null } }),
     ).toEqual({ type: 'result', ok: true })
   })
 
-  it('treats an unknown outcome like a failure: back to the neutral door icon, no second request', () => {
+  it('treats an unknown outcome like a failure: back to idle, no second request', () => {
     const event = unlockResultEvent({
       ok: true,
       value: { ...value, outcome: 'unknown', reason: 'The Access API did not answer in time.' },
@@ -155,7 +190,7 @@ describe('unlockResultEvent (user decision 2026-11-18)', () => {
     expect(after).toEqual({ phase: 'idle' })
   })
 
-  it('is not green for a failure', () => {
+  it('is not ok for a failure', () => {
     expect(
       unlockResultEvent({
         ok: false,

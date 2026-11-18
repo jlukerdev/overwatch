@@ -19,8 +19,9 @@ import {
   type Camera,
   type CameraEvent,
 } from '@shared/models'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
+  DOOR_MONITOR_AUTH_RETRY_MS,
   createConnectionManager,
   rtspsAvailability,
   type ConnectionServices,
@@ -38,7 +39,14 @@ import type {
 } from '../../src/main/protect/subscriptions'
 import { PinRequiredError, hostPortKey } from '../../src/main/tls/pinning'
 import { createUnlockLog, type UnlockAttempt } from '../../src/main/access/unlockLog'
-import { createAccessClient } from '../../src/main/access/client'
+import { AccessApiError, createAccessClient } from '../../src/main/access/client'
+import {
+  BURST_POLL_MS,
+  FAILURE_BACKOFF_MAX_MS,
+  POLL_WITHOUT_SOCKET_MS,
+  TRIGGER_COALESCE_MS,
+  type DoorNotificationHandlers,
+} from '../../src/main/access/doorStateMonitor'
 import { createAccessMock } from '../../scripts/mock-access/app.ts'
 import { SEED_DOORS } from '../../scripts/mock-access/doors.ts'
 import { Request as UndiciRequest, Response as UndiciResponse } from 'undici'
@@ -207,6 +215,19 @@ function setup(options: SetupOptions = {}) {
     access: () => access,
   }
 
+  // DOOR-6: the Access notifications socket as a recorded fake. Nothing is opened unless the
+  // door-state monitor starts, which is itself what the DOOR-0 tests assert.
+  const doorSockets: { handlers: DoorNotificationHandlers; stops: number }[] = []
+  const openDoorNotifications = vi.fn((handlers: DoorNotificationHandlers) => {
+    const socket = { handlers, stops: 0 }
+    doorSockets.push(socket)
+    return {
+      stop: () => {
+        socket.stops += 1
+      },
+    }
+  })
+
   const feeds = createFeedFactory()
   // Always injected: the default is the real events subscription, which would open a socket.
   const events = createFeedFactory<EventsOptions>()
@@ -226,10 +247,13 @@ function setup(options: SetupOptions = {}) {
       logged.push(line)
     },
     ...(options.unlockLog === undefined ? {} : { unlockLog: options.unlockLog }),
+    openDoorNotifications,
   })
 
   return {
     manager,
+    doorSockets,
+    openDoorNotifications,
     services,
     protect,
     access,
@@ -1840,5 +1864,541 @@ describe('unlockDoor (DOOR-3/4/5, P5.4)', () => {
         m.mock.store.dispose()
       }
     })
+  })
+})
+
+describe('the door-state monitor (DOOR-6, P5.5)', () => {
+  const FRONT = 'door-front'
+  const BACK = 'door-back'
+  const door = (id: string, relay: 'lock' | 'unlock' = 'lock') => ({
+    id,
+    name: id,
+    fullName: id,
+    floorId: 'floor-1',
+    type: 'door',
+    boundToHub: true,
+    relay,
+    position: null,
+  })
+  const LOCKED = { relay: 'lock', position: null }
+  const UNLOCKED = { relay: 'unlock', position: null }
+  const network = (): AccessApiError =>
+    new AccessApiError('The console did not answer.', { kind: 'network' })
+
+  /** Access on, a token stored, the doorbell linked to the front door, and the console answering. */
+  function watchSetup(options: SetupOptions = {}) {
+    const w = setup({
+      accessEnabled: true,
+      cameras: [camera('cam-bell', { name: 'Front Doorbell' }), camera('cam-2')],
+      doorLinks: { 'cam-bell': FRONT },
+      ...options,
+    })
+    w.access.doors.mockResolvedValue([door(FRONT), door(BACK, 'unlock')] as never)
+    // Spied, so "the client was not even resolved" can be asserted (DOOR-0).
+    const resolveAccess = vi.fn(() => w.access)
+    w.services.access = resolveAccess
+    return {
+      ...w,
+      resolveAccess,
+      doorStates: () => w.payloads(IPC_EVENTS.doorStates.channel),
+      statusPushes: () => w.payloads(IPC_EVENTS.connection.channel).length,
+      setLinks(doorLinks: Record<string, string>) {
+        w.services.current = { ...w.services.current, doorLinks }
+      },
+    }
+  }
+  const tick = (ms = 0): Promise<unknown> => vi.advanceTimersByTimeAsync(ms)
+
+  beforeEach(() => {
+    vi.useFakeTimers()
+  })
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it('reads nothing, resolves nothing and opens no socket while Access is off (DOOR-0)', async () => {
+    const w = watchSetup({ accessEnabled: false })
+    expect(w.manager.watchDoors(true)).toEqual({ ok: true, value: {} })
+    w.manager.accessInputsChanged('the door links were saved')
+    await tick(FAILURE_BACKOFF_MAX_MS)
+    expect(w.resolveAccess).not.toHaveBeenCalled()
+    expect(w.access.doors).not.toHaveBeenCalled()
+    expect(w.openDoorNotifications).not.toHaveBeenCalled()
+    expect(w.doorStates()).toEqual([])
+    expect(w.manager.status().access.phase).toBe('disabled')
+  })
+
+  const NOT_RUNNABLE: readonly (readonly [string, SetupOptions])[] = [
+    ['no Access token is stored', { accessToken: null }],
+    ['no door is linked', { doorLinks: {} }],
+    ['the address does not resolve', { host: '' }],
+  ]
+  for (const [name, options] of NOT_RUNNABLE) {
+    it(`does not run while ${name}`, async () => {
+      const w = watchSetup(options)
+      expect(w.manager.watchDoors(true)).toEqual({ ok: true, value: {} })
+      await tick(FAILURE_BACKOFF_MAX_MS)
+      expect(w.resolveAccess).not.toHaveBeenCalled()
+      expect(w.openDoorNotifications).not.toHaveBeenCalled()
+      expect(w.doorStates()).toEqual([])
+    })
+  }
+
+  it('does not run until the renderer watches', async () => {
+    const w = watchSetup()
+    w.manager.accessInputsChanged('the door links were saved')
+    await tick(FAILURE_BACKOFF_MAX_MS)
+    expect(w.resolveAccess).not.toHaveBeenCalled()
+    expect(w.openDoorNotifications).not.toHaveBeenCalled()
+  })
+
+  it('starts reading on watch and pushes the linked doors` states, whole map, on change only', async () => {
+    const w = watchSetup()
+    // Nothing is known at the moment of the call; the push follows the first read.
+    expect(w.manager.watchDoors(true)).toEqual({ ok: true, value: {} })
+    expect(w.access.doors).toHaveBeenCalledTimes(1)
+    // A poll, so the client is asked not to log a line per request.
+    expect(w.access.doors).toHaveBeenLastCalledWith({ quiet: true })
+    // The socket waits for the first read to work.
+    expect(w.openDoorNotifications).not.toHaveBeenCalled()
+    await tick()
+    expect(w.openDoorNotifications).toHaveBeenCalledTimes(1)
+    // `door-back` is on the console and unlocked, but not linked: it is not reported.
+    expect(w.doorStates()).toEqual([{ [FRONT]: LOCKED }])
+    // Polling goes on, with nothing pushed while nothing changes.
+    await tick(POLL_WITHOUT_SOCKET_MS * 3)
+    expect(w.access.doors).toHaveBeenCalledTimes(4)
+    expect(w.doorStates()).toHaveLength(1)
+    // A repeated watch answers what is known and opens nothing new.
+    expect(w.manager.watchDoors(true)).toEqual({ ok: true, value: { [FRONT]: LOCKED } })
+    expect(w.openDoorNotifications).toHaveBeenCalledTimes(1)
+    // An unlock made elsewhere is seen by the poll.
+    w.access.doors.mockResolvedValue([door(FRONT, 'unlock')] as never)
+    await tick(POLL_WITHOUT_SOCKET_MS)
+    expect(w.doorStates().at(-1)).toEqual({ [FRONT]: UNLOCKED })
+  })
+
+  it('reads at once on a notification frame from the socket it opened', async () => {
+    const w = watchSetup()
+    w.manager.watchDoors(true)
+    await tick(TRIGGER_COALESCE_MS)
+    w.access.doors.mockClear()
+    w.doorSockets[0]?.handlers.onNotification({ event: 'access.data.device.remote_unlock' })
+    expect(w.access.doors).toHaveBeenCalledTimes(1)
+  })
+
+  it('stops on unwatch: {} is pushed, the socket is stopped and nothing more is read', async () => {
+    const w = watchSetup()
+    w.manager.watchDoors(true)
+    await tick()
+    expect(w.manager.watchDoors(false)).toEqual({ ok: true, value: {} })
+    expect(w.doorStates()).toEqual([{ [FRONT]: LOCKED }, {}])
+    expect(w.doorSockets[0]?.stops).toBe(1)
+    w.access.doors.mockClear()
+    await tick(FAILURE_BACKOFF_MAX_MS)
+    expect(w.access.doors).not.toHaveBeenCalled()
+  })
+
+  it('restarts on the new endpoint after a console change, ignoring the old one`s late answer', async () => {
+    const w = watchSetup()
+    w.manager.watchDoors(true)
+    await tick(TRIGGER_COALESCE_MS)
+    expect(w.doorSockets).toHaveLength(1)
+    // A read of the old endpoint is in flight when the console block is saved.
+    let answerOld: (doors: never) => void = () => undefined
+    w.access.doors.mockImplementationOnce(
+      () =>
+        new Promise<never>((resolve) => {
+          answerOld = resolve
+        }),
+    )
+    w.manager.accessInputsChanged('a read that will answer late')
+    expect(w.access.doors).toHaveBeenCalledTimes(2)
+
+    await w.manager.applyConsoleChange({ ...w.console, host: '192.0.2.20' })
+    await tick()
+    // The old socket is gone and a fresh one is open; the new endpoint has been asked.
+    expect(w.doorSockets.map((socket) => socket.stops)).toEqual([1, 0])
+    expect(w.access.doors).toHaveBeenCalledTimes(3)
+    expect(w.doorStates()).toEqual([{ [FRONT]: LOCKED }, {}, { [FRONT]: LOCKED }])
+
+    // The console that was left answers at last, with a different state: nobody hears of it.
+    const pushes = w.statusPushes()
+    answerOld([door(FRONT, 'unlock')] as never)
+    await tick()
+    expect(w.doorStates()).toHaveLength(3)
+    expect(w.statusPushes()).toBe(pushes)
+    expect(w.manager.status().access).toMatchObject({
+      phase: 'connected',
+      hostPort: '192.0.2.20:12445',
+    })
+  })
+
+  it('leaves the new endpoint`s status alone when the old one`s read fails late', async () => {
+    const w = watchSetup()
+    let failOld: (err: Error) => void = () => undefined
+    w.access.doors.mockImplementationOnce(
+      () =>
+        new Promise<never>((_resolve, reject) => {
+          failOld = reject
+        }),
+    )
+    w.manager.watchDoors(true)
+    // Access is switched off in the same save: nothing restarts.
+    await w.manager.applyConsoleChange({ ...w.console, host: '192.0.2.20', accessEnabled: false })
+    failOld(new AccessApiError('Refused.', { kind: 'auth' }))
+    await tick(FAILURE_BACKOFF_MAX_MS)
+    expect(w.access.doors).toHaveBeenCalledTimes(1)
+    expect(w.openDoorNotifications).not.toHaveBeenCalled()
+    expect(w.manager.status().access).toMatchObject({ phase: 'disabled', error: null })
+  })
+
+  it('starts when Access is switched on while the Live screen is watching', async () => {
+    const w = watchSetup({ accessEnabled: false })
+    w.manager.watchDoors(true)
+    await w.manager.applyConsoleChange({ ...w.console, accessEnabled: true })
+    await tick()
+    expect(w.doorStates()).toEqual([{ [FRONT]: LOCKED }])
+  })
+
+  it('stops when the Access token is cleared, and starts again when one is saved', async () => {
+    const w = watchSetup()
+    w.manager.watchDoors(true)
+    await tick()
+    const token = w.services.credentials.accessToken
+    delete w.services.credentials.accessToken
+    w.manager.accessInputsChanged('the Access token was cleared')
+    expect(w.doorStates().at(-1)).toEqual({})
+    expect(w.doorSockets[0]?.stops).toBe(1)
+    w.access.doors.mockClear()
+    await tick(FAILURE_BACKOFF_MAX_MS)
+    expect(w.access.doors).not.toHaveBeenCalled()
+
+    if (token !== undefined) w.services.credentials.accessToken = token
+    w.manager.accessInputsChanged('the Access token was saved')
+    await tick()
+    expect(w.doorStates().at(-1)).toEqual({ [FRONT]: LOCKED })
+    expect(w.doorSockets).toHaveLength(2)
+  })
+
+  it('stops when the links are emptied, and re-reads and re-filters when they change', async () => {
+    const w = watchSetup()
+    w.manager.watchDoors(true)
+    await tick(TRIGGER_COALESCE_MS)
+    w.access.doors.mockClear()
+
+    // Changed: the same monitor, the same socket, one read now, and the new door reported.
+    w.setLinks({ 'cam-bell': BACK })
+    w.manager.accessInputsChanged('the door links were saved')
+    expect(w.access.doors).toHaveBeenCalledTimes(1)
+    // The door that is no longer linked goes at once, before the read answers.
+    expect(w.doorStates().at(-1)).toEqual({})
+    await tick()
+    expect(w.doorStates().at(-1)).toEqual({ [BACK]: UNLOCKED })
+    expect(w.openDoorNotifications).toHaveBeenCalledTimes(1)
+
+    // Emptied: stopped.
+    w.setLinks({})
+    w.manager.accessInputsChanged('the door links were saved')
+    expect(w.doorStates().at(-1)).toEqual({})
+    expect(w.doorSockets[0]?.stops).toBe(1)
+    w.access.doors.mockClear()
+    await tick(FAILURE_BACKOFF_MAX_MS)
+    expect(w.access.doors).not.toHaveBeenCalled()
+  })
+
+  it('reads promptly after an unlock is answered, and still sends exactly one PUT', async () => {
+    const w = watchSetup()
+    w.manager.watchDoors(true)
+    await tick(TRIGGER_COALESCE_MS)
+    w.access.doors.mockClear()
+    w.access.doors.mockResolvedValue([door(FRONT, 'unlock')] as never)
+
+    const result = await w.manager.unlockDoor('cam-bell')
+    expect(result).toMatchObject({ ok: true, value: { outcome: 'unlocked' } })
+    // The read was asked for before the unlock even answered the renderer.
+    expect(w.access.doors).toHaveBeenCalledTimes(1)
+    await tick()
+    expect(w.doorStates().at(-1)).toEqual({ [FRONT]: UNLOCKED })
+    // The burst follows the door until it relocks — by reading. Never another PUT.
+    await tick(BURST_POLL_MS * 5)
+    expect(w.access.doors).toHaveBeenCalledTimes(6)
+    expect(w.access.unlock).toHaveBeenCalledTimes(1)
+  })
+
+  it('reads after an unlock whose outcome is unknown too, and not after a refusal', async () => {
+    const w = watchSetup()
+    w.manager.watchDoors(true)
+    await tick(TRIGGER_COALESCE_MS)
+    w.access.doors.mockClear()
+    w.access.unlock.mockRejectedValueOnce(
+      new AccessApiError('The console did not answer in time.', { kind: 'timeout' }),
+    )
+    expect(await w.manager.unlockDoor('cam-bell')).toMatchObject({
+      ok: true,
+      value: { outcome: 'unknown' },
+    })
+    expect(w.access.doors).toHaveBeenCalledTimes(1)
+
+    await tick(TRIGGER_COALESCE_MS)
+    w.access.doors.mockClear()
+    w.access.unlock.mockRejectedValueOnce(
+      new AccessApiError('No such door.', { kind: 'not-found' }),
+    )
+    expect(await w.manager.unlockDoor('cam-bell')).toMatchObject({ ok: false })
+    expect(w.access.doors).not.toHaveBeenCalled()
+    expect(w.access.unlock).toHaveBeenCalledTimes(2)
+  })
+
+  it('an unlock while nobody is watching reads nothing', async () => {
+    const w = watchSetup()
+    await w.manager.unlockDoor('cam-bell')
+    await tick(FAILURE_BACKOFF_MAX_MS)
+    expect(w.access.unlock).toHaveBeenCalledTimes(1)
+    expect(w.access.doors).not.toHaveBeenCalled()
+    expect(w.openDoorNotifications).not.toHaveBeenCalled()
+  })
+
+  it('moves the Access status only on a transition, never once per poll', async () => {
+    const w = watchSetup()
+    const monitorLines = (): number =>
+      w.logged.filter((line) => line.startsWith('access: door monitor: ')).length
+    w.manager.watchDoors(true)
+    await tick()
+    expect(w.manager.status().access).toMatchObject({ phase: 'connected', error: null })
+    expect(w.statusPushes()).toBe(1)
+    const lines = monitorLines()
+
+    await tick(POLL_WITHOUT_SOCKET_MS * 10)
+    expect(w.access.doors.mock.calls.length).toBeGreaterThan(10)
+    expect(w.statusPushes()).toBe(1)
+    expect(monitorLines()).toBe(lines)
+
+    // One failed poll is not an outage: the states are kept, and so is the status.
+    w.access.doors.mockRejectedValue(network())
+    await tick(POLL_WITHOUT_SOCKET_MS)
+    expect(w.manager.status().access).toMatchObject({ phase: 'connected', error: null })
+    expect(w.statusPushes()).toBe(1)
+    expect(w.doorStates().at(-1)).toEqual({ [FRONT]: LOCKED })
+    // The second in a row makes the states unknown, and the status says why: one push, and none
+    // for the failures after it.
+    await tick(POLL_WITHOUT_SOCKET_MS * 2)
+    expect(w.manager.status().access).toMatchObject({
+      phase: 'error',
+      error: { kind: 'network', endpoint: '192.0.2.10:12445' },
+    })
+    expect(w.statusPushes()).toBe(2)
+    await tick(FAILURE_BACKOFF_MAX_MS * 3)
+    expect(w.statusPushes()).toBe(2)
+    // Two failures in a row: the states are unknown, not stale.
+    expect(w.doorStates().at(-1)).toEqual({})
+
+    // Answering again: one push back to connected.
+    w.access.doors.mockResolvedValue([door(FRONT)] as never)
+    await tick(FAILURE_BACKOFF_MAX_MS)
+    expect(w.manager.status().access).toMatchObject({ phase: 'connected', error: null })
+    expect(w.statusPushes()).toBe(3)
+    expect(w.doorStates().at(-1)).toEqual({ [FRONT]: LOCKED })
+  })
+
+  it('a single failed poll between two good ones never touches the status', async () => {
+    const w = watchSetup()
+    w.manager.watchDoors(true)
+    await tick()
+    w.access.doors.mockRejectedValueOnce(network())
+    await tick(POLL_WITHOUT_SOCKET_MS * 6)
+    expect(w.statusPushes()).toBe(1)
+    expect(w.manager.status().access.phase).toBe('connected')
+    expect(w.doorStates()).toEqual([{ [FRONT]: LOCKED }])
+  })
+
+  describe('after the monitor stopped itself', () => {
+    const auth = (): AccessApiError => new AccessApiError('HTTP 401.', { kind: 'auth' })
+    const statusLines = (w: ReturnType<typeof watchSetup>): number =>
+      w.logged.filter((line) => line.startsWith('access: door monitor: auth')).length
+
+    it('retries a rejected token every 60 s with one read, without re-pushing the status', async () => {
+      const w = watchSetup()
+      w.access.doors.mockRejectedValue(auth())
+      w.manager.watchDoors(true)
+      await tick(DOOR_MONITOR_AUTH_RETRY_MS - 1)
+      // One read, at once fatal (no waiting for a second failure), and no socket with that token.
+      expect(w.access.doors).toHaveBeenCalledTimes(1)
+      expect(w.openDoorNotifications).not.toHaveBeenCalled()
+      expect(w.manager.status().access).toMatchObject({ phase: 'error', error: { kind: 'auth' } })
+      const pushes = w.statusPushes()
+      expect(statusLines(w)).toBe(1)
+
+      await tick(1)
+      expect(w.access.doors).toHaveBeenCalledTimes(2)
+      await tick(DOOR_MONITOR_AUTH_RETRY_MS * 3)
+      expect(w.access.doors).toHaveBeenCalledTimes(5)
+      // Still the same failure: nothing pushed, nothing logged about the status again.
+      expect(w.statusPushes()).toBe(pushes)
+      expect(statusLines(w)).toBe(1)
+      expect(vi.getTimerCount()).toBe(1)
+
+      // The console accepts the token again (it had only been restarting).
+      w.access.doors.mockResolvedValue([door(FRONT)] as never)
+      await tick(DOOR_MONITOR_AUTH_RETRY_MS)
+      expect(w.doorStates().at(-1)).toEqual({ [FRONT]: LOCKED })
+      expect(w.manager.status().access).toMatchObject({ phase: 'connected', error: null })
+      expect(w.openDoorNotifications).toHaveBeenCalledTimes(1)
+    })
+
+    it('starts again at once when a new token is saved, with no retry left pending', async () => {
+      const w = watchSetup()
+      w.access.doors.mockRejectedValueOnce(auth())
+      w.manager.watchDoors(true)
+      await tick()
+      w.manager.accessInputsChanged('the Access token was saved')
+      await tick()
+      expect(w.doorStates().at(-1)).toEqual({ [FRONT]: LOCKED })
+      w.access.doors.mockClear()
+      // Only the ordinary poll from here on: the retry timer went with the sync.
+      await tick(DOOR_MONITOR_AUTH_RETRY_MS)
+      expect(w.openDoorNotifications).toHaveBeenCalledTimes(1)
+      expect(w.manager.status().access.phase).toBe('connected')
+    })
+
+    for (const [name, stop] of [
+      ['the Live screen stops watching', (w) => w.manager.watchDoors(false)],
+      ['shutdown', (w) => w.manager.shutdown()],
+      [
+        'a console change that turns Access off',
+        (w) => w.manager.applyConsoleChange({ ...w.console, accessEnabled: false }),
+      ],
+    ] as const satisfies readonly (readonly [
+      string,
+      (w: ReturnType<typeof watchSetup>) => unknown,
+    ])[]) {
+      it(`drops the pending retry on ${name}`, async () => {
+        const w = watchSetup()
+        w.access.doors.mockRejectedValue(auth())
+        w.manager.watchDoors(true)
+        await tick()
+        expect(vi.getTimerCount()).toBe(1)
+        await stop(w)
+        expect(vi.getTimerCount()).toBe(0)
+        await tick(DOOR_MONITOR_AUTH_RETRY_MS * 3)
+        expect(w.access.doors).toHaveBeenCalledTimes(1)
+      })
+    }
+
+    it('never retries a certificate that is not accepted (CON-3), until one is', async () => {
+      const w = watchSetup()
+      w.access.doors.mockRejectedValue(new AccessApiError('Not accepted.', { kind: 'pin' }))
+      w.manager.watchDoors(true)
+      await tick(DOOR_MONITOR_AUTH_RETRY_MS * 5)
+      expect(w.access.doors).toHaveBeenCalledTimes(1)
+      expect(vi.getTimerCount()).toBe(0)
+      w.access.doors.mockResolvedValue([door(FRONT)] as never)
+      w.manager.accessInputsChanged('a certificate was accepted')
+      await tick()
+      expect(w.doorStates().at(-1)).toEqual({ [FRONT]: LOCKED })
+    })
+
+    it('stops for good on a console that refuses the whole API, and says so in the status', async () => {
+      const w = watchSetup()
+      w.access.doors.mockRejectedValue(
+        new AccessApiError('The API is not available after upgrading to Identity Enterprise.', {
+          kind: 'forbidden',
+          code: 'CODE_OTHERS_UID_ADOPTED_NOT_SUPPORTED',
+        }),
+      )
+      w.manager.watchDoors(true)
+      await tick(DOOR_MONITOR_AUTH_RETRY_MS * 5)
+      expect(w.access.doors).toHaveBeenCalledTimes(1)
+      expect(vi.getTimerCount()).toBe(0)
+      const access = w.manager.status().access
+      expect(access.phase).toBe('error')
+      expect(access.error?.message).toContain('Identity Enterprise')
+      expect(access.error?.retryable).toBe(false)
+    })
+
+    it('starts again when an unlock is accepted, and its start is the read', async () => {
+      const w = watchSetup()
+      w.access.doors.mockRejectedValueOnce(auth())
+      w.manager.watchDoors(true)
+      await tick()
+      expect(w.access.doors).toHaveBeenCalledTimes(1)
+      w.access.doors.mockResolvedValue([door(FRONT, 'unlock')] as never)
+
+      await w.manager.unlockDoor('cam-bell')
+      expect(w.access.doors).toHaveBeenCalledTimes(2)
+      await tick()
+      expect(w.doorStates().at(-1)).toEqual({ [FRONT]: UNLOCKED })
+      expect(w.access.unlock).toHaveBeenCalledTimes(1)
+    })
+
+    it('does not start again on an unlock whose outcome is unknown', async () => {
+      const w = watchSetup()
+      w.access.doors.mockRejectedValue(new AccessApiError('Not accepted.', { kind: 'pin' }))
+      w.manager.watchDoors(true)
+      await tick()
+      w.access.unlock.mockRejectedValueOnce(
+        new AccessApiError('The console did not answer in time.', { kind: 'timeout' }),
+      )
+      await w.manager.unlockDoor('cam-bell')
+      await tick()
+      expect(w.access.doors).toHaveBeenCalledTimes(1)
+    })
+
+    it('starts again when the door list or Test connection gets an answer', async () => {
+      for (const ask of [
+        (w: ReturnType<typeof watchSetup>) => w.manager.doors(),
+        (w: ReturnType<typeof watchSetup>) => w.manager.testConnection(),
+      ]) {
+        const w = watchSetup()
+        w.access.doors.mockRejectedValueOnce(auth())
+        w.manager.watchDoors(true)
+        await tick()
+        expect(w.doorStates()).toEqual([])
+        await ask(w)
+        // Their own read is not a quiet one; the monitor's are.
+        expect(w.access.doors.mock.calls[1]).toEqual([])
+        await tick()
+        expect(w.doorStates().at(-1)).toEqual({ [FRONT]: LOCKED })
+        expect(w.access.doors.mock.calls[2]).toEqual([{ quiet: true }])
+      }
+    })
+  })
+
+  it('an unlock refused because the whole API is unavailable leaves the status error', async () => {
+    const w = watchSetup()
+    w.access.unlock.mockRejectedValueOnce(
+      new AccessApiError('The API is not available after upgrading to Identity Enterprise.', {
+        kind: 'forbidden',
+        code: 'CODE_OTHERS_UID_ADOPTED_NOT_SUPPORTED',
+      }),
+    )
+    const result = await w.manager.unlockDoor('cam-bell')
+    expect(result).toMatchObject({ ok: false, error: { retryable: false } })
+    expect(w.manager.status().access.phase).toBe('error')
+    expect(w.manager.status().access.error?.message).toContain('Identity Enterprise')
+
+    // An ordinary door-level refusal still proves the endpoint works.
+    w.access.unlock.mockRejectedValueOnce(new AccessApiError('Refused.', { kind: 'forbidden' }))
+    await w.manager.unlockDoor('cam-bell')
+    expect(w.manager.status().access).toMatchObject({ phase: 'connected', error: null })
+  })
+
+  it('is stopped by shutdown', async () => {
+    const w = watchSetup()
+    w.manager.watchDoors(true)
+    await tick()
+    await w.manager.shutdown()
+    expect(w.doorSockets[0]?.stops).toBe(1)
+    w.access.doors.mockClear()
+    await tick(FAILURE_BACKOFF_MAX_MS)
+    expect(w.access.doors).not.toHaveBeenCalled()
+  })
+
+  it('never puts the token in a log line or a push', async () => {
+    const w = watchSetup()
+    w.manager.watchDoors(true)
+    await tick(POLL_WITHOUT_SOCKET_MS)
+    w.manager.watchDoors(false)
+    expect(JSON.stringify([w.logged, w.emitted])).not.toContain(ACCESS_TOKEN)
   })
 })

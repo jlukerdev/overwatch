@@ -1,8 +1,9 @@
 // P1.4 (DOOR-0/1/2/3/4, R3): the UniFi Access client in src/main/access/client.ts.
 //
-// Everything the client talks to is COMMUNITY-SOURCED and UNVERIFIED (SPEC §5.2, P0.4), so these
-// tests pin down the client's *behaviour* against the P0.4 mock rather than against hardware. Three
-// layers:
+// The shapes are from Ubiquiti's official Access API reference
+// (docs/reference/access-endpoints-v4.2.16.md) but nothing has run against a console yet (OS-1), so
+// these tests pin down the client's *behaviour* against the P0.4 mock rather than against hardware.
+// Three layers:
 //  (a) the mock's real semantics, in process: an injected `fetch` turns a `Request` into the mock's
 //      `MockRequest` and its `MockResponse` back into a `Response`, so the mock decides every
 //      status, code and relay transition (no sockets, fake timers for the relay revert);
@@ -11,7 +12,7 @@
 //      dispatcher, the mock and the client work together (skipped when `openssl` is missing);
 //  (c) a plain fake `fetch` for the responses the mock cannot produce: a 200 carrying an error
 //      code, an envelope without `msg`, a 2xx body that fails the schema, a pin failure and a
-//      timeout.
+//      timeout — and for the endpoints the mock does not serve (lock rule, emergency status, P5.5).
 import { execFileSync } from 'node:child_process'
 import { X509Certificate } from 'node:crypto'
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
@@ -23,13 +24,17 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 import { Agent, Request, Response } from 'undici'
 import type { Dispatcher } from 'undici'
 import {
+  ACCESS_AUTH_ADVICE,
   AccessApiError,
   accessErrorKind,
+  accessErrorKindForStatus,
   createAccessClient,
+  isAccessApiUnavailable,
   toDoor,
 } from '../../src/main/access/client'
 import type { AccessClient, AccessClientOptions } from '../../src/main/access/client'
-import { AccessDoorSchema } from '../../src/main/access/types'
+import { ACCESS_ERROR_CODES, AccessDoorSchema } from '../../src/main/access/types'
+import type { AccessLockRuleSetType } from '../../src/main/access/types'
 import { accessEndpoint } from '../../src/main/console/endpoints'
 import { PinMismatchError, PinRequiredError, createPinnedAgent } from '../../src/main/tls/pinning'
 import { MOCK_HEADER, createAccessMock } from '../../scripts/mock-access/app.ts'
@@ -282,7 +287,7 @@ describe('against the P0.4 mock', () => {
     expect(err.kind).toBe('auth')
     expect(err.status).toBe(401)
     expect(err.code).toBe('CODE_ACCESS_TOKEN_INVALID')
-    expect(err.message).toContain('API Token')
+    expect(err.message).toContain('Access → Settings → General → Advanced → API Token')
 
     // A token that was never saved fails the same way, without spending a request on it (DOOR-1).
     const none = harness(mockFetch.fn, { token: null })
@@ -290,6 +295,7 @@ describe('against the P0.4 mock', () => {
     expect(missing.kind).toBe('auth')
     expect(missing.status).toBeNull()
     expect(missing.message).toContain('no Access API token is saved')
+    expect(missing.message).toContain('Access → Settings → General → Advanced → API Token')
     expect(mockFetch.fn).toHaveBeenCalledTimes(1)
   })
 
@@ -311,6 +317,11 @@ describe('against the P0.4 mock', () => {
       client.door(FRONT.id),
       client.unlock(FRONT.id),
       client.unlock(FRONT.id, { actor: { id: 'user-7', name: 'Josh' } }),
+      client.lockRule(FRONT.id),
+      client.setLockRule(FRONT.id, { type: 'keep_unlock' }),
+      client.setLockRule(FRONT.id, { type: 'custom', intervalMinutes: 10 }),
+      client.emergencyStatus(),
+      client.setEmergencyStatus({ lockdown: true, evacuation: false }),
     ]) {
       const err = await accessError(call)
       expect(err.kind).toBe('disabled')
@@ -610,6 +621,52 @@ describe('responses the console may send but the mock does not (rule 2, SPEC §5
     expect(logs.join('\n')).toContain('door_lock_relay_status')
   })
 
+  it('logs nothing for a quiet read that works, and still logs one that fails', async () => {
+    let fail = false
+    const { client, logs } = harness(
+      fakeFetch(() =>
+        fail
+          ? jsonResponse(401, { code: 'CODE_AUTH_FAILED', msg: 'no' })
+          : jsonResponse(200, { code: 'SUCCESS', msg: 'success', data: [FRONT] }),
+      ),
+    )
+    // A poll every few seconds must not write a line per request (DOOR-6).
+    for (let i = 0; i < 5; i += 1) await client.doors({ quiet: true })
+    expect(logs).toEqual([])
+    // The same read asked for by the user is logged as before.
+    await client.doors()
+    expect(logs).toEqual(['GET /doors -> 200 SUCCESS'])
+    fail = true
+    await accessError(client.doors({ quiet: true }))
+    expect(logs.at(-1)).toBe('GET /doors -> 401 CODE_AUTH_FAILED')
+  })
+
+  it('logs a skipped door once per change on quiet reads, and every time otherwise', async () => {
+    const bad = { ...FRONT, id: 'door-bad', door_lock_relay_status: 'ajar' }
+    let data: unknown[] = [FRONT, bad]
+    const { client, logs } = harness(
+      fakeFetch(() => jsonResponse(200, { code: 'SUCCESS', msg: 'success', data })),
+    )
+    const skipped = (): number => logs.filter((line) => line.includes('skipped')).length
+    for (let i = 0; i < 4; i += 1) await client.doors({ quiet: true })
+    expect(skipped()).toBe(1)
+    // A different problem is a change…
+    data = [FRONT, bad, { ...bad, id: 'door-bad-2' }]
+    await client.doors({ quiet: true })
+    await client.doors({ quiet: true })
+    expect(skipped()).toBe(2)
+    // …and so is the problem coming back after it went away.
+    data = [FRONT]
+    await client.doors({ quiet: true })
+    data = [FRONT, bad]
+    await client.doors({ quiet: true })
+    expect(skipped()).toBe(3)
+    // A read that is not quiet always says it.
+    await client.doors()
+    await client.doors()
+    expect(skipped()).toBe(5)
+  })
+
   it('returns an empty list for a console with no doors, without calling that a failure', async () => {
     const { client } = harness(
       fakeFetch(() => jsonResponse(200, { code: 'SUCCESS', msg: 'success', data: [] })),
@@ -713,6 +770,389 @@ describe('responses the console may send but the mock does not (rule 2, SPEC §5
 })
 
 // -------------------------------------------------------------------------------------------------
+// (c, continued) P5.5: the rest of the documented door endpoints (§7.10–§7.13)
+
+/** A fetch that records method, path and body of every request and answers from `respond`. */
+function recordingFetch(respond: (request: Request) => Response): {
+  fn: FetchImpl
+  sent: { method: string; path: string; body: string; authorization: string | null }[]
+} {
+  const sent: { method: string; path: string; body: string; authorization: string | null }[] = []
+  const fn = vi.fn<FetchImpl>(async (input, init) => {
+    const request = new Request(input, init)
+    const url = new URL(request.url)
+    sent.push({
+      method: request.method,
+      path: `${url.pathname}${url.search}`,
+      body: await request.clone().text(),
+      authorization: request.headers.get('authorization'),
+    })
+    return respond(request)
+  })
+  return { fn, sent }
+}
+
+const OK = { code: 'SUCCESS', msg: 'success', data: 'success' }
+
+describe('lock rule (§7.10, §7.11)', () => {
+  it('reads GET /doors/{id}/lock_rule and maps ended_time', async () => {
+    const { fn, sent } = recordingFetch(() =>
+      jsonResponse(200, {
+        code: 'SUCCESS',
+        msg: 'success',
+        data: { ended_time: 1708673342, type: 'custom' },
+      }),
+    )
+    const { client, logs } = harness(fn)
+    await expect(client.lockRule('door-1')).resolves.toStrictEqual({
+      type: 'custom',
+      endedTime: 1708673342,
+    })
+    expect(sent).toStrictEqual([
+      {
+        method: 'GET',
+        path: `${API_PATH}/doors/door-1/lock_rule`,
+        body: '',
+        authorization: `Bearer ${TOKEN}`,
+      },
+    ])
+    expect(logs).toStrictEqual(['GET /doors/door-1/lock_rule -> 200 SUCCESS'])
+  })
+
+  it('reads a rule without ended_time as endedTime null, and keeps an undocumented type', async () => {
+    const { client } = harness(
+      fakeFetch(() => jsonResponse(200, { code: 'SUCCESS', data: { type: 'keep_lock' } })),
+    )
+    await expect(client.lockRule('d-1')).resolves.toStrictEqual({
+      type: 'keep_lock',
+      endedTime: null,
+    })
+    // What a door with no rule answers is not documented: an empty type must not be a failure.
+    const none = harness(
+      fakeFetch(() => jsonResponse(200, { code: 'SUCCESS', data: { type: '' } })),
+    )
+    await expect(none.client.lockRule('d-1')).resolves.toStrictEqual({ type: '', endedTime: null })
+  })
+
+  it('reports a lock rule body it cannot read as invalid-response, naming the field', async () => {
+    const { client } = harness(
+      fakeFetch(() => jsonResponse(200, { code: 'SUCCESS', data: { type: 7 } })),
+    )
+    const err = await accessError(client.lockRule('d-1'))
+    expect(err.kind).toBe('invalid-response')
+    expect(err.message).toContain('data.type')
+    expect(err.message).toContain('OS-1')
+  })
+
+  it('maps the errors of a lock rule read like any other call', async () => {
+    const { client } = harness(
+      fakeFetch(() => jsonResponse(404, { code: 'CODE_NOT_EXISTS', msg: 'door does not exist' })),
+    )
+    const err = await accessError(client.lockRule('gone'))
+    expect(err.kind).toBe('not-found')
+    expect(err.message).toContain('door does not exist')
+  })
+
+  it.each<[AccessLockRuleSetType, number | undefined, string]>([
+    ['keep_lock', undefined, '{"type":"keep_lock"}'],
+    ['keep_unlock', undefined, '{"type":"keep_unlock"}'],
+    ['custom', 10, '{"type":"custom","interval":10}'],
+    ['reset', undefined, '{"type":"reset"}'],
+    ['lock_early', undefined, '{"type":"lock_early"}'],
+    ['lock_now', undefined, '{"type":"lock_now"}'],
+  ])('sends PUT /doors/{id}/lock_rule for %s', async (type, intervalMinutes, body) => {
+    const { fn, sent } = recordingFetch(() => jsonResponse(200, OK))
+    const { client, logs } = harness(fn)
+    await expect(
+      client.setLockRule(
+        'door-1',
+        intervalMinutes === undefined ? { type } : { type, intervalMinutes },
+      ),
+    ).resolves.toBeUndefined()
+    expect(sent).toStrictEqual([
+      {
+        method: 'PUT',
+        path: `${API_PATH}/doors/door-1/lock_rule`,
+        body,
+        authorization: `Bearer ${TOKEN}`,
+      },
+    ])
+    expect(logs).toStrictEqual(['PUT /doors/door-1/lock_rule -> 200 SUCCESS'])
+  })
+
+  it('rejects an unusable lock rule locally, before any request', async () => {
+    const { fn, sent } = recordingFetch(() => jsonResponse(200, OK))
+    const { client, logs } = harness(fn)
+    // What a relayed IPC payload can look like: the compile-time types are not a check.
+    const loose = (id: string, rule: { type: string; intervalMinutes?: unknown }): Promise<void> =>
+      client.setLockRule(id, rule as { type: AccessLockRuleSetType; intervalMinutes?: number })
+    for (const rule of [
+      { type: 'custom' }, // custom needs minutes
+      { type: 'keep_unlock', intervalMinutes: 10 }, // and nothing else takes them
+      { type: 'lock_now', intervalMinutes: 1 },
+      { type: 'custom', intervalMinutes: 0 },
+      { type: 'custom', intervalMinutes: -5 },
+      { type: 'custom', intervalMinutes: 1.5 },
+      { type: 'custom', intervalMinutes: '10' },
+      { type: 'unlock_forever' },
+      { type: '' },
+    ]) {
+      const err = await accessError(loose('door-1', rule))
+      expect(err.kind).toBe('bad-request')
+      expect(err.status).toBeNull()
+      expect(err.message).toContain('was not sent')
+      expect(err.message).toContain('PUT /doors/door-1/lock_rule')
+    }
+    expect(fn).not.toHaveBeenCalled()
+    expect(sent).toStrictEqual([])
+    expect(logs.every((line) => line.includes('not sent (invalid lock rule)'))).toBe(true)
+  })
+
+  it('counts a 2xx SUCCESS as done whatever data is, and never repeats the PUT', async () => {
+    for (const data of [{ ok: true }, null, 'done', undefined]) {
+      const { fn } = recordingFetch(() => jsonResponse(200, { code: 'SUCCESS', data }))
+      const { client, logs } = harness(fn)
+      await expect(client.setLockRule('d-1', { type: 'keep_lock' })).resolves.toBeUndefined()
+      expect(fn).toHaveBeenCalledTimes(1)
+      expect(logs.some((line) => line.includes('treated as done'))).toBe(true)
+    }
+  })
+
+  it('reports a refused lock rule once, with the console message', async () => {
+    const { fn } = recordingFetch(() =>
+      jsonResponse(200, {
+        code: 'CODE_DEVICE_DEVICE_OFFLINE',
+        msg: 'The device is currently offline',
+      }),
+    )
+    const { client } = harness(fn)
+    const err = await accessError(client.setLockRule('d-1', { type: 'keep_unlock' }))
+    expect(err.kind).toBe('forbidden')
+    expect(err.retryable).toBe(false)
+    expect(err.message).toContain('The device is currently offline')
+    expect(fn).toHaveBeenCalledTimes(1)
+  })
+
+  it('encodes the door id so it cannot reshape the path', async () => {
+    const { fn, sent } = recordingFetch(() => jsonResponse(200, OK))
+    const { client } = harness(fn)
+    await client.setLockRule('a/b?c', { type: 'reset' })
+    expect(sent[0]?.path).toBe(`${API_PATH}/doors/a%2Fb%3Fc/lock_rule`)
+  })
+})
+
+describe('emergency status (§7.12, §7.13)', () => {
+  it('reads GET /doors/settings/emergency', async () => {
+    const { fn, sent } = recordingFetch(() =>
+      jsonResponse(200, {
+        code: 'SUCCESS',
+        data: { evacuation: true, lockdown: false },
+        msg: 'success',
+      }),
+    )
+    const { client } = harness(fn)
+    await expect(client.emergencyStatus()).resolves.toStrictEqual({
+      lockdown: false,
+      evacuation: true,
+    })
+    expect(sent).toStrictEqual([
+      {
+        method: 'GET',
+        path: `${API_PATH}/doors/settings/emergency`,
+        body: '',
+        authorization: `Bearer ${TOKEN}`,
+      },
+    ])
+  })
+
+  it('reads a missing flag as false, and a non-boolean one as invalid-response', async () => {
+    const partial = harness(
+      fakeFetch(() => jsonResponse(200, { code: 'SUCCESS', data: { lockdown: true } })),
+    )
+    await expect(partial.client.emergencyStatus()).resolves.toStrictEqual({
+      lockdown: true,
+      evacuation: false,
+    })
+    const wrong = harness(
+      fakeFetch(() => jsonResponse(200, { code: 'SUCCESS', data: { lockdown: 'true' } })),
+    )
+    const err = await accessError(wrong.client.emergencyStatus())
+    expect(err.kind).toBe('invalid-response')
+    expect(err.message).toContain('data.lockdown')
+  })
+
+  it.each([
+    [{ lockdown: true, evacuation: false }, '{"lockdown":true,"evacuation":false}'],
+    [{ lockdown: false, evacuation: true }, '{"lockdown":false,"evacuation":true}'],
+    [{ lockdown: false, evacuation: false }, '{"lockdown":false,"evacuation":false}'],
+  ])('sends PUT /doors/settings/emergency with both flags (%j)', async (status, body) => {
+    const { fn, sent } = recordingFetch(() => jsonResponse(200, OK))
+    const { client, logs } = harness(fn)
+    await expect(client.setEmergencyStatus(status)).resolves.toBeUndefined()
+    expect(sent).toStrictEqual([
+      {
+        method: 'PUT',
+        path: `${API_PATH}/doors/settings/emergency`,
+        body,
+        authorization: `Bearer ${TOKEN}`,
+      },
+    ])
+    expect(logs).toStrictEqual(['PUT /doors/settings/emergency -> 200 SUCCESS'])
+  })
+
+  it('rejects flags that are not booleans locally, and sends only the two flags', async () => {
+    const { fn, sent } = recordingFetch(() => jsonResponse(200, OK))
+    const { client } = harness(fn)
+    const loose = (status: Record<string, unknown>): Promise<void> =>
+      client.setEmergencyStatus(status as { lockdown: boolean; evacuation: boolean })
+    for (const status of [
+      { lockdown: 'true', evacuation: false },
+      { lockdown: true },
+      { lockdown: 1, evacuation: 0 },
+      {},
+    ]) {
+      const err = await accessError(loose(status))
+      expect(err.kind).toBe('bad-request')
+      expect(err.status).toBeNull()
+      expect(err.message).toContain('was not sent')
+    }
+    expect(fn).not.toHaveBeenCalled()
+
+    // A stray field on the caller's object does not ride along.
+    await loose({ lockdown: false, evacuation: false, door_id: 'd-1' })
+    expect(sent[0]?.body).toBe('{"lockdown":false,"evacuation":false}')
+  })
+
+  it('counts a 2xx SUCCESS as done whatever data is, and reports a failure once', async () => {
+    const odd = recordingFetch(() => jsonResponse(200, { code: 'SUCCESS', data: {} }))
+    const done = harness(odd.fn)
+    await expect(
+      done.client.setEmergencyStatus({ lockdown: true, evacuation: false }),
+    ).resolves.toBeUndefined()
+    expect(done.logs.some((line) => line.includes('treated as done'))).toBe(true)
+
+    const failing = recordingFetch(() =>
+      jsonResponse(500, {
+        code: 'CODE_SYSTEM_ERROR',
+        msg: "An error occurred on the server's end",
+      }),
+    )
+    const { client } = harness(failing.fn)
+    const err = await accessError(client.setEmergencyStatus({ lockdown: true, evacuation: false }))
+    expect(err.kind).toBe('server')
+    // `retryable` describes the kind; the client itself never sends the PUT twice.
+    expect(failing.fn).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('error mapping from the official reference (§2.2, §2.4)', () => {
+  it('reports a door whose device is offline as a refusal of that door, with the console msg', async () => {
+    // HTTP 402 is "request failed: valid parameters"; the code decides, not the status.
+    const { client } = harness(
+      fakeFetch(() =>
+        jsonResponse(402, {
+          code: 'CODE_DEVICE_DEVICE_OFFLINE',
+          msg: 'The device is currently offline.',
+        }),
+      ),
+    )
+    const err = await accessError(client.unlock('d-1'))
+    // `forbidden` is door-level in connection.ts (DOOR_LEVEL_UNLOCK_KINDS): the status stays green.
+    expect(err.kind).toBe('forbidden')
+    expect(err.status).toBe(402)
+    expect(err.code).toBe('CODE_DEVICE_DEVICE_OFFLINE')
+    expect(err.retryable).toBe(false)
+    expect(err.message).toBe(
+      'PUT /doors/d-1/unlock failed with HTTP 402 CODE_DEVICE_DEVICE_OFFLINE: The device is ' +
+        'currently offline.',
+    )
+    // The Door Hub hint that goes with a bare refusal would point the wrong way here.
+    expect(err.message).not.toContain('Door Hub')
+  })
+
+  it('falls back to the documented meaning when a device code arrives without msg', async () => {
+    const { client } = harness(
+      fakeFetch(() => jsonResponse(200, { code: 'CODE_DEVICE_DEVICE_VERSION_TOO_OLD' })),
+    )
+    const err = await accessError(client.unlock('d-1'))
+    expect(err.kind).toBe('forbidden')
+    expect(err.message).toContain('The firmware version is too old')
+    expect(err.message).not.toContain('sent no message')
+    expect(err.message).not.toContain('Door Hub')
+  })
+
+  it('shows the console msg for a console moved to Identity Enterprise, as a refusal', async () => {
+    const msg = 'The API is not available after upgrading to Identity Enterprise'
+    const { client } = harness(
+      fakeFetch(() => jsonResponse(400, { code: 'CODE_OTHERS_UID_ADOPTED_NOT_SUPPORTED', msg })),
+    )
+    const err = await accessError(client.doors())
+    expect(err.kind).toBe('forbidden')
+    expect(err.kind).not.toBe('bad-request')
+    expect(err.message).toBe(
+      `GET /doors failed with HTTP 400 CODE_OTHERS_UID_ADOPTED_NOT_SUPPORTED: ${msg}.`,
+    )
+    // The kind is a door-level one, so callers tell this endpoint-level refusal apart by the code.
+    expect(isAccessApiUnavailable(err)).toBe(true)
+    expect(err.retryable).toBe(false)
+    expect(err.message).not.toContain('token')
+    expect(err.message).not.toContain('Door Hub')
+  })
+
+  it('falls back to the documented text for Identity Enterprise, still without token advice', async () => {
+    const { client } = harness(
+      fakeFetch(() => jsonResponse(400, { code: 'CODE_OTHERS_UID_ADOPTED_NOT_SUPPORTED' })),
+    )
+    const err = await accessError(client.unlock('d-1'))
+    expect(isAccessApiUnavailable(err)).toBe(true)
+    expect(err.message).toContain('The API is not available after upgrading to Identity Enterprise')
+    expect(err.message).not.toContain('token')
+    expect(err.message).not.toContain('Door Hub')
+  })
+
+  it('does not take any other refusal for an unavailable API', async () => {
+    const { client } = harness(
+      fakeFetch(() => jsonResponse(403, { code: 'CODE_OPERATION_FORBIDDEN', msg: 'no' })),
+    )
+    expect(isAccessApiUnavailable(await accessError(client.unlock('d-1')))).toBe(false)
+    expect(isAccessApiUnavailable(new Error('x'))).toBe(false)
+  })
+
+  it('keeps the Door Hub hint for a bare CODE_OPERATION_FORBIDDEN, naming the scope', async () => {
+    const { client } = harness(
+      fakeFetch(() => jsonResponse(403, { code: 'CODE_OPERATION_FORBIDDEN', msg: 'not allowed' })),
+    )
+    const err = await accessError(client.unlock('d-1'))
+    expect(err.kind).toBe('forbidden')
+    expect(err.message).toContain('not allowed')
+    expect(err.message).toContain('Door Hub')
+    expect(err.message).toContain('edit:space')
+  })
+
+  it('treats a 402 without a known code as the console failing, not as a bad request', async () => {
+    const { client } = harness(
+      fakeFetch(() => jsonResponse(402, { code: 'CODE_SOMETHING_NEW', msg: 'request failed' })),
+    )
+    const err = await accessError(client.door('d-1'))
+    expect(err.kind).toBe('server')
+    expect(err.status).toBe(402)
+    expect(err.message).toContain('request failed')
+  })
+
+  it('gives auth advice with the documented path and the scopes', async () => {
+    const { client } = harness(
+      fakeFetch(() => jsonResponse(401, { code: 'CODE_ACCESS_TOKEN_INVALID', msg: 'invalid' })),
+    )
+    const err = await accessError(client.doors())
+    expect(err.message.endsWith(ACCESS_AUTH_ADVICE)).toBe(true)
+    expect(ACCESS_AUTH_ADVICE).toContain('Access → Settings → General → Advanced → API Token')
+    for (const scope of ['view:space', 'edit:space', 'view:device']) {
+      expect(ACCESS_AUTH_ADVICE).toContain(scope)
+    }
+  })
+})
+
+// -------------------------------------------------------------------------------------------------
 // Pure mapping and classification
 
 describe('toDoor', () => {
@@ -769,5 +1209,55 @@ describe('accessErrorKind', () => {
     expect(accessErrorKind(405, null)).toBe('bad-request')
     expect(accessErrorKind(503, null)).toBe('server')
     expect(accessErrorKind(200, 'CODE_SOMETHING_NEW')).toBe('server')
+  })
+
+  it('classifies HTTP 402 ("request failed", §2.2) as server, never as bad-request', () => {
+    expect(accessErrorKindForStatus(402)).toBe('server')
+    expect(accessErrorKind(402, null)).toBe('server')
+    expect(accessErrorKindForStatus(400)).toBe('bad-request')
+    // A known code still outranks it.
+    expect(accessErrorKind(402, 'CODE_DEVICE_DEVICE_OFFLINE')).toBe('forbidden')
+    expect(accessErrorKind(402, 'CODE_PARAMS_INVALID')).toBe('bad-request')
+  })
+
+  it('maps the documented device codes onto door-level kinds (§2.4)', () => {
+    // "The console answered; the fault is the door's": every one of these must be a kind in
+    // connection.ts's DOOR_LEVEL_UNLOCK_KINDS (forbidden, not-found, bad-request).
+    for (const status of [200, 400, 402, 500]) {
+      expect(accessErrorKind(status, 'CODE_DEVICE_DEVICE_OFFLINE')).toBe('forbidden')
+      expect(accessErrorKind(status, 'CODE_DEVICE_DEVICE_BUSY')).toBe('forbidden')
+      expect(accessErrorKind(status, 'CODE_DEVICE_API_NOT_SUPPORTED')).toBe('forbidden')
+      expect(accessErrorKind(status, 'CODE_DEVICE_DEVICE_VERSION_TOO_OLD')).toBe('forbidden')
+      expect(accessErrorKind(status, 'CODE_DEVICE_DEVICE_NOT_FOUND')).toBe('not-found')
+      expect(accessErrorKind(status, 'CODE_SPACE_DEVICE_BOUND_LOCATION_NOT_FOUND')).toBe(
+        'not-found',
+      )
+    }
+  })
+
+  it('maps Identity Enterprise to forbidden and CODE_SYSTEM_ERROR to server', () => {
+    expect(accessErrorKind(400, 'CODE_OTHERS_UID_ADOPTED_NOT_SUPPORTED')).toBe('forbidden')
+    expect(accessErrorKind(200, 'CODE_OTHERS_UID_ADOPTED_NOT_SUPPORTED')).toBe('forbidden')
+    expect(accessErrorKind(200, 'CODE_SYSTEM_ERROR')).toBe('server')
+    expect(accessErrorKind(400, 'CODE_SYSTEM_ERROR')).toBe('server')
+  })
+
+  it('gives every code in ACCESS_ERROR_CODES a kind of its own, not the status fallback', () => {
+    // 418 falls back to bad-request and 200 to server, so a code that is mapped answers the same
+    // for both, and one that is missing from the table does not.
+    for (const code of ACCESS_ERROR_CODES) {
+      expect(accessErrorKind(418, code), code).toBe(accessErrorKind(200, code))
+    }
+    for (const code of [
+      'CODE_SYSTEM_ERROR',
+      'CODE_SPACE_DEVICE_BOUND_LOCATION_NOT_FOUND',
+      'CODE_DEVICE_DEVICE_NOT_FOUND',
+      'CODE_DEVICE_DEVICE_OFFLINE',
+      'CODE_DEVICE_DEVICE_BUSY',
+      'CODE_DEVICE_API_NOT_SUPPORTED',
+      'CODE_DEVICE_DEVICE_VERSION_TOO_OLD',
+    ]) {
+      expect(ACCESS_ERROR_CODES).toContain(code)
+    }
   })
 })

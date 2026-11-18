@@ -367,3 +367,22 @@ export const DoorSchema = z.object({
   position: z.enum(DOOR_POSITIONS).nullable(),
 })
 export type Door = z.infer<typeof DoorSchema>
+
+/**
+ * DOOR-6 (P5.5): what the Live screen knows of one linked door, read by main from `GET /doors`.
+ * `relay` is the lock relay (`unlock` while the door is released, whoever released it) and
+ * `position` the door position sensor (`null`: no sensor).
+ */
+export const DoorLockStateSchema = z.object({
+  relay: z.enum(DOOR_RELAY_STATES),
+  position: z.enum(DOOR_POSITIONS).nullable(),
+})
+export type DoorLockState = z.infer<typeof DoorLockStateSchema>
+
+/**
+ * DOOR-6 (P5.5): `{ "<accessDoorId>": state }` for the **linked** doors whose state main currently
+ * knows. A linked door that is missing here is **unknown** (not read yet, the read is failing, the
+ * door is gone, or nobody is watching) and must be drawn neutral, never as locked or unlocked.
+ */
+export const DoorStatesSchema = z.record(z.string().min(1), DoorLockStateSchema)
+export type DoorStates = z.infer<typeof DoorStatesSchema>

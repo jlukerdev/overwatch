@@ -1,0 +1,17 @@
+{
+  "_source": "mock",
+  "request": {
+    "method": "PUT",
+    "path": "/doors/settings/emergency",
+    "body": {
+      "lockdown": false,
+      "evacuation": true
+    }
+  },
+  "status": 200,
+  "response": {
+    "code": "SUCCESS",
+    "msg": "success",
+    "data": "success"
+  }
+}

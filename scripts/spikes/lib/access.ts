@@ -1,7 +1,14 @@
-// Pure helpers for the P0.4 Access spike (scripts/spikes/access-spike.ts). No I/O.
+// Pure helpers for the P0.4 / P5.5 Access spike (scripts/spikes/access-spike.ts). No I/O.
 // Unit-tested in tests/unit/accessTypes.test.ts. Erasable syntax only (Node type stripping).
 import type { z } from 'zod'
-import { ACCESS_API_PATH, ACCESS_DEFAULT_PORT } from '../../../src/main/access/types.ts'
+import {
+  ACCESS_API_PATH,
+  ACCESS_DEFAULT_PORT,
+  ACCESS_EVENT_REMOTE_UNLOCK,
+  ACCESS_NOTIFICATIONS_PATH,
+  AccessNotificationSchema,
+  AccessRemoteUnlockDataSchema,
+} from '../../../src/main/access/types.ts'
 import { MOCK_HEADER, MOCK_HEADER_VALUE } from '../../mock-access/app.ts'
 
 export type FixtureSource = 'mock' | 'console'
@@ -145,4 +152,52 @@ export function extraKeys(obj: unknown, known: readonly string[]): string[] {
   return Object.keys(obj)
     .filter((k) => !known.includes(k))
     .sort()
+}
+
+/** `wss://` URL of the notifications WebSocket for an Access base URL (reference §11.1). */
+export function notificationsUrl(baseUrl: URL): string {
+  urlPort(baseUrl)
+  return `wss://${baseUrl.host}${baseUrl.pathname.replace(/\/+$/, '')}${ACCESS_NOTIFICATIONS_PATH}`
+}
+
+/** What the spike records about one WebSocket frame: names only, never a value. */
+export interface NotificationShape {
+  /** The event name, or a placeholder when the frame is not a JSON object with one. */
+  event: string
+  /** Top-level field names, sorted. */
+  keys: string[]
+  /** Field names of `data`, sorted (empty when `data` is not an object). */
+  dataKeys: string[]
+  /** Whether the frame parses with the app's notification schema (and, for a remote unlock, its data schema). */
+  schemaOk: boolean
+  /** For a remote unlock: whether `data.unique_id` is `expectDoorId`. Absent otherwise. */
+  doorIdMatches?: boolean
+}
+
+/**
+ * Reduces a received WebSocket text frame to its event name and field names (OS-1 records which
+ * events an unlock produces without recording anything about the site).
+ */
+export function describeNotification(raw: string, expectDoorId?: string): NotificationShape {
+  let json: unknown
+  try {
+    json = JSON.parse(raw)
+  } catch {
+    return { event: '(not JSON)', keys: [], dataKeys: [], schemaOk: false }
+  }
+  if (!isRecord(json)) return { event: '(not an object)', keys: [], dataKeys: [], schemaOk: false }
+  const frame = AccessNotificationSchema.safeParse(json)
+  const shape: NotificationShape = {
+    event: frame.success ? frame.data.event : '(no event)',
+    keys: Object.keys(json).sort(),
+    dataKeys: isRecord(json.data) ? Object.keys(json.data).sort() : [],
+    schemaOk: frame.success,
+  }
+  if (frame.success && frame.data.event === ACCESS_EVENT_REMOTE_UNLOCK) {
+    const data = AccessRemoteUnlockDataSchema.safeParse(frame.data.data)
+    shape.schemaOk = data.success
+    if (expectDoorId !== undefined)
+      shape.doorIdMatches = data.success && data.data.unique_id === expectDoorId
+  }
+  return shape
 }

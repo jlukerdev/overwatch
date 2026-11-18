@@ -28,7 +28,7 @@
 │                                                                │
 │  MAIN (Node)                                                   │
 │   ├─ protect/   Integration API REST client + WS subscribers   │
-│   ├─ access/    Access API client (doors, unlock)              │
+│   ├─ access/    Access API client, notifications WS, door state│
 │   ├─ streams/   go2rtc lifecycle + stream registry             │
 │   ├─ config/    JSON store (zod, migrations)                   │
 │   ├─ secrets/   safeStorage wrapper                            │
@@ -59,6 +59,7 @@
    - Only the devices feed drives the Protect connection status. The events feed's errors and reconnects are logged and never change the badge, and a repeated `connect()` reopens an events feed that stopped by itself (for example on a rejected key), even if that connect's inventory re-read fails. When the devices feed stops by itself, the events feed is stopped with it, so the next `connect()` opens both fresh.
    - The inventory is **not** rebuilt from the device feed. `GET /v1/cameras` stays the authority and is re-read after every connect, reconnect and add/remove, because the feed sends no initial state and its message shapes are unverified (SPEC R11). The feed is used for the one thing it states plainly: a camera's `state`.
    - Every IPC call answers `{ ok, value | error }` rather than throwing, and every mutating call answers with the whole app state. SPEC §6.1 says why.
+   - **Door state (P5.5, DOOR-6)** is the one Access feed. `access/doorStateMonitor.ts` (pure, clock and I/O injected) reads `GET /doors` on a timer and at once on a hint — any frame of the Access notifications WebSocket (`access/notifications.ts`, a self-healing subscription like the Protect ones, on the Access pin and Bearer token), the socket reopening, or the app's own unlock answering — and pushes the linked doors' states as `doorStates`. The socket is never the source of truth: the API has no relock event. The connection manager runs the monitor only while the renderer's Live screen is watching, Access is on, a token is stored and a link exists, and restarts it when the console block, the token, the Access certificate or the links change. It never writes to the console.
 5. **The cell logic is pure.** The rotation/motion scheduler is a pure reducer in `src/renderer/src/features/cells/cellScheduler.ts`, so it can be unit-tested.
 6. **Snapshots are one renderer cache** (P5.2). `state/thumbnailsStore.ts` is a small zustand store holding the Cameras tab's thumbnail sheet and load (P4.5), its RTSPS feed states (QUAL-7), and the package-channel snapshots the View editor shows (CAM-4, VIEW-3). It only applies the pure reducers in `state/camerasStore.ts`, owns the request-id counter, and folds every change of `appStore`'s inventory into the cache once, whether or not a screen is mounted (CAM-2/3). The Cameras tab and the View editor both read it and both fetch into it through the same `snapshot` IPC (so main's one rate limiter, R9); a camera is marked in flight before it is fetched, which is what stops the two screens asking twice. It holds bytes only: object URLs are made and revoked by `ui/SnapshotImage.tsx`, the one component that renders them.
 

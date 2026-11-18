@@ -1,0 +1,14 @@
+{
+  "_source": "reference",
+  "_note": "Field names and the reason code (107: an admin unlocked the door) are the reference's (§11.1, access.remote_view.change). Ids are made-up placeholders.",
+  "frame": {
+    "event": "access.remote_view.change",
+    "receiver_id": "",
+    "event_object_id": "uuid-001",
+    "save_to_history": false,
+    "data": {
+      "reason_code": 107,
+      "remote_call_request_id": "request-001"
+    }
+  }
+}

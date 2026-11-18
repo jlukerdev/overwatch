@@ -1,0 +1,28 @@
+{
+  "_source": "reference",
+  "_note": "Field names and value types follow the reference's sample (PDF §11.1, access.remote_view). Every value is a made-up placeholder: the sample's ids, MAC, channel and token are not reproduced.",
+  "frame": {
+    "event": "access.remote_view",
+    "receiver_id": "",
+    "event_object_id": "uuid-001",
+    "save_to_history": false,
+    "data": {
+      "request_id": "request-001",
+      "device_id": "device-001",
+      "device_type": "UA-G2-PRO",
+      "device_name": "Front Door Reader",
+      "door_name": "Front Door",
+      "floor_name": "1F",
+      "controller_id": "controller-001",
+      "connected_uah_id": "hub-001",
+      "in_or_out": "in",
+      "create_time": 1700000000,
+      "reason_code": 0,
+      "door_guard_ids": ["user-001"],
+      "room_id": "room-001",
+      "host_device_mac": "mac-001",
+      "channel": "<redacted-channel>",
+      "token": "<redacted-token>"
+    }
+  }
+}

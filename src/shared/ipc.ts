@@ -28,12 +28,14 @@ import {
   CameraStateChangeSchema,
   DoorLinksSchema,
   DoorSchema,
+  DoorStatesSchema,
   SettingsSchema,
   ViewSchema,
   type Camera,
   type CameraEvent,
   type CameraStateChange,
   type Door,
+  type DoorStates,
 } from './models'
 import { PACKAGE_CHANNEL, QualitySchema, StreamQualitySchema } from './quality'
 import {
@@ -581,6 +583,15 @@ export const UnlockResultSchema = z.object({
 })
 export type UnlockResult = z.infer<typeof UnlockResultSchema>
 
+/**
+ * DOOR-6 (P5.5): the Live screen says whether it is showing at least one unlock control. `true`
+ * starts main's door-state monitor (the Access notifications WebSocket plus `GET /doors` polling),
+ * `false` stops it; nothing is read while nobody watches, and nothing at all while Access is off
+ * (DOOR-0). The renderer names no door: main watches the doors in the saved `doorLinks`.
+ */
+export const WatchDoorsInputSchema = z.object({ watching: z.boolean() })
+export type WatchDoorsInput = z.infer<typeof WatchDoorsInputSchema>
+
 // -------------------------------------------------------------------------------------------------
 // The channel table
 //
@@ -683,6 +694,13 @@ export const IPC = {
    * wait for that write, and a failed write does not change it.
    */
   unlockDoor: call('vp:doors/unlock', UnlockDoorInputSchema, UnlockResultSchema),
+  /**
+   * DOOR-6 (P5.5): start or stop watching the linked doors' lock state. Answers the states main
+   * knows right now (`{}` when stopping, while Access is off, or before the first read); later
+   * changes arrive as `IPC_EVENTS.doorStates`. Never fails for a console reason: a read that fails
+   * shows as doors missing from the map, and as the Access status (CON-5).
+   */
+  watchDoors: call('vp:doors/watch', WatchDoorsInputSchema, DoorStatesSchema),
 } as const
 
 /**
@@ -724,6 +742,12 @@ export const IPC_EVENTS = {
    * user doing anything.
    */
   streamRuntime: { channel: 'vp:event/streamRuntime', payload: StreamRuntimeSchema },
+  /**
+   * DOOR-6 (P5.5): the linked doors' lock state changed (or became unknown). Always the **whole**
+   * map (`DoorStatesSchema`): a door missing from it is unknown. Sent only on a change, and once
+   * with `{}` when the monitor stops.
+   */
+  doorStates: { channel: 'vp:event/doorStates', payload: DoorStatesSchema },
 } as const
 
 // What Phase 2 deliberately does **not** add to this contract:
@@ -786,6 +810,8 @@ export interface ViewProtectApi {
   setDoorLinks(input: SetDoorLinksInput): Promise<IpcResult<AppState>>
   /** DOOR-3: unlock the door linked to a camera ref, once. Never retried, never automated. */
   unlockDoor(input: UnlockDoorInput): Promise<IpcResult<UnlockResult>>
+  /** DOOR-6: start or stop watching the linked doors' lock state; answers what is known now. */
+  watchDoors(input: WatchDoorsInput): Promise<IpcResult<DoorStates>>
 
   onConnection(listener: (status: ConnectionStatus) => void): Unsubscribe
   onCameras(listener: (cameras: Camera[]) => void): Unsubscribe
@@ -793,6 +819,8 @@ export interface ViewProtectApi {
   /** CELL-2: motion, smart-detect and ring events, repeats included (see `IPC_EVENTS.cameraEvent`). */
   onCameraEvent(listener: (event: CameraEvent) => void): Unsubscribe
   onStreamRuntime(listener: (runtime: StreamRuntime) => void): Unsubscribe
+  /** DOOR-6: the whole map of known linked-door states, on every change. */
+  onDoorStates(listener: (states: DoorStates) => void): Unsubscribe
 }
 
 // Imported for the signatures above; re-exported so the renderer can take the whole contract plus
@@ -804,6 +832,8 @@ export type {
   Cell,
   Door,
   DoorLinks,
+  DoorLockState,
+  DoorStates,
   Settings,
   View,
 } from './models'

@@ -1,0 +1,17 @@
+{
+  "_source": "mock",
+  "request": {
+    "method": "GET",
+    "path": "/doors/{id}/lock_rule",
+    "id": "door-001"
+  },
+  "status": 200,
+  "response": {
+    "code": "SUCCESS",
+    "msg": "success",
+    "data": {
+      "type": "keep_unlock",
+      "ended_time": 3602128562
+    }
+  }
+}

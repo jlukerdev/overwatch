@@ -1,26 +1,32 @@
-// UniFi Access developer API client: list doors (DOOR-1/2) and remote unlock (DOOR-3). SPEC §5.2.
+// UniFi Access developer API client: list doors (DOOR-1/2), remote unlock (DOOR-3) and the rest of
+// the documented door endpoints (lock rule, emergency status). SPEC §5.2.
 //
-// ⚠️ **EVERYTHING THIS FILE TALKS TO IS COMMUNITY-SOURCED AND UNVERIFIED (R3).** Ubiquiti's
-// developer portal does not document Access, no Access hardware exists on the development network,
-// and nothing here has run against a console. The shapes come from `./types.ts` and the sources
-// listed in `docs/spikes/P0.4-access-mock.md` §2; the on-site checklist **OS-1** (P0.4 §6) is what
-// verifies them, and its results replace the assumptions marked `UNVERIFIED (OS-1)` below. Until
+// **The shapes are Ubiquiti's, from the official UniFi Access API reference** — the extract in
+// `docs/reference/access-endpoints-v4.2.16.md` (the full PDF sits next to it; § numbers below are
+// the PDF's). ⚠️ **Documented is not the same as run against hardware:** no Access hardware exists
+// on the development network, so nothing here has talked to a real console. The on-site checklist
+// **OS-1** (`docs/spikes/P0.4-access-mock.md` §6) remains the check, and whatever is marked
+// `unverified (OS-1)` below is something the reference leaves open or contradicts itself on. Until
 // then this client is exercised against the local mock (`scripts/mock-access/`), which is what
 // `tests/unit/accessClient.test.ts` drives — in-process and over real pinned TLS.
+//
+// Push exists too: the notifications WebSocket (§11.1) lives in `./notifications.ts`. It carries no
+// relay state and no relock event, which is why the relay is still read here with a GET.
 //
 // Five rules this module exists to keep:
 //  1. **DOOR-0.** `enabled()` is read on *every* call, and while it is false **no request is sent
 //     at all** — the call fails with `kind: 'disabled'`. The feature is off by default, so a client
 //     may be constructed long before Access is usable.
-//  2. **An error is HTTP non-2xx *or* `code !== 'SUCCESS'`, whatever the status** (P0.4 §3
-//     assumption 4). The HTTP status that goes with each error code is undocumented everywhere, and
-//     the real console may well answer 200 with a non-`SUCCESS` code. A 401 is an auth error
-//     whatever the body.
+//  2. **An error is HTTP non-2xx *or* `code !== 'SUCCESS'`, whatever the status.** The reference
+//     lists the HTTP statuses (§2.2) and the error codes (§2.4) but does **not** say which status
+//     goes with which code, so the real console may well answer 200 with a non-`SUCCESS` code. A
+//     401 is an auth error whatever the body.
 //  3. **The message is never empty** (SPEC §5.2): the envelope's `msg` when it is there, and the
 //     `code` plus the HTTP status when it is not (`msg` is optional in the schemas). A DOOR-3
 //     failure the user cannot read is a bug — the whole point of the unlock button is feedback.
-//  4. **Unlock is never automated** (DOOR-3/4, see {@link AccessClient.unlock}). This client does
-//     not prompt and does not retry an unlock, ever.
+//  4. **Nothing that moves a door is ever automated** (DOOR-3/4, see {@link AccessClient.unlock},
+//     {@link AccessClient.setLockRule}, {@link AccessClient.setEmergencyStatus}). This client does
+//     not prompt and does not retry any of them, ever.
 //  5. **The token never leaves the `Authorization: Bearer` header** (CON-2, NFR-9, R5). Not in a
 //     message, not in a log line, not in a URL. Log lines carry method, path, status and `code`.
 //
@@ -36,12 +42,17 @@ import {
   ACCESS_SUCCESS_CODE,
   AccessDoorResponseSchema,
   AccessDoorSchema,
+  AccessEmergencyRequestSchema,
+  AccessEmergencyStatusResponseSchema,
   AccessErrorEnvelopeSchema,
+  AccessLockRuleRequestSchema,
+  AccessLockRuleResponseSchema,
+  AccessOkResponseSchema,
   AccessUnlockRequestSchema,
   AccessUnlockResponseSchema,
   accessSuccessEnvelope,
 } from './types'
-import type { AccessDoor } from './types'
+import type { AccessDoor, AccessLockRuleSetType } from './types'
 import type { ConsoleEndpoint } from '../console/endpoints'
 import type { Door } from '@shared/models'
 
@@ -53,24 +64,31 @@ export const DEFAULT_REQUEST_TIMEOUT_MS = 15_000
  * `protect/errors.ts`, with two Access-only members:
  * - `disabled` — DOOR-0: Access is switched off, so **no call was made**. Not a failure of the
  *   console; the UI should not be showing an unlock control at all in this state.
- * - `auth` — the token is missing, wrong, expired or lacks the door scopes (`CODE_AUTH_FAILED`,
+ * - `auth` — the token is missing, wrong, expired or lacks the scopes (`CODE_AUTH_FAILED`,
  *   `CODE_ACCESS_TOKEN_INVALID`, `CODE_UNAUTHORIZED`, or any 401). The fix is in Settings.
- * - `forbidden` — the console refused the operation itself, not the caller's identity. The
- *   community's example is remote unlock of a door that is not bound to a Door Hub
- *   (`CODE_OPERATION_FORBIDDEN`, `is_bind_hub: false`) — unverified (OS-1).
- * - `not-found` — the door (or path) does not exist: `CODE_NOT_EXISTS` /
- *   `CODE_RESOURCE_NOT_FOUND`. A saved door link can point at a deleted door (DOOR-2).
- * - `bad-request` — the request was malformed (`CODE_PARAMS_INVALID`), including a body this
- *   client rejected locally before sending it.
- * - `rate-limit` — the Access API throttles (the community guide mentions 429). No `Retry-After`
- *   is documented, so there is no `retryAfterMs` here; P1.7's queue owns pacing (R9).
- * - `server` — a 5xx, or a non-`SUCCESS` code this client does not recognise.
+ * - `forbidden` — the console answered and refused the operation itself, not the caller's
+ *   identity: `CODE_OPERATION_FORBIDDEN` (the reference says a door "can only be used for remote
+ *   opening if it's bound" to a hub, `is_bind_hub`; which code an unbound door really gets is
+ *   unverified, OS-1), a door whose device cannot do it right now (`CODE_DEVICE_DEVICE_OFFLINE`,
+ *   `…_BUSY`, `…_API_NOT_SUPPORTED`, `…_VERSION_TOO_OLD`), and a console that has moved to
+ *   Identity Enterprise (`CODE_OTHERS_UID_ADOPTED_NOT_SUPPORTED`). See `KIND_BY_CODE`.
+ * - `not-found` — the door, its device or the path does not exist: `CODE_NOT_EXISTS`,
+ *   `CODE_RESOURCE_NOT_FOUND`, `CODE_DEVICE_DEVICE_NOT_FOUND`,
+ *   `CODE_SPACE_DEVICE_BOUND_LOCATION_NOT_FOUND`. A saved door link can point at a deleted door
+ *   (DOOR-2).
+ * - `bad-request` — the request was malformed (`CODE_PARAMS_INVALID`, HTTP 400), including a body
+ *   this client rejected locally before sending it.
+ * - `rate-limit` — the Access API throttles (429, §2.2). No limit and no `Retry-After` are
+ *   documented, so there is no `retryAfterMs` here; P1.7's queue owns pacing (R9).
+ * - `server` — a 5xx, `CODE_SYSTEM_ERROR`, a 402 ("request failed") with no code this client
+ *   knows, or any other non-`SUCCESS` code it does not recognise.
  * - `timeout` — the console did not answer inside `requestTimeoutMs`.
  * - `network` — the connection failed (console down, wrong host or port, TCP reset).
  * - `pin` — the TLS pin is missing or did not match (CON-3). **Never** retried and never
  *   downgraded to an unpinned connection; the user re-accepts the certificate in Settings.
  * - `invalid-response` — a 2xx `SUCCESS` body that does not match the schemas in `./types.ts`.
- *   Expected to be the first thing OS-1 trips over, which is why the reason names the field.
+ *   The reference contradicts itself in places (see `./types.ts`), so this is what OS-1 is most
+ *   likely to trip over, which is why the reason names the field.
  */
 export type AccessErrorKind =
   | 'disabled'
@@ -120,7 +138,8 @@ export class AccessApiError extends Error {
    *
    * **This is not permission to retry an unlock.** A second `PUT …/unlock` is a second physical
    * door release, so an unlock is only ever repeated by the user pressing the control again
-   * (DOOR-3/4). Read this flag for `doors()` / `door()` only.
+   * (DOOR-3/4), and the same goes for `setLockRule()` and `setEmergencyStatus()`. Read this flag
+   * for the GET calls only.
    */
   get retryable(): boolean {
     return (
@@ -150,22 +169,50 @@ export interface AccessClientOptions {
 }
 
 /**
- * The optional unlock body (P0.4 §3 assumption 8, unverified). With no actor the console logs the
- * API token's name as the actor, which is the common case; the app passes one once it has a notion
- * of who is at the keyboard. `actor_id` and `actor_name` go together or not at all, which
- * `AccessUnlockRequestSchema` enforces — this client checks the body **before** sending it.
+ * The optional unlock body (§7.9). With no actor the console uses the API token's name as the
+ * actor, which is the common case; the app passes one once it has a notion of who is at the
+ * keyboard. `actor_id` and `actor_name` go together or not at all ("required if the other is
+ * given"), which `AccessUnlockRequestSchema` enforces — this client checks the body **before**
+ * sending it.
  */
 export interface UnlockOptions {
   readonly actor?: { readonly id: string; readonly name: string }
 }
 
+/** A door's temporary locking rule, from `GET /doors/{id}/lock_rule` (§7.11). */
+export interface DoorLockRule {
+  /**
+   * Documented as `schedule`, `keep_lock`, `keep_unlock`, `custom` or `lock_early`
+   * (`ACCESS_LOCK_RULE_TYPES`). Left a plain string: what a door with **no** rule answers is not
+   * documented (unverified, OS-1), so it may be empty or a value not listed here.
+   */
+  readonly type: string
+  /** When the rule ends, in Unix **seconds**; `null` when the console sent none. */
+  readonly endedTime: number | null
+}
+
+/** Options of {@link AccessClient.doors}. */
+export interface DoorsOptions {
+  /**
+   * For a caller that polls (the door-state monitor, DOOR-6): the per-request success line is not
+   * logged, and a "skipped N of M doors" problem is logged once per change instead of once per
+   * read. A wall display polls every few seconds, all day; failures are still logged every time
+   * (they are rare, and the monitor backs off while they last).
+   */
+  readonly quiet?: boolean
+}
+
 export interface AccessClient {
-  /** `GET /doors` (DOOR-1/2). */
-  doors(): Promise<Door[]>
-  /** `GET /doors/{id}`. Used to re-read one door's relay after an unlock (there is no push). */
+  /** `GET /doors` (DOOR-1/2, §7.8). */
+  doors(options?: DoorsOptions): Promise<Door[]>
+  /**
+   * `GET /doors/{id}` (§7.7). Used to read one door's relay, e.g. after an unlock: the
+   * notifications WebSocket (`./notifications.ts`) says that a remote unlock happened but carries
+   * no `door_lock_relay_status` and no relock event, so the relay itself only comes from a GET.
+   */
   door(id: string): Promise<Door>
   /**
-   * `PUT /doors/{id}/unlock` (DOOR-3) — **releases a physical door.**
+   * `PUT /doors/{id}/unlock` (DOOR-3, §7.9) — **releases a physical door.**
    *
    * The explicit user interaction DOOR-3/4 requires belongs to the **caller** (the P5.x unlock
    * control: press-and-hold for 1 s or a confirm dialog). This client deliberately does not
@@ -174,41 +221,140 @@ export interface AccessClient {
    * failed unlock is reported, never repeated (DOOR-4). `retryable` is about the read calls.
    *
    * Resolves when the console accepted the unlock. The relay goes to `unlock` for the door's
-   * configured time and back to `lock` on its own; the local API has no push for that, so a caller
-   * that wants to show it polls `door(id)` (P0.4 §2, hubitat-unifi-access).
+   * configured time and back to `lock` on its own. The notifications WebSocket pushes
+   * `access.data.device.remote_unlock` for the unlock, but nothing for the relock and no relay
+   * state at all (§11.1), so a caller that wants to show the relay reads it with `door(id)`.
    */
   unlock(id: string, options?: UnlockOptions): Promise<void>
+  /** `GET /doors/{id}/lock_rule` (§7.11, Access 1.24.6+, scope `view:space`). Read-only. */
+  lockRule(id: string): Promise<DoorLockRule>
+  /**
+   * `PUT /doors/{id}/lock_rule` (§7.10, Access 1.24.6+, scope `edit:space`) — **changes a
+   * physical door's lock state**: `keep_unlock` and `custom` hold it unlocked, `keep_lock` holds
+   * it locked, `reset` / `lock_early` / `lock_now` end an unlock. `intervalMinutes` is the
+   * duration in **minutes**, required for `custom` and refused for every other type; the body is
+   * checked with `AccessLockRuleRequestSchema` **before** anything is sent.
+   *
+   * Same rule as {@link AccessClient.unlock} (DOOR-3/4, CLAUDE.md "door unlock must always need
+   * explicit user interaction"): **never** call this from a timer, an automatic trigger, an event
+   * handler, a reconnect or any kind of retry — only as the direct result of a user action. A
+   * failure is reported, never repeated. Nothing in the app calls it yet; it exists so the client
+   * covers the documented door API.
+   */
+  setLockRule(
+    id: string,
+    rule: { readonly type: AccessLockRuleSetType; readonly intervalMinutes?: number },
+  ): Promise<void>
+  /** `GET /doors/settings/emergency` (§7.13, Access 1.24.6+, scope `view:space`). Read-only. */
+  emergencyStatus(): Promise<{ lockdown: boolean; evacuation: boolean }>
+  /**
+   * `PUT /doors/settings/emergency` (§7.12, Access 1.24.6+, scope `edit:space`) — **changes the
+   * lock state of every door at once**: `evacuation: true` keeps all doors unlocked, `lockdown:
+   * true` keeps them all locked, both `false` restores the initial state.
+   *
+   * Same rule as {@link AccessClient.unlock}, with more at stake (DOOR-3/4, CLAUDE.md): **never**
+   * call this from a timer, an automatic trigger, an event handler, a reconnect or any kind of
+   * retry — only as the direct result of a user action. A failure is reported, never repeated.
+   * Nothing in the app calls it yet; it exists so the client covers the documented door API.
+   */
+  setEmergencyStatus(status: {
+    readonly lockdown: boolean
+    readonly evacuation: boolean
+  }): Promise<void>
+}
+
+/** The code of a console that refuses the whole developer API (Identity Enterprise, §1). */
+const ACCESS_API_UNAVAILABLE_CODE = 'CODE_OTHERS_UID_ADOPTED_NOT_SUPPORTED'
+
+/**
+ * True for a failure that says the **whole Access API is unavailable** on this console
+ * (`CODE_OTHERS_UID_ADOPTED_NOT_SUPPORTED`). Its kind is `forbidden` (see `KIND_BY_CODE` for why no
+ * kind was added), which elsewhere means "the console refused this one door"; a caller that treats
+ * `forbidden` as door-level, or as worth polling through, must ask this first. No retry fixes it.
+ */
+export function isAccessApiUnavailable(err: unknown): boolean {
+  return err instanceof AccessApiError && err.code === ACCESS_API_UNAVAILABLE_CODE
 }
 
 /**
- * Error `code` → kind, for the case rule 2 exists for: the HTTP status is not trustworthy (it is
- * undocumented, P0.4 §3 assumption 4), so a recognised code decides the kind and the status is
- * only the fallback. Every entry is COMMUNITY-SOURCED / UNVERIFIED (OS-1); the code list itself is
- * `ACCESS_ERROR_CODES` in `./types.ts`.
+ * Error `code` → kind, for the case rule 2 exists for: the reference does not say which HTTP status
+ * goes with which code, so a recognised code decides the kind and the status is only the fallback.
+ * The codes and their meanings are the reference's (§2.4; `ACCESS_ERROR_CODES` in `./types.ts`);
+ * which of them a door call really returns is unverified (OS-1).
  */
 const KIND_BY_CODE: Readonly<Record<string, AccessErrorKind>> = {
-  // "invalid or expired" / "auth failed" / "lacks the required permission scope". All three are
-  // fixed by fixing the token in Settings, so all three are `auth` rather than `forbidden`:
-  // scopes are a property of the token, not of the door (unverified, OS-1).
+  // "Authentication failed" / "the provided access token is invalid" / "you are not allowed to
+  // perform this action". All three are fixed by fixing the token in Settings, so all three are
+  // `auth` rather than `forbidden`: scopes are a property of the token, not of the door.
   CODE_AUTH_FAILED: 'auth',
   CODE_ACCESS_TOKEN_INVALID: 'auth',
   CODE_UNAUTHORIZED: 'auth',
-  // The operation itself was refused — the mock's answer for unlocking a door with
-  // `is_bind_hub: false`. The real code for that case is unknown (P0.4 §3 assumption 9).
+  // "The requested operation is not allowed" — the mock's answer for unlocking a door with
+  // `is_bind_hub: false`. The reference says such a door cannot be opened remotely but not which
+  // code it gets (unverified, OS-1).
   CODE_OPERATION_FORBIDDEN: 'forbidden',
-  // Unknown door id vs unknown path; the mock uses the first for doors (assumption 6).
+  // "The requested item does not exist" vs "the requested resource was not found"; the mock uses
+  // the first for an unknown door id.
   CODE_NOT_EXISTS: 'not-found',
   CODE_RESOURCE_NOT_FOUND: 'not-found',
+  // The door's hub is gone, or the hub is not bound to a location any more: for the caller that
+  // is the same thing as a stale door link (DOOR-2).
+  CODE_DEVICE_DEVICE_NOT_FOUND: 'not-found',
+  CODE_SPACE_DEVICE_BOUND_LOCATION_NOT_FOUND: 'not-found',
   CODE_PARAMS_INVALID: 'bad-request',
-  CODE_OTHERS_UID_ADOPTED_NOT_SUPPORTED: 'bad-request',
-  // Mock-only, for `--fail-rate` (assumption 10). Kept here so the mock's 500 classifies the same
-  // way whatever status it is sent with; it is not a documented Access code.
+  // The door's device cannot do it right now: offline, busy, on firmware that is too old, or a
+  // model the API does not cover. The console answered and its token was accepted, so this is not
+  // `server` (which would say the console is broken, mark the call retryable and turn the Access
+  // status red) and not `auth`. `forbidden` is the existing kind for "the console refused this
+  // door": it is one of `DOOR_LEVEL_UNLOCK_KINDS` in `src/main/connection.ts`, so a failed unlock
+  // of an offline door stays a fault of that door and the Access status stays connected. No new
+  // kind was added because other files switch on the union. The Door Hub hint that normally goes
+  // with `forbidden` is left off for these (see `responseErrorMessage`): the console's own `msg`
+  // ("The device is currently offline") is the explanation.
+  CODE_DEVICE_DEVICE_OFFLINE: 'forbidden',
+  CODE_DEVICE_DEVICE_BUSY: 'forbidden',
+  CODE_DEVICE_API_NOT_SUPPORTED: 'forbidden',
+  CODE_DEVICE_DEVICE_VERSION_TOO_OLD: 'forbidden',
+  // "The API is not available after upgrading to Identity Enterprise" (§1). Nothing is wrong with
+  // the request or the token; the console refuses the **whole API**. The kind stays `forbidden`
+  // because that already gives the right message — the console's `msg`, no "check your token"
+  // advice and no Door Hub hint — and is not retryable, and because adding a kind would touch every
+  // file that switches on the union. But unlike the device codes above this refusal is about the
+  // endpoint, not about one door, so the two places that read `forbidden` as door-level ask
+  // `isAccessApiUnavailable` first: the door-state monitor halts on it instead of polling for ever,
+  // and a failed unlock leaves the Access status `error` instead of `connected`.
+  [ACCESS_API_UNAVAILABLE_CODE]: 'forbidden',
+  // "An error occurred on the server's end" — a documented code (§2.4), and also what the mock's
+  // `--fail-rate` sends. Listed so it classifies the same way whatever status it arrives with.
   CODE_SYSTEM_ERROR: 'server',
 }
 
-/** HTTP status → kind, used only when the `code` is missing or unrecognised. */
+/**
+ * What the reference says each of these codes means (§2.4), used **only** when the console sent no
+ * `msg` of its own, so that a refusal with the generic `forbidden` / `not-found` kind still tells
+ * the user what happened (rule 3). `CODE_DEVICE_DEVICE_BUSY` is reworded: the reference's text is
+ * "The camera is currently in use", which would be confusing next to a door.
+ */
+const DOCUMENTED_MSG_BY_CODE: Readonly<Record<string, string>> = {
+  CODE_DEVICE_DEVICE_OFFLINE: 'The device is currently offline',
+  CODE_DEVICE_DEVICE_NOT_FOUND: 'The device was not found',
+  CODE_DEVICE_DEVICE_BUSY: 'The device is currently in use',
+  CODE_DEVICE_API_NOT_SUPPORTED: 'The API is currently not available for this device',
+  CODE_DEVICE_DEVICE_VERSION_TOO_OLD:
+    'The firmware version is too old. Please update to the latest version',
+  CODE_SPACE_DEVICE_BOUND_LOCATION_NOT_FOUND: "The device's location was not found",
+  [ACCESS_API_UNAVAILABLE_CODE]: 'The API is not available after upgrading to Identity Enterprise',
+}
+
+/** HTTP status → kind, used only when the `code` is missing or unrecognised (§2.2). */
 export function accessErrorKindForStatus(status: number): AccessErrorKind {
   if (status === 401) return 'auth'
+  // 402 is "Request Failed: the parameters were valid but the request failed for some reason" —
+  // explicitly *not* a bad request, so it must not tell the user their input was wrong. Without a
+  // code that says more, the honest reading is "the console could not do it", which is `server`
+  // (retryable for the GETs; an unlock is never retried whatever this says). A 402 that carries a
+  // known code, e.g. `CODE_DEVICE_DEVICE_OFFLINE`, is classified by that code instead.
+  if (status === 402) return 'server'
   if (status === 403) return 'forbidden'
   if (status === 404) return 'not-found'
   if (status === 429) return 'rate-limit'
@@ -234,9 +380,9 @@ export function accessErrorKind(status: number, code: string | null): AccessErro
  * renderer only ever sees this shape (P1.5).
  *
  * `is_bind_hub`'s string form and the two spellings of "no position sensor" are already normalized
- * by the schemas in `./types.ts`, except that `''` has to collapse to `null` here: the community
- * docs say `null` when no sensor is connected while their single-door example sends `''`, and the
- * UI must not have to know about both (P0.4 §3 assumption 7, unverified).
+ * by the schemas in `./types.ts`, except that `''` has to collapse to `null` here: the reference
+ * says "a null value means that no device is connected" while its own §7.7 sample sends `''`, and
+ * the UI must not have to know about both (which one a console sends is unverified, OS-1).
  */
 export function toDoor(door: AccessDoor): Door {
   return {
@@ -286,9 +432,14 @@ function looseCode(json: unknown): string | null {
   return typeof value === 'string' && value.length > 0 ? value : null
 }
 
-const AUTH_ADVICE =
-  ' Check the Access API token in Settings: it may be wrong, expired or missing the door ' +
-  'permissions (Access → Settings → Advanced → API Token).'
+/**
+ * What to do about an `auth` failure, appended to the message (leading space included). The path
+ * and the scopes are the reference's (§2.7 and the scope column of each endpoint).
+ */
+export const ACCESS_AUTH_ADVICE =
+  ' Check the Access API token in Settings: it may be wrong, expired or missing a permission ' +
+  '(Access → Settings → General → Advanced → API Token; view:space to list doors, edit:space to ' +
+  'unlock, view:device for live door state).'
 
 /** Rule 3 made concrete: `msg` when the console sent one, `code` plus the status when it did not. */
 function responseErrorMessage(args: {
@@ -301,31 +452,40 @@ function responseErrorMessage(args: {
   const head = `${args.what} failed with HTTP ${String(args.status)}${
     args.code === null ? '' : ` ${args.code}`
   }`
+  const documented = args.code === null ? undefined : DOCUMENTED_MSG_BY_CODE[args.code]
   const detail =
     args.msg !== null && args.msg.trim() !== ''
       ? `: ${args.msg.trim()}`
-      : args.code === null
-        ? '. The response was not an Access API envelope ({ code, msg, data })'
-        : '. The console sent no message with that code'
+      : documented !== undefined
+        ? `: ${documented}`
+        : args.code === null
+          ? '. The response was not an Access API envelope ({ code, msg, data })'
+          : '. The console sent no message with that code'
   const advice =
     args.kind === 'auth'
-      ? AUTH_ADVICE
-      : args.kind === 'forbidden'
-        ? ' The console refused the operation: the token may lack the door permission, or the ' +
-          'door is not bound to a Door Hub, which remote unlock needs (unverified, OS-1).'
+      ? ACCESS_AUTH_ADVICE
+      : args.kind === 'forbidden' && documented === undefined
+        ? // Only for a bare refusal (`CODE_OPERATION_FORBIDDEN`, or a 403 with no known code). The
+          // device codes and the Identity Enterprise one say what is wrong themselves, and a Door
+          // Hub hint next to "the device is currently offline" would point the wrong way.
+          ' The console refused the operation: the token may lack the edit:space permission, or ' +
+          'the door is not bound to a Door Hub, which remote unlock needs.'
         : args.kind === 'rate-limit'
           ? ' The Access API is throttling requests; wait a moment and try again.'
           : ''
-  return `${head}${detail}.${advice}`
+  // `msg` is the console's own sentence and may already end with a full stop.
+  return `${head}${detail.replace(/[.\s]+$/, '')}.${advice}`
 }
 
 /**
  * Wraps a thrown connection failure. `fetch` reports a connect failure as a `TypeError` with the
  * real reason in `cause`, so this unwraps to find it: a pin failure keeps its own message and
  * becomes `kind: 'pin'` (the one kind that must never be retried or worked around), an abort from
- * our own deadline becomes `timeout`, and anything else `network`.
+ * our own deadline becomes `timeout`, and anything else `network`. `what` is the subject of the
+ * message (`GET /doors`); it and `endpoint` (`host:port`) must carry no credential. Shared with
+ * `./notifications.ts`, whose failed upgrades are classified the same way.
  */
-function accessErrorFromThrown(args: {
+export function accessErrorFromThrown(args: {
   err: unknown
   what: string
   endpoint: string
@@ -352,6 +512,9 @@ interface AccessRawResponse {
   readonly json: unknown
 }
 
+/** Emergency status applies to all doors, so its path has no door id (§7.12, §7.13). */
+const EMERGENCY_PATH = '/doors/settings/emergency'
+
 export function createAccessClient(options: AccessClientOptions): AccessClient {
   const endpoint = options.endpoint
   const where = endpoint.hostPort
@@ -367,6 +530,8 @@ export function createAccessClient(options: AccessClientOptions): AccessClient {
     method: 'GET' | 'PUT',
     path: string,
     body?: string,
+    /** `DoorsOptions.quiet`: the success line is not logged. Every failure still is. */
+    quiet = false,
   ): Promise<AccessRawResponse> {
     const what = `${method} ${path}`
 
@@ -385,7 +550,7 @@ export function createAccessClient(options: AccessClientOptions): AccessClient {
     if (token === '') {
       log(`${what} -> not sent (no Access API token saved)`)
       throw new AccessApiError(
-        `${what} was not sent: no Access API token is saved.${AUTH_ADVICE}`,
+        `${what} was not sent: no Access API token is saved.${ACCESS_AUTH_ADVICE}`,
         { kind: 'auth', endpoint: where },
       )
     }
@@ -463,18 +628,20 @@ export function createAccessClient(options: AccessClientOptions): AccessClient {
       })
     }
 
-    log(`${what} -> ${String(status)} ${looseCode(json) ?? '(no code)'}`)
+    if (!quiet) log(`${what} -> ${String(status)} ${looseCode(json) ?? '(no code)'}`)
     return { what, status, json }
   }
 
-  /** Parses a 2xx `SUCCESS` body with its schema; anything else is `invalid-response` (rule 6). */
+  /** Parses a 2xx `SUCCESS` body with its schema; anything else is `invalid-response` (the reason
+   *  names the field, for OS-1). */
   function parseBody<T>(raw: AccessRawResponse, schema: ResponseParser<T>): T {
     const result = schema.safeParse(raw.json)
     if (result.success) return result.data
     throw new AccessApiError(
       `${raw.what} returned HTTP ${String(raw.status)} ${ACCESS_SUCCESS_CODE} with a body the ` +
-        `Access schemas do not accept (${schemaMismatchReason(result.error)}). The Access API is ` +
-        'community-sourced and unverified; OS-1 is what corrects these shapes.',
+        `Access schemas do not accept (${schemaMismatchReason(result.error)}). The schemas follow ` +
+        'the official Access API reference but have not been run against a console yet; OS-1 is ' +
+        'the on-site check that corrects them.',
       { kind: 'invalid-response', status: raw.status, code: looseCode(raw.json), endpoint: where },
     )
   }
@@ -491,14 +658,39 @@ export function createAccessClient(options: AccessClientOptions): AccessClient {
     return `/doors/${encodeURIComponent(id)}${suffix}`
   }
 
+  /**
+   * For the two PUTs that change door state. Like an unlock, a 2xx `SUCCESS` **counts as done**
+   * whatever `data` looks like: the change has already been applied, and reporting a failure would
+   * invite the user to apply it again. The reference's samples answer `data: "success"`; anything
+   * else is logged for OS-1 and otherwise ignored.
+   */
+  function noteIfNotPlainSuccess(raw: AccessRawResponse): void {
+    const parsed = AccessOkResponseSchema.safeParse(raw.json)
+    if (parsed.success && parsed.data.data === 'success') return
+    log(
+      `${raw.what} -> ${String(raw.status)} ${ACCESS_SUCCESS_CODE} ` +
+        `(unexpected body, treated as done: ${
+          parsed.success ? 'data is not "success"' : schemaMismatchReason(parsed.error)
+        })`,
+    )
+  }
+
+  /**
+   * The "skipped N of M doors" line the last quiet `doors()` logged, or `null` when its last answer
+   * had nothing to skip. A quiet read repeats the line only when it changes, so a door the schemas
+   * do not accept is reported once, not once per poll.
+   */
+  let quietSkipLine: string | null = null
+
   return {
-    async doors(): Promise<Door[]> {
-      const raw = await call('GET', '/doors')
-      // The doors list is assumed unpaginated (P0.4 §3 assumption 11, unverified): if OS-1 finds a
-      // `pagination` envelope, this is where the second page would be fetched.
+    async doors(doorsOptions?: DoorsOptions): Promise<Door[]> {
+      const quiet = doorsOptions?.quiet === true
+      const raw = await call('GET', '/doors', undefined, quiet)
+      // The reference documents no parameters and no pagination for the doors list (§7.8): if OS-1
+      // finds a `pagination` envelope after all, this is where the second page would be fetched.
       const envelope = parseBody(raw, DoorListEnvelopeSchema)
-      // Parsed **door by door**, not as one array. Every shape here is community-sourced and
-      // unverified (R3, OS-1), so one surprising field on one door must not empty the whole list
+      // Parsed **door by door**, not as one array. The shapes are documented but not yet run
+      // against a console (R3, OS-1), so one surprising field on one door must not empty the list
       // and leave the user unable to reach the doors that are fine — the same reasoning as the
       // Protect client skipping a camera it cannot map (CAM-1).
       const doors: Door[] = []
@@ -513,19 +705,24 @@ export function createAccessClient(options: AccessClientOptions): AccessClient {
       }
       if (problems.length > 0) {
         // Logged rather than swallowed: a skipped door is exactly the kind of mismatch OS-1 exists
-        // to find, so it has to be visible somewhere.
-        log(
+        // to find, so it has to be visible somewhere. A quiet (polling) read says it once per
+        // change rather than every few seconds.
+        const line =
           `GET /doors -> skipped ${String(problems.length)} of ${String(envelope.data.length)} ` +
-            `doors the Access schemas do not accept (${problems[0] ?? 'no reason given'})`,
-        )
+          `doors the Access schemas do not accept (${problems[0] ?? 'no reason given'})`
+        if (!quiet || line !== quietSkipLine) log(line)
+        if (quiet) quietSkipLine = line
+      } else if (quiet) {
+        quietSkipLine = null
       }
       // Every door unusable is a different thing from no doors at all: returning an empty list
       // would read as "none configured" and hide a wholesale shape change.
       if (doors.length === 0 && problems.length > 0) {
         throw new AccessApiError(
           `GET /doors returned ${String(problems.length)} door(s), none of which the Access ` +
-            `schemas accept (${problems[0] ?? 'no reason given'}). The Access API is ` +
-            'community-sourced and unverified; OS-1 is what corrects these shapes.',
+            `schemas accept (${problems[0] ?? 'no reason given'}). The schemas follow the ` +
+            'official Access API reference but have not been run against a console yet; OS-1 is ' +
+            'the on-site check that corrects them.',
           {
             kind: 'invalid-response',
             status: raw.status,
@@ -564,10 +761,10 @@ export function createAccessClient(options: AccessClientOptions): AccessClient {
         }
         body = JSON.stringify(parsed.data)
       }
-      // With no actor the body is omitted entirely, which is the community-documented default: the
-      // console then logs the API token's name as the actor (P0.4 §3 assumption 8, unverified).
+      // With no actor the body is omitted entirely, which is the documented default: the system
+      // then uses the API token's name as the actor (§7.9).
       const raw = await call('PUT', doorPath(id, '/unlock'), body)
-      // `data: "success"` is what the one community example shows, and nothing says it is stable.
+      // `data: "success"` is what the reference's sample shows (§7.9); no console has confirmed it.
       // A 2xx `SUCCESS` therefore **counts as unlocked** even if `data` is shaped differently: the
       // door has already been released at this point, and reporting a failure would invite the
       // user to press unlock again — a second physical door release (DOOR-3/4). The mismatch is
@@ -579,6 +776,61 @@ export function createAccessClient(options: AccessClientOptions): AccessClient {
             `(unexpected body, treated as unlocked: ${schemaMismatchReason(parsed.error)})`,
         )
       }
+    },
+
+    async lockRule(id: string): Promise<DoorLockRule> {
+      const raw = await call('GET', doorPath(id, '/lock_rule'))
+      const rule = parseBody(raw, AccessLockRuleResponseSchema).data
+      return { type: rule.type, endedTime: rule.ended_time ?? null }
+    },
+
+    async setLockRule(id, rule): Promise<void> {
+      const what = `PUT ${doorPath(id, '/lock_rule')}`
+      // Checked before any request, like the unlock actor: the rule may be relayed from an IPC
+      // payload, and a `custom` without minutes (or minutes on anything else) must not reach a
+      // door.
+      const parsed = AccessLockRuleRequestSchema.safeParse({
+        type: rule.type,
+        ...(rule.intervalMinutes === undefined ? {} : { interval: rule.intervalMinutes }),
+      })
+      if (!parsed.success) {
+        log(`${what} -> not sent (invalid lock rule)`)
+        throw new AccessApiError(
+          `${what} was not sent: the lock rule is not usable ` +
+            `(${schemaMismatchReason(parsed.error)}). A custom rule needs a whole number of ` +
+            'minutes, and no other rule takes one.',
+          { kind: 'bad-request', endpoint: where },
+        )
+      }
+      noteIfNotPlainSuccess(
+        await call('PUT', doorPath(id, '/lock_rule'), JSON.stringify(parsed.data)),
+      )
+    },
+
+    async emergencyStatus(): Promise<{ lockdown: boolean; evacuation: boolean }> {
+      const raw = await call('GET', EMERGENCY_PATH)
+      const status = parseBody(raw, AccessEmergencyStatusResponseSchema).data
+      return { lockdown: status.lockdown, evacuation: status.evacuation }
+    },
+
+    async setEmergencyStatus(status): Promise<void> {
+      const what = `PUT ${EMERGENCY_PATH}`
+      // Both flags, both real booleans, nothing else — checked before sending for the same reason
+      // as above: a truthy string from a careless caller must not put every door into lockdown.
+      const parsed = AccessEmergencyRequestSchema.safeParse({
+        lockdown: status.lockdown,
+        evacuation: status.evacuation,
+      })
+      if (!parsed.success) {
+        log(`${what} -> not sent (invalid emergency status)`)
+        throw new AccessApiError(
+          `${what} was not sent: the emergency status is not usable ` +
+            `(${schemaMismatchReason(parsed.error)}). lockdown and evacuation must both be true ` +
+            'or false.',
+          { kind: 'bad-request', endpoint: where },
+        )
+      }
+      noteIfNotPlainSuccess(await call('PUT', EMERGENCY_PATH, JSON.stringify(parsed.data)))
     },
   }
 }

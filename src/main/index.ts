@@ -7,6 +7,8 @@ import { IPC_EVENTS } from '@shared/ipc'
 import type { View } from '@shared/models'
 import { STREAM_RUNTIME_DOWN, type StreamRuntime } from '@shared/streams'
 import { createAccessClient, type AccessClient } from './access/client'
+import type { DoorNotificationHandlers } from './access/doorStateMonitor'
+import { accessNotificationsUrl, createAccessNotifications } from './access/notifications'
 import { createUnlockLog } from './access/unlockLog'
 import { createConfigStore, type ConfigStore } from './config/store'
 import { type Config } from './config/schema'
@@ -394,6 +396,50 @@ function reportConnectionReadiness(config: Config, pins: PinRegistry, credential
   describe('access', () => accessEndpoint(config.console), credentials.accessToken, 'token')
 }
 
+/**
+ * DOOR-6 (P5.5): opens the Access notifications WebSocket for the door-state monitor, on the
+ * endpoint configured **right now** and with the same token and pinned-dispatcher getters as the
+ * Access REST client (read per upgrade, so an edited token or a re-accepted certificate reaches the
+ * next reconnect). The connection manager calls this only when the monitor starts, so never while
+ * Access is off (DOOR-0). `null` while the address does not resolve: the monitor then only polls.
+ *
+ * The socket reconnects by itself and stops for good on an auth or pin failure. Its failures are
+ * logged here and never move the Access status (the same policy as the Protect events feed):
+ * `GET /doors` polling is the source of truth and covers for it. The token is never logged.
+ */
+function openDoorNotifications(
+  started: Services,
+  handlers: DoorNotificationHandlers,
+): { stop(): void } | null {
+  let endpoint: ReturnType<typeof accessEndpoint>
+  try {
+    endpoint = accessEndpoint(started.current.console)
+  } catch {
+    return null
+  }
+  const socket = createAccessNotifications({
+    url: accessNotificationsUrl(endpoint),
+    token: () => started.credentials.accessToken ?? null,
+    dispatcher: () => started.pins.agentFor(endpoint.host, endpoint.port),
+    onNotification: (notification) => {
+      handlers.onNotification(notification)
+    },
+    onStateChange: (state) => {
+      handlers.onStateChange(state)
+    },
+    // No `onError`: the subscription already writes each failure to `log`, once.
+    log: (line) => {
+      console.log(`[access] ${line}`)
+    },
+  })
+  socket.start()
+  return {
+    stop: () => {
+      socket.stop()
+    },
+  }
+}
+
 /** An error's message, for a log line. Never carries a secret: these errors are built from config. */
 function message(err: unknown): string {
   return err instanceof Error ? err.message : String(err)
@@ -506,7 +552,21 @@ function createWindow(): void {
     console.error(`Renderer failed to load ${validatedURL}: ${errorDescription}`, errorCode)
     if (!win.isDestroyed() && !win.isVisible()) win.show()
   })
+  // DOOR-6: the door-state monitor runs only while the renderer's Live screen says it is watching
+  // (`watchDoors`), and a renderer that reloads, crashes or closes never gets to say "stop". So
+  // each of those ends the watch here, and with it the polling and the notifications socket; the
+  // Live screen calls `watchDoors(true)` again when it mounts. A same-document navigation (a hash
+  // or history change) keeps the page, so it is not one of them (it is `did-navigate-in-page`).
+  const stopWatchingDoors = (): void => {
+    if (mainWindow === win) connection?.watchDoors(false)
+  }
+  // `did-navigate`, not `did-start-navigation`: only a navigation that committed has replaced the
+  // page. One that was started and cancelled (a reload the user backed out of at the unsaved-
+  // changes prompt, a download) leaves the Live screen mounted and still watching.
+  win.webContents.on('did-navigate', stopWatchingDoors)
+  win.webContents.on('render-process-gone', stopWatchingDoors)
   win.on('closed', () => {
+    stopWatchingDoors()
     if (mainWindow === win) mainWindow = null
   })
   // The renderer cancels an unload while the View editor has unsaved changes (VIEW-3,
@@ -619,6 +679,9 @@ if (!app.requestSingleInstanceLock()) {
           // DOOR-5: `<userData>/logs/unlock.log`, one JSON line per attempt. Its write failures go
           // to `console.error('[unlock-log] …')` and never change an unlock's answer.
           unlockLog: createUnlockLog({ dir: join(app.getPath('userData'), 'logs') }),
+          // DOOR-6: only ever called while the door-state monitor runs (Access on, token stored, a
+          // door linked, the Live screen watching).
+          openDoorNotifications: (handlers) => openDoorNotifications(started, handlers),
         })
         // P2.1/P2.2, after the connection manager because the registry reads its cached inventory.
         buildStreaming(started, connection)

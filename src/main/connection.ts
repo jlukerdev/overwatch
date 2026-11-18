@@ -1,8 +1,9 @@
 // The connection manager (P1.5): the single piece of state behind CON-5's indicator and CAM-1's
-// camera list. It owns four things and nothing else — the per-endpoint `ConnectionStatus`, the
-// camera inventory, the devices subscription that keeps the inventory current (CAM-2), and the
-// events subscription that feeds the cell scheduler (CELL-2, P4.2) — and it pushes every change to
-// the renderer through `IPC_EVENTS`.
+// camera list. It owns five things and nothing else — the per-endpoint `ConnectionStatus`, the
+// camera inventory, the devices subscription that keeps the inventory current (CAM-2), the events
+// subscription that feeds the cell scheduler (CELL-2, P4.2), and the door-state monitor that keeps
+// the Live screen's unlock buttons truthful (DOOR-6, P5.5) — and it pushes every change to the
+// renderer through `IPC_EVENTS`.
 //
 // The two feeds open and close together (same endpoint, same key, same pinned Agent, same R9
 // limiter), but **only the devices feed drives the Protect `ConnectionStatus`**. The badge answers
@@ -58,9 +59,22 @@ import {
   type UnlockResult,
 } from '@shared/ipc'
 import { parseCameraRef } from '@shared/cameraRef'
-import type { Camera, ConsoleConfig, Door } from '@shared/models'
+import type { Camera, ConsoleConfig, Door, DoorStates } from '@shared/models'
 import { STREAM_QUALITIES } from '@shared/quality'
-import { AccessApiError, type AccessClient, type AccessErrorKind } from './access/client'
+import {
+  AccessApiError,
+  isAccessApiUnavailable,
+  type AccessClient,
+  type AccessErrorKind,
+} from './access/client'
+import {
+  FAILURES_BEFORE_UNKNOWN,
+  createDoorStateMonitor,
+  type DoorMonitorHaltReason,
+  type DoorNotificationHandlers,
+  type DoorReadResult,
+  type DoorStateMonitor,
+} from './access/doorStateMonitor'
 import type { UnlockAttempt, UnlockLog } from './access/unlockLog'
 import type { Config } from './config/schema'
 import type { ConfigStore } from './config/store'
@@ -124,6 +138,14 @@ export interface ConnectionManagerOptions {
    * not build one; without it attempts are only in `log`.
    */
   readonly unlockLog?: Pick<UnlockLog, 'append'>
+  /**
+   * DOOR-6: opens (and starts) the Access notifications WebSocket for the endpoint configured right
+   * now, or answers `null` when it cannot (`src/main/index.ts` wires the real one). Called only when
+   * the door-state monitor starts, so never while Access is off (DOOR-0). The socket's own failures
+   * are the opener's to log: they never move the Access status, and polling covers for it. Default:
+   * no socket, polling only.
+   */
+  readonly openDoorNotifications?: (handlers: DoorNotificationHandlers) => { stop(): void } | null
 }
 
 export interface ConnectionManager {
@@ -181,6 +203,24 @@ export interface ConnectionManager {
    * for the write. Never rejects.
    */
   unlockDoor(cameraRef: string): Promise<IpcResult<UnlockResult>>
+  /**
+   * DOOR-6 (P5.5): the Live screen says whether it shows an unlock control. Answers what is known
+   * right now (`{}` when stopping, before the first read, or while the monitor cannot run); changes
+   * follow as `IPC_EVENTS.doorStates`. The door-state monitor runs only while **all** of these
+   * hold: the renderer is watching, Access is on (DOOR-0: otherwise no Access call, no socket, and
+   * not even the client is resolved), the Access address resolves, a token is stored and at least
+   * one door is linked. It only reads (`GET /doors`, the notifications socket); it never unlocks.
+   * Never fails: a read that fails shows as doors missing from the map and as the Access status.
+   */
+  watchDoors(watching: boolean): IpcResult<DoorStates>
+  /**
+   * DOOR-6: something the door-state monitor depends on has just changed outside
+   * `applyConsoleChange` — the Access token was stored or cleared, a certificate was accepted or
+   * re-accepted, or the door links were saved. Starts or stops the monitor to match, and asks a
+   * monitor that keeps running for a read now (which also drops doors that are no longer linked).
+   * Sends nothing by itself while the monitor may not run.
+   */
+  accessInputsChanged(reason: string): void
   /**
    * CON-1/2: the Protect API key has just been deleted. Closes the feed and empties the inventory,
    * because nothing may keep running on a credential the user has removed. Clears
@@ -258,6 +298,15 @@ const DOOR_LEVEL_UNLOCK_KINDS: ReadonlySet<AccessErrorKind> = new Set([
 ])
 
 /**
+ * DOOR-6: how often a door-state monitor that is still wanted but stopped itself on a rejected
+ * token (`auth`) is started again. One 401 during a console restart must not leave a wall display
+ * without door state until somebody opens Settings; each retry costs one `GET /doors`. A `pin`
+ * halt is **never** retried (CON-3), and neither is `disabled` or an unavailable API: those wait
+ * for the setting to change, or for another Access call to work.
+ */
+export const DOOR_MONITOR_AUTH_RETRY_MS = 60_000
+
+/**
  * DOOR-3 (user decision 2026-11-18): an unlock whose PUT **may have reached the console** but got no
  * answer. A `timeout` always may have — the request was written and the console went quiet. A
  * `network` failure may have too (a reset or a socket closed after the request was sent), unless
@@ -280,6 +329,7 @@ export function createConnectionManager(options: ConnectionManagerOptions): Conn
   const now = options.now ?? Date.now
   const log = options.log ?? ((): void => undefined)
   const unlockLog = options.unlockLog ?? null
+  const openDoorNotifications = options.openDoorNotifications ?? ((): null => null)
 
   let inventory: Camera[] = []
   let subscription: ProtectSubscription | null = null
@@ -606,6 +656,150 @@ export function createConnectionManager(options: ConnectionManagerOptions): Conn
     await Promise.all([feed?.stop(), events?.stop()])
   }
 
+  // --- the door-state monitor (DOOR-6, P5.5) ------------------------------------------------------
+
+  /** Whether the renderer has a Live screen with an unlock control up (`watchDoors`). */
+  let doorsWatched = false
+  /** Built on first use, so a session that never watches builds nothing. One for the manager's life. */
+  let doorMonitor: DoorStateMonitor | null = null
+  /**
+   * The `state.access` slot the monitor's current run started under. `applyConsoleChange` swaps the
+   * slot, so a result reported under another one belongs to an endpoint the user has since replaced
+   * and must not reach the new one's indicator (the same identity check as `readDoors`).
+   */
+  let doorMonitorSlot: EndpointState | null = null
+  /** True while `applyConsoleChange` is between the old endpoint and the new: nothing may start. */
+  let doorMonitorHeld = false
+  /** The one pending `DOOR_MONITOR_AUTH_RETRY_MS` restart, or `null`. */
+  let doorMonitorRetry: ReturnType<typeof setTimeout> | null = null
+
+  function cancelDoorMonitorRetry(): void {
+    if (doorMonitorRetry === null) return
+    clearTimeout(doorMonitorRetry)
+    doorMonitorRetry = null
+  }
+
+  /** Stops the monitor and anything that would start it again by itself. */
+  function stopDoorMonitor(): void {
+    cancelDoorMonitorRetry()
+    doorMonitor?.stop()
+  }
+
+  /**
+   * The monitor stopped by itself. Only a rejected token is retried on a timer (see
+   * `DOOR_MONITOR_AUTH_RETRY_MS`); never more than one timer is pending, and every sync, stop and
+   * shutdown clears it. A retry that fails the same way changes nothing the user sees: the status
+   * is already that error, so `applyDoorReadResult` neither pushes nor logs it again.
+   */
+  function doorMonitorHalted(reason: DoorMonitorHaltReason): void {
+    if (reason !== 'auth' || doorMonitorRetry !== null) return
+    doorMonitorRetry = setTimeout(() => {
+      doorMonitorRetry = null
+      syncDoorMonitor()
+    }, DOOR_MONITOR_AUTH_RETRY_MS)
+  }
+
+  function linkedDoorIds(): ReadonlySet<string> {
+    const ids = new Set<string>()
+    for (const id of Object.values(services.current.doorLinks)) {
+      if (typeof id === 'string' && id !== '') ids.add(id)
+    }
+    return ids
+  }
+
+  /** Every precondition is an offline read: deciding not to run sends nothing (DOOR-0). */
+  function doorMonitorWanted(): boolean {
+    return (
+      doorsWatched &&
+      !doorMonitorHeld &&
+      services.current.console.accessEnabled &&
+      credentialStored('access') &&
+      endpointOf('access') !== null &&
+      linkedDoorIds().size > 0
+    )
+  }
+
+  /**
+   * The monitor's reads are real answers from the Access endpoint, so the status follows them as it
+   * follows `readDoors` — but **only on a transition**: a poll every few seconds must not push the
+   * same status, or log the same failure, every few seconds. Compared against the slot itself, so a
+   * `doors()` or an unlock that moved the status in between is taken into account.
+   *
+   * One failed poll is not an outage: the monitor keeps its states through it, and the status keeps
+   * `connected` by the same rule, turning to `error` only at the failure that makes the states
+   * unknown (`FAILURES_BEFORE_UNKNOWN`). A failure that halts the monitor applies at once.
+   */
+  function applyDoorReadResult(result: DoorReadResult): void {
+    const slot = state.access
+    if (slot !== doorMonitorSlot) return
+    if (result.ok) {
+      if (slot.phase === 'connected' && slot.error === null) return
+      slot.phase = 'connected'
+      slot.error = null
+      slot.updatedAt = now()
+      log('access: door monitor: connected')
+    } else {
+      if (!result.fatal && result.failures < FAILURES_BEFORE_UNKNOWN) return
+      const error = toIpcError(result.error, { endpoint: endpointOf('access')?.hostPort ?? null })
+      if (slot.phase === 'error' && slot.error?.kind === error.kind) return
+      slot.phase = 'error'
+      slot.error = error
+      slot.updatedAt = now()
+      log(`access: door monitor: ${error.kind}: ${error.message}`)
+    }
+    emitStatus()
+  }
+
+  function ensureDoorMonitor(): DoorStateMonitor {
+    doorMonitor ??= createDoorStateMonitor({
+      // Resolved per read: the client is rebuilt when the address changes (see `startServices`).
+      // Quiet: a poll every few seconds must not write a log line per request.
+      readDoors: () => services.access().doors({ quiet: true }),
+      openNotifications: openDoorNotifications,
+      linkedDoorIds,
+      onStates: (states) => {
+        emit(IPC_EVENTS.doorStates.channel, states)
+      },
+      onReadResult: applyDoorReadResult,
+      onHalt: doorMonitorHalted,
+      log: (line) => {
+        log(`access: ${line}`)
+      },
+    })
+    return doorMonitor
+  }
+
+  /**
+   * Starts or stops the monitor to match {@link doorMonitorWanted}. A monitor that stopped by
+   * itself (a rejected token, a certificate not accepted) is started again here, which costs one
+   * read per change the user made — the way to learn that the change fixed it. Any pending retry
+   * is dropped first: this call is that retry, or makes it moot.
+   */
+  function syncDoorMonitor(): void {
+    cancelDoorMonitorRetry()
+    if (!doorMonitorWanted()) {
+      doorMonitor?.stop()
+      return
+    }
+    const monitor = ensureDoorMonitor()
+    if (monitor.running) return
+    doorMonitorSlot = state.access
+    monitor.start()
+  }
+
+  function watchDoors(watching: boolean): IpcResult<DoorStates> {
+    doorsWatched = watching
+    syncDoorMonitor()
+    return ipcOk(doorMonitor?.states ?? {})
+  }
+
+  function accessInputsChanged(reason: string): void {
+    const wasRunning = doorMonitor?.running === true
+    syncDoorMonitor()
+    // A fresh start reads at once by itself; only a monitor that kept running needs telling.
+    if (wasRunning) doorMonitor?.poke(reason)
+  }
+
   // --- the operations ---------------------------------------------------------------------------
 
   async function connect(): Promise<void> {
@@ -745,6 +939,9 @@ export function createConnectionManager(options: ConnectionManagerOptions): Conn
     if (result.ok) {
       slot.phase = 'connected'
       slot.error = null
+      // DOOR-6: the endpoint has just answered, so a door-state monitor that is wanted but stopped
+      // itself (a token the console rejected a moment ago) starts again. A no-op otherwise.
+      syncDoorMonitor()
     } else {
       slot.phase = 'error'
       slot.error = result.error
@@ -890,7 +1087,12 @@ export function createConnectionManager(options: ConnectionManagerOptions): Conn
       await services.access().unlock(doorId)
       result = ipcOk({ doorId, cameraName, outcome: 'unlocked', reason: null })
     } catch (err) {
-      doorLevel = err instanceof AccessApiError && DOOR_LEVEL_UNLOCK_KINDS.has(err.kind)
+      // A console that refuses the whole API answers with a door-level kind (`forbidden`) but is an
+      // endpoint failure: the status must say `error`, not `connected` (see `isAccessApiUnavailable`).
+      doorLevel =
+        err instanceof AccessApiError &&
+        DOOR_LEVEL_UNLOCK_KINDS.has(err.kind) &&
+        !isAccessApiUnavailable(err)
       // Rule 3: never retryable, whatever the client or the mapping says.
       statusError = { ...toIpcError(err, { endpoint: where }), retryable: false }
       if (unlockOutcomeUnknown(err)) {
@@ -916,6 +1118,18 @@ export function createConnectionManager(options: ConnectionManagerOptions): Conn
       emitStatus()
     } else {
       log('access: unlock finished after the endpoint changed; status left alone')
+    }
+    // DOOR-6: the door may be open now, so the monitor reads at once and the button shows it within
+    // about a second. A read only — the unlock path is still the one PUT above, never repeated — and
+    // a no-op while nobody is watching. An unlock the console accepted also proves the endpoint
+    // works, so a monitor that is wanted but stopped itself is started again first (its start reads
+    // at once); an unknown outcome proves nothing and only asks a running monitor to read.
+    if (result.ok) {
+      if (result.value.outcome === 'unlocked' && state.access === slot) {
+        accessInputsChanged('an unlock was answered')
+      } else {
+        doorMonitor?.poke('an unlock was answered')
+      }
     }
     return finish(result, doorId)
   }
@@ -984,7 +1198,7 @@ export function createConnectionManager(options: ConnectionManagerOptions): Conn
    * the console just left, and the new one has to prove itself with a connect first. An Access-only
    * change keeps it — the launch connect is Protect's alone.
    */
-  async function applyConsoleChange(next: ConsoleConfig): Promise<void> {
+  async function replaceConsole(next: ConsoleConfig): Promise<void> {
     const before = { protect: endpointOf('protect'), access: endpointOf('access') }
 
     // The feed is bound to the old address and the old pinned Agent, so it goes first.
@@ -1045,6 +1259,25 @@ export function createConnectionManager(options: ConnectionManagerOptions): Conn
     emitStatus()
   }
 
+  /**
+   * `replaceConsole` with the door-state monitor (DOOR-6) held still around it. The monitor reads
+   * the old Access endpoint, so it is stopped before anything moves and held, so a `watchDoors`
+   * arriving during the awaits cannot start it against the address being left; its late answers
+   * are dropped by the monitor itself (a stop ends the run they belong to). Afterwards it starts
+   * afresh on whatever the endpoint now is, if the renderer is still watching and Access is still
+   * usable — also when the save failed, in which case that is the old endpoint again.
+   */
+  async function applyConsoleChange(next: ConsoleConfig): Promise<void> {
+    doorMonitorHeld = true
+    stopDoorMonitor()
+    try {
+      await replaceConsole(next)
+    } finally {
+      doorMonitorHeld = false
+      syncDoorMonitor()
+    }
+  }
+
   async function connectOnLaunch(): Promise<void> {
     // Every precondition is an offline read, so a launch that does not qualify spends no permit
     // (R9). The pin is checked here rather than left to the feed: an unpinned console would only
@@ -1066,13 +1299,17 @@ export function createConnectionManager(options: ConnectionManagerOptions): Conn
   }
 
   async function shutdown(): Promise<void> {
+    doorsWatched = false
+    stopDoorMonitor()
     await stopFeed()
     await services.pins.closeAll()
   }
 
   // The six that move the subscriptions go through the queue; `testConnection`, `cameras`,
   // `snapshot`, `streamQualities` and `doors` are plain requests that touch none of that state, so
-  // serializing them would only make the UI wait for a reconnect's backoff.
+  // serializing them would only make the UI wait for a reconnect's backoff. `watchDoors` and
+  // `accessInputsChanged` are synchronous and move only the door-state monitor, which
+  // `applyConsoleChange` holds still while the address is being replaced.
   return {
     status,
     cachedCameras: () => [...inventory],
@@ -1084,6 +1321,8 @@ export function createConnectionManager(options: ConnectionManagerOptions): Conn
     streamQualities,
     doors,
     unlockDoor,
+    watchDoors,
+    accessInputsChanged,
     credentialCleared: () => serialize(credentialCleared),
     credentialReplaced: () =>
       serialize(() => {

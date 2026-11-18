@@ -7,6 +7,7 @@ import { IPC_EVENTS } from '@shared/ipc'
 import type { View } from '@shared/models'
 import { STREAM_RUNTIME_DOWN, type StreamRuntime } from '@shared/streams'
 import { createAccessClient, type AccessClient } from './access/client'
+import { createUnlockLog } from './access/unlockLog'
 import { createConfigStore, type ConfigStore } from './config/store'
 import { type Config } from './config/schema'
 import { createConnectionManager, type ConnectionManager } from './connection'
@@ -615,6 +616,9 @@ if (!app.requestSingleInstanceLock()) {
           log: (line) => {
             console.log(`[connection] ${line}`)
           },
+          // DOOR-5: `<userData>/logs/unlock.log`, one JSON line per attempt. Its write failures go
+          // to `console.error('[unlock-log] …')` and never change an unlock's answer.
+          unlockLog: createUnlockLog({ dir: join(app.getPath('userData'), 'logs') }),
         })
         // P2.1/P2.2, after the connection manager because the registry reads its cached inventory.
         buildStreaming(started, connection)

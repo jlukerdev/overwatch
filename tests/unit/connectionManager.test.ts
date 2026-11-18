@@ -37,6 +37,11 @@ import type {
   createEventsSubscription,
 } from '../../src/main/protect/subscriptions'
 import { PinRequiredError, hostPortKey } from '../../src/main/tls/pinning'
+import { createUnlockLog, type UnlockAttempt } from '../../src/main/access/unlockLog'
+import { createAccessClient } from '../../src/main/access/client'
+import { createAccessMock } from '../../scripts/mock-access/app.ts'
+import { SEED_DOORS } from '../../scripts/mock-access/doors.ts'
+import { Request as UndiciRequest, Response as UndiciResponse } from 'undici'
 import { IPC_EVENTS } from '@shared/ipc'
 
 /** A sanitized, made-up RTSPS URL (no real host or alias). Secret-shaped: it must never get out. */
@@ -119,6 +124,10 @@ interface SetupOptions {
   readonly cameras?: readonly Camera[]
   /** CON-4's stored launch flag. */
   readonly connectOnLaunch?: boolean
+  /** DOOR-2's saved camera → door map. */
+  readonly doorLinks?: Record<string, string>
+  /** DOOR-5: what the manager appends unlock attempts to. */
+  readonly unlockLog?: { append: (attempt: UnlockAttempt) => Promise<void> }
 }
 
 function setup(options: SetupOptions = {}) {
@@ -133,6 +142,7 @@ function setup(options: SetupOptions = {}) {
   let current: Config = ConfigSchema.parse({
     schemaVersion: CONFIG_SCHEMA_VERSION,
     console: consoleConfig,
+    doorLinks: options.doorLinks ?? {},
   })
   const pinned = new Set(options.pinned ?? [])
   let inventory: Camera[] = [...(options.cameras ?? [camera('cam-1'), camera('cam-2')])]
@@ -155,7 +165,11 @@ function setup(options: SetupOptions = {}) {
       }),
     ),
   }
-  const access = { doors: vi.fn(() => Promise.resolve([])) }
+  const access = {
+    doors: vi.fn(() => Promise.resolve([])),
+    // DOOR-3: resolves = the console accepted the unlock.
+    unlock: vi.fn<(id: string) => Promise<void>>(() => Promise.resolve()),
+  }
   const pins = {
     pinnedFingerprint: vi.fn((host: string, port: number) =>
       pinned.has(hostPortKey(host, port)) ? FP : null,
@@ -211,6 +225,7 @@ function setup(options: SetupOptions = {}) {
     log: (line) => {
       logged.push(line)
     },
+    ...(options.unlockLog === undefined ? {} : { unlockLog: options.unlockLog }),
   })
 
   return {
@@ -1408,5 +1423,422 @@ describe('the events feed (CELL-2, P4.2)', () => {
     first.emitState('stopped')
     await h.manager.connect()
     expect(h.events.feeds).toHaveLength(2)
+  })
+})
+
+describe('unlockDoor (DOOR-3/4/5, P5.4)', () => {
+  const FRONT_DOOR_ID = 'door-front'
+
+  /** A harness with Access on, the doorbell `cam-bell` linked, and the unlock log recorded. */
+  function unlockSetup(options: SetupOptions = {}) {
+    const attempts: UnlockAttempt[] = []
+    const harness = setup({
+      accessEnabled: true,
+      cameras: [
+        camera('cam-bell', { name: 'Front Doorbell', hasPackageCamera: true }),
+        camera('cam-2'),
+      ],
+      doorLinks: { 'cam-bell': FRONT_DOOR_ID },
+      unlockLog: {
+        append: (attempt) => {
+          attempts.push(attempt)
+          return Promise.resolve()
+        },
+      },
+      ...options,
+    })
+    return { ...harness, attempts }
+  }
+
+  it('makes exactly one PUT for the linked door, answers the camera name and logs success', async () => {
+    const u = unlockSetup()
+    await u.manager.cameras() // the inventory the name comes from
+    const result = await u.manager.unlockDoor('cam-bell')
+    expect(result).toEqual({
+      ok: true,
+      value: {
+        doorId: FRONT_DOOR_ID,
+        cameraName: 'Front Doorbell',
+        outcome: 'unlocked',
+        reason: null,
+      },
+    })
+    expect(u.access.unlock).toHaveBeenCalledTimes(1)
+    expect(u.access.unlock).toHaveBeenCalledWith(FRONT_DOOR_ID)
+    expect(u.attempts).toEqual([
+      {
+        cameraRef: 'cam-bell',
+        cameraName: 'Front Doorbell',
+        doorId: FRONT_DOOR_ID,
+        result: 'success',
+        errorKind: null,
+        message: null,
+      },
+    ])
+    expect(u.manager.status().access).toMatchObject({ phase: 'connected', error: null })
+    expect(u.payloads(IPC_EVENTS.connection.channel).at(-1)).toMatchObject({
+      access: { phase: 'connected' },
+    })
+  })
+
+  it("resolves a doorbell's package ref through the doorbell's link (DOOR-2)", async () => {
+    const u = unlockSetup()
+    await u.manager.cameras()
+    const result = await u.manager.unlockDoor('cam-bell:package')
+    expect(result).toEqual({
+      ok: true,
+      value: {
+        doorId: FRONT_DOOR_ID,
+        cameraName: 'Front Doorbell',
+        outcome: 'unlocked',
+        reason: null,
+      },
+    })
+    expect(u.access.unlock).toHaveBeenCalledExactlyOnceWith(FRONT_DOOR_ID)
+    expect(u.attempts[0]).toMatchObject({ cameraRef: 'cam-bell:package', doorId: FRONT_DOOR_ID })
+  })
+
+  it('falls back to the camera id for the name when the inventory does not have it', async () => {
+    const u = unlockSetup()
+    // No `cameras()` read: main's inventory is still empty.
+    const result = await u.manager.unlockDoor('cam-bell')
+    expect(result).toEqual({
+      ok: true,
+      value: { doorId: FRONT_DOOR_ID, cameraName: 'cam-bell', outcome: 'unlocked', reason: null },
+    })
+  })
+
+  it('answers not-found for an unlinked camera, with no Access call, and logs it', async () => {
+    const u = unlockSetup()
+    const access = vi.fn(() => u.access)
+    u.services.access = access
+    const result = await u.manager.unlockDoor('cam-2')
+    expect(result).toMatchObject({ ok: false, error: { kind: 'not-found', retryable: false } })
+    expect(access).not.toHaveBeenCalled()
+    expect(u.access.unlock).not.toHaveBeenCalled()
+    expect(u.attempts).toEqual([
+      expect.objectContaining({
+        cameraRef: 'cam-2',
+        doorId: null,
+        result: 'failure',
+        errorKind: 'not-found',
+      }),
+    ])
+    // A missing link says nothing about the endpoint.
+    expect(u.manager.status().access.phase).toBe('idle')
+  })
+
+  it('never takes a door id from anywhere but the saved links', async () => {
+    const u = unlockSetup()
+    // A ref that *is* a door id is still just an unlinked camera ref.
+    const result = await u.manager.unlockDoor(FRONT_DOOR_ID)
+    expect(result).toMatchObject({ ok: false, error: { kind: 'not-found' } })
+    expect(u.access.unlock).not.toHaveBeenCalled()
+  })
+
+  it('answers disabled while Access is off, with no Access call, and logs it (DOOR-0)', async () => {
+    const u = unlockSetup({ accessEnabled: false })
+    const access = vi.fn(() => u.access)
+    u.services.access = access
+    const result = await u.manager.unlockDoor('cam-bell')
+    expect(result).toMatchObject({ ok: false, error: { kind: 'disabled', retryable: false } })
+    expect(access).not.toHaveBeenCalled()
+    expect(u.access.unlock).not.toHaveBeenCalled()
+    expect(u.attempts).toEqual([
+      expect.objectContaining({ doorId: FRONT_DOOR_ID, result: 'failure', errorKind: 'disabled' }),
+    ])
+    expect(u.manager.status().access.phase).toBe('disabled')
+  })
+
+  /** An `AccessApiError` as the client builds it for a thrown connection failure (`cause` kept). */
+  async function connectError(kind: 'network' | 'timeout', message: string, code?: string) {
+    const { AccessApiError } = await import('../../src/main/access/client')
+    const root = Object.assign(new Error(message), code === undefined ? {} : { code })
+    const fetchFailed = new TypeError('fetch failed', { cause: root })
+    return new AccessApiError(`PUT /doors/door-front/unlock failed: ${message}.`, {
+      kind,
+      endpoint: '192.0.2.10:12445',
+      cause: fetchFailed,
+    })
+  }
+
+  it('reports a never-connected failure (ECONNREFUSED) as a failure, not retryable, one PUT', async () => {
+    const u = unlockSetup()
+    const err = await connectError('network', 'connect ECONNREFUSED', 'ECONNREFUSED')
+    // The client itself would call this retryable — for the reads.
+    expect(err.retryable).toBe(true)
+    u.access.unlock.mockRejectedValueOnce(err)
+    const result = await u.manager.unlockDoor('cam-bell')
+    expect(result).toMatchObject({
+      ok: false,
+      error: { kind: 'network', retryable: false, endpoint: '192.0.2.10:12445' },
+    })
+    expect(u.access.unlock).toHaveBeenCalledTimes(1)
+    expect(u.attempts).toEqual([
+      expect.objectContaining({
+        result: 'failure',
+        errorKind: 'network',
+        message: 'PUT /doors/door-front/unlock failed: connect ECONNREFUSED.',
+      }),
+    ])
+    // An endpoint failure: the badge says so, as `doors()` would.
+    expect(u.manager.status().access.phase).toBe('error')
+  })
+
+  it.each(['ENOTFOUND', 'EAI_AGAIN', 'EHOSTUNREACH', 'ENETUNREACH'])(
+    'treats %s as never sent: a plain failure',
+    async (code) => {
+      const u = unlockSetup()
+      u.access.unlock.mockRejectedValueOnce(await connectError('network', `oops ${code}`, code))
+      const result = await u.manager.unlockDoor('cam-bell')
+      expect(result).toMatchObject({ ok: false, error: { kind: 'network', retryable: false } })
+      expect(u.attempts[0]).toMatchObject({ result: 'failure' })
+    },
+  )
+
+  it('answers ok with outcome unknown on a timeout, logs unknown, one PUT (user decision 2026-11-18)', async () => {
+    const u = unlockSetup()
+    await u.manager.cameras()
+    const err = await connectError('timeout', 'the Access API did not answer in time')
+    u.access.unlock.mockRejectedValueOnce(err)
+    const result = await u.manager.unlockDoor('cam-bell')
+    expect(result).toEqual({
+      ok: true,
+      value: {
+        doorId: FRONT_DOOR_ID,
+        cameraName: 'Front Doorbell',
+        outcome: 'unknown',
+        reason: err.message,
+      },
+    })
+    expect(u.access.unlock).toHaveBeenCalledTimes(1)
+    expect(u.attempts).toEqual([
+      {
+        cameraRef: 'cam-bell',
+        cameraName: 'Front Doorbell',
+        doorId: FRONT_DOOR_ID,
+        result: 'unknown',
+        errorKind: 'timeout',
+        message: err.message,
+      },
+    ])
+    // The status reads as it would for that failure kind.
+    expect(u.manager.status().access).toMatchObject({ phase: 'error', error: { kind: 'timeout' } })
+    await flush()
+    expect(u.access.unlock).toHaveBeenCalledTimes(1)
+  })
+
+  it('answers outcome unknown for a connection lost after connecting (ECONNRESET)', async () => {
+    const u = unlockSetup()
+    u.access.unlock.mockRejectedValueOnce(
+      await connectError('network', 'read ECONNRESET', 'ECONNRESET'),
+    )
+    const result = await u.manager.unlockDoor('cam-bell')
+    expect(result).toMatchObject({ ok: true, value: { outcome: 'unknown' } })
+    expect(u.attempts[0]).toMatchObject({ result: 'unknown', errorKind: 'network' })
+    expect(u.access.unlock).toHaveBeenCalledTimes(1)
+  })
+
+  it.each(['constructor', '__proto__', 'toString', 'hasOwnProperty'])(
+    'finds no door for the ref %s (own links only), with no Access call',
+    async (ref) => {
+      const u = unlockSetup()
+      const access = vi.fn(() => u.access)
+      u.services.access = access
+      const result = await u.manager.unlockDoor(ref)
+      expect(result).toMatchObject({ ok: false, error: { kind: 'not-found', retryable: false } })
+      expect(access).not.toHaveBeenCalled()
+      expect(u.access.unlock).not.toHaveBeenCalled()
+      expect(u.attempts[0]).toMatchObject({ doorId: null, errorKind: 'not-found' })
+    },
+  )
+
+  it('answers disabled while Access is off even for an unlinked camera (DOOR-0 first)', async () => {
+    const u = unlockSetup({ accessEnabled: false })
+    const access = vi.fn(() => u.access)
+    u.services.access = access
+    const result = await u.manager.unlockDoor('cam-2')
+    expect(result).toMatchObject({ ok: false, error: { kind: 'disabled', retryable: false } })
+    expect(access).not.toHaveBeenCalled()
+    expect(u.attempts).toEqual([
+      expect.objectContaining({ doorId: null, result: 'failure', errorKind: 'disabled' }),
+    ])
+  })
+
+  it('splits a package ref with the shared camera-ref grammar (`:package` alone is no camera)', async () => {
+    const u = unlockSetup({ doorLinks: { ':package': FRONT_DOOR_ID } })
+    // `parseCameraRef(':package')` is the plain id `:package`, as in the renderer.
+    const result = await u.manager.unlockDoor(':package')
+    expect(result).toMatchObject({ ok: true, value: { doorId: FRONT_DOOR_ID } })
+    expect(u.attempts[0]).toMatchObject({ cameraRef: ':package', cameraName: ':package' })
+  })
+
+  it('answers without waiting for the log write, and logs in the order attempts ended (DOOR-5)', async () => {
+    const lines: string[] = []
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    const unlockLog = createUnlockLog({
+      dir: '/nonexistent/logs',
+      fs: {
+        mkdir: () => gate.then(() => undefined),
+        stat: () => Promise.reject(Object.assign(new Error('missing'), { code: 'ENOENT' })),
+        rename: () => Promise.resolve(),
+        appendFile: (_path, data) => {
+          lines.push(data)
+          return Promise.resolve()
+        },
+      },
+    })
+    const u = unlockSetup({ unlockLog })
+    // A stalled disk: neither answer waits for it.
+    await expect(u.manager.unlockDoor('cam-bell')).resolves.toMatchObject({ ok: true })
+    await expect(u.manager.unlockDoor('cam-2')).resolves.toMatchObject({ ok: false })
+    expect(lines).toEqual([])
+    release()
+    await unlockLog.flushed()
+    expect(lines.map((line) => (JSON.parse(line) as { cameraRef: string }).cameraRef)).toEqual([
+      'cam-bell',
+      'cam-2',
+    ])
+  })
+
+  it('maps a missing endpoint address to not-configured without throwing', async () => {
+    const u = unlockSetup()
+    const { ConsoleEndpointError } = await import('../../src/main/console/endpoints')
+    u.services.access = () => {
+      throw new ConsoleEndpointError('No console address is set yet.')
+    }
+    const result = await u.manager.unlockDoor('cam-bell')
+    expect(result).toMatchObject({ ok: false, error: { kind: 'not-configured', retryable: false } })
+    expect(u.attempts[0]).toMatchObject({ result: 'failure', errorKind: 'not-configured' })
+  })
+
+  it('keeps the unlock answer when the log write fails, and reports the write (DOOR-5)', async () => {
+    // The real log over an fs whose every append fails: the door did open, so the answer must
+    // still say so — a reported failure would invite a second press, a second door release.
+    const reported: string[] = []
+    const unlockLog = createUnlockLog({
+      dir: '/nonexistent/logs',
+      fs: {
+        mkdir: () => Promise.resolve(undefined),
+        stat: () => Promise.reject(Object.assign(new Error('missing'), { code: 'ENOENT' })),
+        rename: () => Promise.resolve(),
+        appendFile: () => Promise.reject(Object.assign(new Error('disk full'), { code: 'ENOSPC' })),
+      },
+      onError: (message) => {
+        reported.push(message)
+      },
+    })
+    const u = unlockSetup({ unlockLog })
+    await expect(u.manager.unlockDoor('cam-bell')).resolves.toEqual({
+      ok: true,
+      value: { doorId: FRONT_DOOR_ID, cameraName: 'cam-bell', outcome: 'unlocked', reason: null },
+    })
+    expect(u.access.unlock).toHaveBeenCalledTimes(1)
+    // The answer did not wait for the write; the failure is reported once the queue drains.
+    await unlockLog.flushed()
+    expect(reported).toEqual([expect.stringContaining('ENOSPC')])
+  })
+
+  it('leaves a replaced endpoint’s status alone when the unlock finishes after the change', async () => {
+    const u = unlockSetup()
+    let release!: () => void
+    u.access.unlock.mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve) => {
+          release = resolve
+        }),
+    )
+    const pending = u.manager.unlockDoor('cam-bell')
+    await u.manager.applyConsoleChange({ ...u.console, host: '192.0.2.20' })
+    release()
+    await expect(pending).resolves.toMatchObject({ ok: true })
+    expect(u.manager.status().access.phase).toBe('idle')
+    expect(u.attempts).toHaveLength(1)
+  })
+
+  // Through the real client and the P0.4 mock, so the PUT, the envelope and the error mapping are
+  // the ones the app would see (no sockets: the mock is reached through an injected fetch).
+  describe('against the Access mock', () => {
+    const TOKEN = 'vp-test-access-token-NEVER-LOG-THIS'
+    const FRONT = SEED_DOORS.find((d) => d.name === 'Front Door')
+    const STORAGE = SEED_DOORS.find((d) => d.name === 'Storage Room')
+    if (FRONT === undefined || STORAGE === undefined || STORAGE.is_bind_hub) {
+      throw new Error('the P0.4 seed doors changed; update this test')
+    }
+
+    function mocked(doorId: string) {
+      const mock = createAccessMock({ token: TOKEN })
+      const sent: string[] = []
+      const fetchImpl = vi.fn(async (input: unknown, init: unknown) => {
+        const request = new UndiciRequest(input as string, init as never)
+        const url = new URL(request.url)
+        sent.push(`${request.method} ${url.pathname}`)
+        const headers: Record<string, string | undefined> = {}
+        for (const [name, value] of request.headers) headers[name] = value
+        const res = mock.handle({
+          method: request.method,
+          url: `${url.pathname}${url.search}`,
+          headers,
+          body: await request.text(),
+        })
+        return new UndiciResponse(JSON.stringify(res.body), {
+          status: res.status,
+          headers: { 'content-type': 'application/json', ...res.headers },
+        })
+      })
+      const u = unlockSetup({ doorLinks: { 'cam-bell': doorId }, accessToken: TOKEN })
+      const client = createAccessClient({
+        endpoint: accessEndpoint(u.services.current.console),
+        enabled: () => u.services.current.console.accessEnabled,
+        token: () => u.services.credentials.accessToken ?? null,
+        dispatcher: () => ({}) as never,
+        fetchImpl,
+      })
+      u.services.access = () => client
+      return { ...u, mock, sent }
+    }
+
+    it('unlocks a hub-bound door with one PUT and the relay goes to unlock', async () => {
+      const m = mocked(FRONT.id)
+      try {
+        const result = await m.manager.unlockDoor('cam-bell')
+        expect(result).toEqual({
+          ok: true,
+          value: { doorId: FRONT.id, cameraName: 'cam-bell', outcome: 'unlocked', reason: null },
+        })
+        expect(m.sent).toEqual([`PUT /api/v1/developer/doors/${FRONT.id}/unlock`])
+        expect(m.mock.store.get(FRONT.id)?.door_lock_relay_status).toBe('unlock')
+        expect(m.attempts[0]).toMatchObject({ result: 'success', doorId: FRONT.id })
+      } finally {
+        m.mock.store.dispose()
+      }
+    })
+
+    it('reports a door without a hub as a failure, not retryable, logged, with no second PUT', async () => {
+      const m = mocked(STORAGE.id)
+      try {
+        const result = await m.manager.unlockDoor('cam-bell')
+        // `forbidden` → the contract's `auth` (src/main/ipc/errors.ts); the message names the hub.
+        expect(result).toMatchObject({ ok: false, error: { kind: 'auth', retryable: false } })
+        expect(!result.ok && result.error.message).toMatch(/Door Hub/)
+        expect(m.sent).toEqual([`PUT /api/v1/developer/doors/${STORAGE.id}/unlock`])
+        expect(m.mock.store.get(STORAGE.id)?.door_lock_relay_status).toBe('lock')
+        expect(m.attempts).toEqual([
+          expect.objectContaining({ result: 'failure', errorKind: 'auth', doorId: STORAGE.id }),
+        ])
+        // The console answered: a refusal of this one door leaves the endpoint connected.
+        expect(m.manager.status().access).toMatchObject({ phase: 'connected', error: null })
+        // Nothing scheduled a retry behind the answer either.
+        await flush()
+        expect(m.sent).toHaveLength(1)
+        // The token never reaches the log line.
+        expect(JSON.stringify(m.attempts)).not.toContain(TOKEN)
+      } finally {
+        m.mock.store.dispose()
+      }
+    })
   })
 })

@@ -135,6 +135,7 @@ function fakeBridge(overrides: Partial<ViewProtectApi> = {}): FakeBridge {
     // P5.3 (DOOR-1/2).
     listDoors: unimplemented('listDoors'),
     setDoorLinks: unimplemented('setDoorLinks'),
+    unlockDoor: unimplemented('unlockDoor'),
     onConnection: (listener) => subscribeTo(connectionListeners, listener),
     onCameras: (listener) => subscribeTo(cameraListeners, listener),
     onCameraState: (listener) => subscribeTo(stateListeners, listener),
@@ -442,6 +443,31 @@ describe('mutating actions', () => {
 
     expect(listDoors).toHaveBeenCalledTimes(1)
     expect(result).toEqual({ ok: true, value: doors })
+    expect(useAppStore.getState()).toBe(before)
+  })
+
+  it('forwards an unlock once and keeps the answer out of the store (DOOR-3)', async () => {
+    const unlockDoor = vi.fn<ViewProtectApi['unlockDoor']>(() =>
+      Promise.resolve({
+        ok: true,
+        value: {
+          doorId: 'door-1',
+          cameraName: 'Front Doorbell',
+          outcome: 'unlocked',
+          reason: null,
+        },
+      }),
+    )
+    fakeBridge({ unlockDoor })
+    const before = useAppStore.getState()
+
+    const result = await useAppStore.getState().unlockDoor({ cameraRef: 'cam-1:package' })
+
+    expect(unlockDoor).toHaveBeenCalledExactlyOnceWith({ cameraRef: 'cam-1:package' })
+    expect(result).toEqual({
+      ok: true,
+      value: { doorId: 'door-1', cameraName: 'Front Doorbell', outcome: 'unlocked', reason: null },
+    })
     expect(useAppStore.getState()).toBe(before)
   })
 

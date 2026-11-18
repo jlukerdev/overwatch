@@ -6,7 +6,9 @@ import {
   MAX_CAUSE_DEPTH,
   causeChain,
   describeError,
+  isNeverConnectedError,
   isTimeoutError,
+  NEVER_CONNECTED_CODES,
   pinFailure,
   rootCause,
 } from '../../src/main/net/errorCause'
@@ -123,5 +125,37 @@ describe('describeError', () => {
   it('stringifies a non-error', () => {
     expect(describeError('plain string')).toBe('plain string')
     expect(describeError(42)).toBe('42')
+  })
+})
+
+describe('isNeverConnectedError (P5.4, unlock outcome unknown)', () => {
+  it('is the five "never connected" codes, nothing else', () => {
+    expect([...NEVER_CONNECTED_CODES].sort()).toEqual(
+      ['EAI_AGAIN', 'ECONNREFUSED', 'EHOSTUNREACH', 'ENETUNREACH', 'ENOTFOUND'].sort(),
+    )
+  })
+
+  it('finds the code anywhere in the cause chain', () => {
+    const err = new TypeError('fetch failed', {
+      cause: coded('connect ECONNREFUSED', 'ECONNREFUSED'),
+    })
+    expect(isNeverConnectedError(err)).toBe(true)
+    expect(isNeverConnectedError(new Error('wrap', { cause: err }))).toBe(true)
+  })
+
+  it('is false for a failure after connecting, a timeout or no code at all', () => {
+    expect(
+      isNeverConnectedError(new TypeError('fetch failed', { cause: coded('reset', 'ECONNRESET') })),
+    ).toBe(false)
+    expect(isNeverConnectedError(coded('headers', 'UND_ERR_HEADERS_TIMEOUT'))).toBe(false)
+    expect(isNeverConnectedError(new Error('ECONNREFUSED in the text only'))).toBe(false)
+    expect(isNeverConnectedError('ECONNREFUSED')).toBe(false)
+  })
+
+  it('needs every attempt of an AggregateError to be "never connected"', () => {
+    const allRefused = new AggregateError([coded('a', 'ECONNREFUSED'), coded('b', 'EHOSTUNREACH')])
+    expect(isNeverConnectedError(new TypeError('fetch failed', { cause: allRefused }))).toBe(true)
+    const mixed = new AggregateError([coded('a', 'ECONNREFUSED'), coded('b', 'ECONNRESET')])
+    expect(isNeverConnectedError(new TypeError('fetch failed', { cause: mixed }))).toBe(false)
   })
 })

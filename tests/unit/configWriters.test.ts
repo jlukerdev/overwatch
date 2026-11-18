@@ -115,7 +115,7 @@ async function setup() {
       snapshot: vi.fn(),
       rtspsStreams: vi.fn(),
     }),
-    access: () => ({ doors: () => Promise.resolve([]) }),
+    access: () => ({ doors: () => Promise.resolve([]), unlock: () => Promise.resolve() }),
   }
   const manager = createConnectionManager({ services, emit: () => undefined })
   const router = createIpcRouter({

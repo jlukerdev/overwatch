@@ -43,6 +43,7 @@ const SLOTS: GridSlot[] = [
     key: 'cam:a#0',
     placement: PLACEMENT,
     cameraId: 'a',
+    ref: 'a',
     name: 'Front',
     quality: 'low',
     fillQuality: 'high',

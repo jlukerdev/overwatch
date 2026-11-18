@@ -72,7 +72,7 @@
 ## 4. Persistence
 - `<userData>/config.json`: views, door links, UI prefs (schema in SPEC §6)
 - `<userData>/secrets.bin`: safeStorage-encrypted `{ protectApiKey, accessToken }`
-- `<userData>/logs/`: app log (rotating) and `unlock.log`
+- `<userData>/logs/`: app log (rotating; not built yet) and `unlock.log` (P5.4, DOOR-5: JSON Lines, one line per unlock attempt, rotated to `unlock.log.1` above 1 MiB; `src/main/access/unlockLog.ts`)
 - `<userData>/go2rtc.yaml`: generated on every launch. Never hand-edited
 
 ## 5. Updating

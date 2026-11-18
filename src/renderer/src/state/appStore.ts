@@ -31,6 +31,8 @@ import {
   type SnapshotInput,
   type SnapshotResult,
   type TestConnection,
+  type UnlockDoorInput,
+  type UnlockResult,
 } from '@shared/ipc'
 
 /** Whether the first `getState()` has landed. The UI shows a spinner, the error, or itself. */
@@ -89,6 +91,13 @@ export interface AppStoreState {
   listDoors: () => Promise<IpcResult<Door[]>>
   /** DOOR-2: persist the whole camera → door map. */
   setDoorLinks: (input: SetDoorLinksInput) => Promise<IpcResult<AppState>>
+  /**
+   * DOOR-3: unlock the door linked to a camera ref, once — only from the unlock control's
+   * press-and-hold, never from a timer, a shortcut alone or a retry (DOOR-4). Not folded into the
+   * store: the result is the toast's, and the Access status it moves arrives as the usual
+   * `connection` push.
+   */
+  unlockDoor: (input: UnlockDoorInput) => Promise<IpcResult<UnlockResult>>
 }
 
 const NO_SECRETS: SecretsStored = { protectApiKey: false, accessToken: false }
@@ -203,6 +212,7 @@ export const useAppStore = create<AppStoreState>()((set, get) => {
     setLastView: async (viewId) => fold(await bridge().setLastView({ viewId })),
     listDoors: async () => bridge().listDoors(),
     setDoorLinks: async (input) => fold(await bridge().setDoorLinks(input)),
+    unlockDoor: async (input) => bridge().unlockDoor(input),
   }
 })
 

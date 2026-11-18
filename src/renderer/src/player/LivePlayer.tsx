@@ -84,6 +84,13 @@ export interface LivePlayerProps {
    * `<video>`s (player.css), so changing it never touches the stream.
    */
   readonly fit?: Fit
+  /**
+   * Told whether live video is on screen (no placeholder), on mount and on every change, and again
+   * when the callback itself changes (a pre-warmed player promoted to visible, P4.4). Only `<Cell>`'s
+   * visible player gets one; it decides whether the door unlock control shows (P5.4, DOOR-3).
+   * Should be stable (memoised): a new function re-reports, it never rebuilds the player.
+   */
+  readonly onPlayingChange?: ((playing: boolean) => void) | undefined
 }
 
 export function LivePlayer({
@@ -92,6 +99,7 @@ export function LivePlayer({
   muted,
   volume = 1,
   fit = 'contain',
+  onPlayingChange,
 }: LivePlayerProps): JSX.Element {
   // CAM-3 comes from the inventory's `state`, never from whether a stream started: `camerasStore`
   // already decides what each Protect state means, including the undocumented ones (SPEC R8/R11).
@@ -158,6 +166,12 @@ export function LivePlayer({
   useEffect(() => {
     controllerRef.current?.setAudio(muted, volume)
   }, [muted, volume])
+
+  // Live video means "no placeholder": the machine never asks for one over a playing picture (header).
+  const playing = placeholder === null
+  useEffect(() => {
+    onPlayingChange?.(playing)
+  }, [playing, onPlayingChange])
 
   return (
     <div className={fit === 'cover' ? 'livePlayer livePlayer--cover' : 'livePlayer'}>

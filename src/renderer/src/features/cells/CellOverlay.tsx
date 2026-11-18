@@ -11,11 +11,20 @@
 // cell's own quality picker (QUAL-4). The quality badge (QUAL-7, e.g. `PKG`)
 // comes last, and only where no picker already shows the quality: a package-channel cell (the user's
 // call, 2026-11-16; the pickers carry the per-quality colour instead). The back control used to sit
-// apart, top centre; it is in the strip now, after "100%", by the same call. A later task adds
-// unlock (P5.4, DOOR); a per-cell motion badge was deferred to after the prototype (user
-// decision 2026-11-15). No placeholder buttons until then, and no control shown while it would do
-// nothing (the 100% control at 1×, next / previous on a one-camera cell): a control that does
-// nothing is a control someone presses. A strip with no controls draws no empty slot (cells.css).
+// apart, top centre; it is in the strip now, after "100%", by the same call. A per-cell motion
+// badge was deferred to after the prototype (user decision 2026-11-15). No placeholder buttons, and
+// no control shown while it would do nothing (the 100% control at 1×, next / previous on a
+// one-camera cell): a control that does nothing is a control someone presses. A strip with no
+// controls draws no empty slot (cells.css).
+//
+// **The bottom slot** (`bottom`, P5.4; DOOR-3). Not in the strip: the door unlock control
+// (features/door/UnlockButton) sits alone at the bottom centre of the cell, larger than the strip's
+// chips, because it acts on the house rather than the picture. The slot is the strip's twin for
+// events — it stops pointer, click and double-click events from reaching the cell (FILL-1), and the
+// zoom skips presses that start in it (ZoomPan) — and it follows the strip's shown / hidden state
+// (CELL-4): the button fades with the strip via `cellOverlay--controlsShown`, except while it holds
+// itself shown (a hold, a request, the green moment; door.css `data-held`). Only `<Cell>` fills it,
+// never `<MissingCell>`. An empty slot draws nothing (cells.css).
 //
 // **Name and badge are optional.** No name when the View hides names (VIEW-8), or on a multi-camera
 // cell's "Camera not found" / "No package camera" placeholder (./MissingCell), whose centred label
@@ -111,6 +120,8 @@ export interface CellOverlayProps {
   readonly autoHideMs: number
   /** Controls for the strip, top right, in order (see the header for which task adds which). */
   readonly children?: ReactNode
+  /** The bottom-centre slot: the door unlock control (P5.4, header). */
+  readonly bottom?: ReactNode
 }
 
 /** Set on the cell element while the idle cursor is hidden (cells.css). */
@@ -153,6 +164,7 @@ export function CellOverlay({
   quality,
   autoHideMs,
   children,
+  bottom,
 }: CellOverlayProps): JSX.Element {
   const rootRef = useRef<HTMLDivElement | null>(null)
   /** The `.gridCell` around the overlay, once mounted. */
@@ -341,6 +353,18 @@ export function CellOverlay({
           ) : null}
         </div>
       </div>
+      {bottom !== undefined && bottom !== null ? (
+        // Stops the same events as the strip's slot (header): a press here is never a cell click.
+        <div
+          className="cellOverlay__bottom"
+          onPointerDown={stopAtControls}
+          onPointerUp={stopAtControls}
+          onClick={stopAtControls}
+          onDoubleClick={stopAtControls}
+        >
+          {bottom}
+        </div>
+      ) : null}
     </div>
   )
 }

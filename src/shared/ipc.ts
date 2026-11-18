@@ -546,6 +546,41 @@ export type SetStreamsInput = z.infer<typeof SetStreamsInputSchema>
 export const SetDoorLinksInputSchema = z.object({ links: DoorLinksSchema.unwrap() })
 export type SetDoorLinksInput = z.infer<typeof SetDoorLinksInputSchema>
 
+/**
+ * DOOR-3 (P5.4): unlock the door linked to the camera a cell shows. The renderer sends the **cell's
+ * camera ref** — `<cameraId>`, or `<cameraId>:package` for a doorbell's package channel (CAM-4) —
+ * and never a door id: main resolves the door from the saved `doorLinks` itself, so a renderer bug
+ * (or a compromised renderer) can only unlock a door the user linked, never an arbitrary one. A
+ * package ref uses the doorbell's link (DOOR-2). A plain non-empty string, the same as a cell's
+ * `cameraIds` entry (`CellSchema`); main does the splitting.
+ */
+export const UnlockDoorInputSchema = z.object({ cameraRef: z.string().min(1) })
+export type UnlockDoorInput = z.infer<typeof UnlockDoorInputSchema>
+
+/**
+ * What an unlock that sent its PUT answers when it is not a plain failure, for the toast: the linked
+ * door's id and the camera's name from main's inventory (the doorbell's for a package ref, the
+ * camera id when the inventory does not have it). No door name: learning it would be a second
+ * Access call per press (user decision 2026-11-18), and the toast reads fine with the camera name.
+ *
+ * `outcome` (user decision 2026-11-18):
+ *  - `unlocked` — the console accepted the unlock; `reason` is `null`.
+ *  - `unknown` — the PUT may have reached the console but no answer came back (a timeout, or a
+ *    connection lost after it was made), so **the door may have opened**. Not reported as a failure,
+ *    which would invite a second press (a second door release); the renderer warns instead.
+ *    `reason` is the error's safe message (no token).
+ */
+export const UnlockOutcomeSchema = z.enum(['unlocked', 'unknown'])
+export type UnlockOutcome = z.infer<typeof UnlockOutcomeSchema>
+
+export const UnlockResultSchema = z.object({
+  doorId: z.string(),
+  cameraName: z.string(),
+  outcome: UnlockOutcomeSchema,
+  reason: z.string().nullable(),
+})
+export type UnlockResult = z.infer<typeof UnlockResultSchema>
+
 // -------------------------------------------------------------------------------------------------
 // The channel table
 //
@@ -635,6 +670,19 @@ export const IPC = {
    * while it is off (DOOR-0); the UI only shows the editor while it is on.
    */
   setDoorLinks: call('vp:doors/links', SetDoorLinksInputSchema, AppStateSchema),
+  /**
+   * DOOR-3/4/5 (P5.4): **releases a physical door.** Only ever sent by the unlock control after its
+   * press-and-hold confirmation; nothing may send it from a timer, an event, a keyboard shortcut
+   * alone or a retry (DOOR-4). Main resolves the door from the saved link (never from the
+   * renderer), answers `not-found` with no Access call for an unlinked camera and `disabled` with
+   * none while Access is off (DOOR-0), and otherwise makes exactly **one** `PUT /doors/{id}/unlock`.
+   * A failure is never retried and always answers `retryable: false`, whatever its kind: a second
+   * PUT is a second door release, so only the user pressing again repeats it. A PUT that may have
+   * reached the console with no answer is ok with `outcome: 'unknown'` (`UnlockResultSchema`).
+   * Every attempt, refusals included, gets a line in `unlock.log` (DOOR-5); the answer does not
+   * wait for that write, and a failed write does not change it.
+   */
+  unlockDoor: call('vp:doors/unlock', UnlockDoorInputSchema, UnlockResultSchema),
 } as const
 
 /**
@@ -736,6 +784,8 @@ export interface ViewProtectApi {
   listDoors(): Promise<IpcResult<Door[]>>
   /** DOOR-2: the whole camera → door map, persisted. */
   setDoorLinks(input: SetDoorLinksInput): Promise<IpcResult<AppState>>
+  /** DOOR-3: unlock the door linked to a camera ref, once. Never retried, never automated. */
+  unlockDoor(input: UnlockDoorInput): Promise<IpcResult<UnlockResult>>
 
   onConnection(listener: (status: ConnectionStatus) => void): Unsubscribe
   onCameras(listener: (cameras: Camera[]) => void): Unsubscribe

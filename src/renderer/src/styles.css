@@ -786,3 +786,90 @@ body,
   gap: 0.5rem;
   margin-top: 0.5rem;
 }
+
+/* --- toasts (ui/Toast.tsx) ----------------------------------------------------------------------
+ * The outcome of an action taken away from any form (an unlock from a cell, P5.4): bottom right of
+ * the window, above the screens, newest last. The host never takes the pointer; a toast does, for
+ * its Dismiss button.
+ */
+.toastHost {
+  position: fixed;
+  right: 1rem;
+  bottom: 1rem;
+  z-index: 1000;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 0.5rem;
+  max-width: min(26rem, calc(100vw - 2rem));
+  pointer-events: none;
+}
+
+.toast {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+  padding: 0.6rem 0.75rem;
+  border: 1px solid var(--border);
+  border-left-width: 3px;
+  border-radius: var(--radius);
+  background: var(--bg-raised);
+  color: var(--fg);
+  box-shadow: var(--shadow-pop);
+  font-size: var(--font-sm);
+  pointer-events: auto;
+  animation: toast-in 160ms ease-out;
+}
+
+.toast--success {
+  border-left-color: var(--ok);
+}
+
+.toast--error {
+  border-left-color: var(--error);
+}
+
+.toast--warning {
+  border-left-color: var(--warn);
+}
+
+.toast__icon {
+  display: inline-flex;
+  margin-top: 0.1em;
+}
+
+.toast--success .toast__icon {
+  color: var(--ok);
+}
+
+.toast--error .toast__icon {
+  color: var(--error);
+}
+
+.toast--warning .toast__icon {
+  color: var(--warn);
+}
+
+.toast__message {
+  flex: 1 1 auto;
+  margin: 0;
+  line-height: 1.4;
+  user-select: text;
+}
+
+.toast__dismiss {
+  margin: -0.2rem -0.3rem -0.2rem 0;
+}
+
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .toast {
+    animation: none;
+  }
+}

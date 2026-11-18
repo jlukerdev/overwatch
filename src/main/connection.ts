@@ -55,10 +55,13 @@ import {
   type SnapshotInput,
   type SnapshotResult,
   type TestConnection,
+  type UnlockResult,
 } from '@shared/ipc'
+import { parseCameraRef } from '@shared/cameraRef'
 import type { Camera, ConsoleConfig, Door } from '@shared/models'
 import { STREAM_QUALITIES } from '@shared/quality'
-import type { AccessClient } from './access/client'
+import { AccessApiError, type AccessClient, type AccessErrorKind } from './access/client'
+import type { UnlockAttempt, UnlockLog } from './access/unlockLog'
 import type { Config } from './config/schema'
 import type { ConfigStore } from './config/store'
 import {
@@ -69,6 +72,7 @@ import {
   type ConsoleEndpoint,
 } from './console/endpoints'
 import { toIpcError } from './ipc/errors'
+import { isNeverConnectedError } from './net/errorCause'
 import type { RateLimiter } from './net/rateLimiter'
 import type { ProtectClient, SnapshotOptions } from './protect/client'
 import { ProtectApiError } from './protect/errors'
@@ -100,7 +104,7 @@ export interface ConnectionServices {
   /** Shared with the REST client: a WebSocket upgrade spends a request permit too (R9). */
   readonly limiter: RateLimiter
   protect(): Pick<ProtectClient, 'metaInfo' | 'cameras' | 'snapshot' | 'rtspsStreams'>
-  access(): Pick<AccessClient, 'doors'>
+  access(): Pick<AccessClient, 'doors' | 'unlock'>
 }
 
 export interface ConnectionManagerOptions {
@@ -114,6 +118,12 @@ export interface ConnectionManagerOptions {
   readonly now?: () => number
   /** Safe lines only — no key, no token, no URL (CON-2, NFR-9). Default: no-op. */
   readonly log?: (line: string) => void
+  /**
+   * DOOR-5: where every unlock attempt is recorded (`createUnlockLog`, wired in
+   * `src/main/index.ts`). Its `append` never rejects. Optional so the tests that never unlock need
+   * not build one; without it attempts are only in `log`.
+   */
+  readonly unlockLog?: Pick<UnlockLog, 'append'>
 }
 
 export interface ConnectionManager {
@@ -159,6 +169,18 @@ export interface ConnectionManager {
    * the status recorded (`not-configured`, `pin-required`, `auth`, …, with the endpoint's host:port).
    */
   doors(): Promise<IpcResult<Door[]>>
+  /**
+   * DOOR-3/4/5 (P5.4): unlock the door linked to a cell's camera ref (`<cameraId>` or
+   * `<cameraId>:package`, which uses the doorbell's link — DOOR-2). The door comes from the saved
+   * `doorLinks`, never from the renderer. DOOR-0 answers `disabled` (checked first) and no link
+   * answers `not-found`, both with no Access call; otherwise exactly **one** `PUT
+   * /doors/{id}/unlock` — never retried, never on a timer, and every failure answers
+   * `retryable: false` (DOOR-3/4). A PUT that may have reached the console without an answer
+   * (timeout, or a connection lost after connecting) answers ok with `outcome: 'unknown'`. Every
+   * attempt, refusals included, is appended to the unlock log (DOOR-5) without the answer waiting
+   * for the write. Never rejects.
+   */
+  unlockDoor(cameraRef: string): Promise<IpcResult<UnlockResult>>
   /**
    * CON-1/2: the Protect API key has just been deleted. Closes the feed and empties the inventory,
    * because nothing may keep running on a credential the user has removed. Clears
@@ -223,12 +245,41 @@ interface EndpointState {
   updatedAt: number
 }
 
+/**
+ * Unlock failures that are about **the door**, not the Access endpoint: the console answered, so the
+ * endpoint is reachable and the token accepted — it refused this one door (`forbidden`, e.g. no Door
+ * Hub), does not have it any more (`not-found`, a stale link) or rejected the request. These leave
+ * the Access status `connected` rather than painting the badge red for a fault that is the door's.
+ */
+const DOOR_LEVEL_UNLOCK_KINDS: ReadonlySet<AccessErrorKind> = new Set([
+  'forbidden',
+  'not-found',
+  'bad-request',
+])
+
+/**
+ * DOOR-3 (user decision 2026-11-18): an unlock whose PUT **may have reached the console** but got no
+ * answer. A `timeout` always may have — the request was written and the console went quiet. A
+ * `network` failure may have too (a reset or a socket closed after the request was sent), unless
+ * the cause chain shows the connection was never made at all (refused, no such host, no route:
+ * `isNeverConnectedError`). Refusals that never send anything (DOOR-0, no link, no token, a
+ * certificate not accepted) are not `AccessApiError`s of these kinds, so they stay plain failures.
+ * Such an attempt answers `ok` with `outcome: 'unknown'`: reporting a failure for a door that may
+ * have opened would invite a second press, a second door release.
+ */
+function unlockOutcomeUnknown(err: unknown): boolean {
+  if (!(err instanceof AccessApiError)) return false
+  if (err.kind === 'timeout') return true
+  return err.kind === 'network' && !isNeverConnectedError(err)
+}
+
 export function createConnectionManager(options: ConnectionManagerOptions): ConnectionManager {
   const { services, emit } = options
   const createDevices = options.createDevices ?? createDevicesSubscription
   const createEvents = options.createEvents ?? createEventsSubscription
   const now = options.now ?? Date.now
   const log = options.log ?? ((): void => undefined)
+  const unlockLog = options.unlockLog ?? null
 
   let inventory: Camera[] = []
   let subscription: ProtectSubscription | null = null
@@ -721,6 +772,154 @@ export function createConnectionManager(options: ConnectionManagerOptions): Conn
     return read
   }
 
+  /**
+   * DOOR-3/4/5 (P5.4). **Releases a physical door**, so the rules are strict, in this order:
+   *
+   *  1. **DOOR-0 first → `disabled`.** While Access is off the answer is always `disabled`, linked
+   *     or not, with no Access call at all (not even the client is resolved).
+   *  2. **The door comes from the saved links**, looked up from the camera ref here (an own,
+   *     non-empty string entry only: a ref such as `constructor` finds no prototype member). The
+   *     renderer never names a door, so a renderer bug can only ever unlock a door the user linked.
+   *     No link → `not-found`, again with no Access call. Both refusals are still logged: each was
+   *     a press on an unlock control.
+   *  3. **Exactly one `PUT`.** No retry and no timer anywhere on this path (DOOR-3/4): a second PUT
+   *     is a second door release, so only the user pressing again repeats one. That is why every
+   *     failure answers `retryable: false` whatever its kind — the client's `retryable` is about
+   *     the read calls (src/main/access/client.ts).
+   *  4. **Outcome unknown is not a failure** (user decision 2026-11-18). When the PUT may have
+   *     reached the console but no answer came back (`unlockOutcomeUnknown`), the door may have
+   *     opened: the answer is `ok` with `outcome: 'unknown'` and the error's safe message as
+   *     `reason`, so the renderer warns rather than inviting a second press.
+   *  5. **Logged once the outcome is known** (DOOR-5), after the PUT resolved or rejected — but the
+   *     answer never waits for the write: a stalled disk must not leave the button spinning after
+   *     the door opened. `append` never rejects (src/main/access/unlockLog.ts) and queues in call
+   *     order, so the lines stay in the order the attempts ended.
+   *
+   * The Access status follows the answer the way `doors()` does — `connected` on success, `error`
+   * on an endpoint failure (auth, pin, network, timeout, …, an unknown outcome included) — except
+   * that a refusal of this one door (`DOOR_LEVEL_UNLOCK_KINDS`) proves the endpoint works, so it
+   * reads `connected`. Not serialized: an unlock moves no subscription, and two presses on two
+   * doors are two independent requests.
+   */
+  async function unlockDoor(cameraRef: string): Promise<IpcResult<UnlockResult>> {
+    const { cameraId } = parseCameraRef(cameraRef)
+    // The camera's name for the toast and the log, from the inventory main already holds — no
+    // extra call (user decision 2026-11-18: no Access read for the door name either).
+    const shown = inventory.find((entry) => entry.id === cameraId)?.name?.trim() ?? ''
+    const cameraName = shown === '' ? cameraId : shown
+    const links = services.current.doorLinks
+    const linkedId = Object.hasOwn(links, cameraId) ? links[cameraId] : undefined
+    const doorId = typeof linkedId === 'string' && linkedId !== '' ? linkedId : null
+    const hostPort = (): string | null => endpointOf('access')?.hostPort ?? null
+    // The error kind of an unknown outcome, for its log line (set in the catch below).
+    let unknownKind: IpcError['kind'] | null = null
+
+    const finish = (
+      result: IpcResult<UnlockResult>,
+      linked: string | null,
+    ): IpcResult<UnlockResult> => {
+      const attempt: UnlockAttempt = !result.ok
+        ? {
+            cameraRef,
+            cameraName,
+            doorId: linked,
+            result: 'failure',
+            errorKind: result.error.kind,
+            message: result.error.message,
+          }
+        : result.value.outcome === 'unknown'
+          ? {
+              cameraRef,
+              cameraName,
+              doorId: linked,
+              result: 'unknown',
+              errorKind: unknownKind,
+              message: result.value.reason,
+            }
+          : {
+              cameraRef,
+              cameraName,
+              doorId: linked,
+              result: 'success',
+              errorKind: null,
+              message: null,
+            }
+      // Ids and the kind only in the console log: the message can name the address.
+      log(
+        `unlock: ${attempt.result} (door ${linked ?? 'none'}${
+          attempt.errorKind === null ? '' : `, ${attempt.errorKind}`
+        })`,
+      )
+      // Rule 5: not awaited. `append` never rejects, and its queue keeps the lines in call order.
+      if (unlockLog !== null) void unlockLog.append(attempt)
+      return result
+    }
+
+    // Rule 1, DOOR-0: not a request that fails, one that never happens.
+    if (!services.current.console.accessEnabled) {
+      return finish(
+        ipcFail(
+          'disabled',
+          'UniFi Access is turned off, so the door was not unlocked. Turn on "Enable UniFi ' +
+            'Access" in Settings first (DOOR-0).',
+          { endpoint: hostPort() },
+        ),
+        doorId,
+      )
+    }
+    if (doorId === null) {
+      return finish(
+        ipcFail(
+          'not-found',
+          `${cameraName} is not linked to a door, so nothing was unlocked. Link it to a door in ` +
+            'Settings → Door links.',
+        ),
+        null,
+      )
+    }
+
+    const slot = state.access
+    const where = hostPort()
+    let result: IpcResult<UnlockResult>
+    // What the status records: the error of a failure or of an unknown outcome.
+    let statusError: IpcError | null = null
+    let doorLevel = false
+    try {
+      // The one PUT (rule 3). `services.access()` throws `ConsoleEndpointError` for an address that
+      // does not resolve, which lands in the catch like any other failure (`not-configured`).
+      await services.access().unlock(doorId)
+      result = ipcOk({ doorId, cameraName, outcome: 'unlocked', reason: null })
+    } catch (err) {
+      doorLevel = err instanceof AccessApiError && DOOR_LEVEL_UNLOCK_KINDS.has(err.kind)
+      // Rule 3: never retryable, whatever the client or the mapping says.
+      statusError = { ...toIpcError(err, { endpoint: where }), retryable: false }
+      if (unlockOutcomeUnknown(err)) {
+        // Rule 4: the door may have opened.
+        unknownKind = statusError.kind
+        result = ipcOk({ doorId, cameraName, outcome: 'unknown', reason: statusError.message })
+      } else {
+        result = { ok: false, error: statusError }
+      }
+    }
+
+    // As in `readDoors`: an answer for an endpoint the user has since replaced leaves the new
+    // endpoint's status alone. The caller still gets the answer, and the log still gets the line.
+    if (state.access === slot) {
+      slot.updatedAt = now()
+      if (statusError === null || doorLevel) {
+        slot.phase = 'connected'
+        slot.error = null
+      } else {
+        slot.phase = 'error'
+        slot.error = statusError
+      }
+      emitStatus()
+    } else {
+      log('access: unlock finished after the endpoint changed; status left alone')
+    }
+    return finish(result, doorId)
+  }
+
   async function testConnection(): Promise<TestConnection> {
     // Sequentially, not in parallel: both halves may share the console's rate-limit budget when
     // Access answers behind the proxy on 443 (SPEC §5.2), and nothing here is time-critical.
@@ -884,6 +1083,7 @@ export function createConnectionManager(options: ConnectionManagerOptions): Conn
     snapshot,
     streamQualities,
     doors,
+    unlockDoor,
     credentialCleared: () => serialize(credentialCleared),
     credentialReplaced: () =>
       serialize(() => {

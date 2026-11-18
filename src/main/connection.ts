@@ -22,8 +22,9 @@
 //     offline reads, so the indicator is correct at launch without a single permit spent. The
 //     exception is `connectOnLaunch()`: once a connect has *worked* (the devices feed reached
 //     `open`), `console.connectOnLaunch` is persisted as `true`, and the next launch connects by
-//     itself until the user disconnects, clears the Protect key or moves the Protect endpoint — each
-//     of which writes it back to `false`. An outage, a reconnect or a failed connect leaves it alone:
+//     itself until the user clears or replaces the Protect key or moves the Protect endpoint — each
+//     of which writes it back to `false`. (There is no Disconnect any more: the user removed it on
+//     2026-11-17, since it closed only these live-update feeds while video kept playing.) An outage, a reconnect or a failed connect leaves it alone:
 //     a console that is down when the app starts is not the user saying "stop connecting".
 //  2. **`GET /v1/cameras` is the authority, not the feed** (R11, SPEC §5.1). The devices WebSocket
 //     sends no initial state and its message shapes are unverified, so every connect, reconnect,
@@ -129,12 +130,6 @@ export interface ConnectionManager {
    */
   connect(): Promise<void>
   /**
-   * Closes both feeds and goes back to `idle`. The cached inventory is kept. A user's disconnect
-   * also clears `console.connectOnLaunch` (CON-4): they said stop, so the next launch does not
-   * reconnect behind their back.
-   */
-  disconnect(): Promise<void>
-  /**
    * CON-4's launch exception, called once by main after start-up. Connects through the same path as
    * `connect()` when — and only when — `console.connectOnLaunch` is set, the Protect endpoint
    * resolves, a Protect key is stored and the endpoint is pinned; otherwise it sends nothing. Never
@@ -180,7 +175,7 @@ export interface ConnectionManager {
   applyConsoleChange(next: ConsoleConfig): Promise<void>
   /**
    * App shutdown: close the feed and every pinned Agent. Leaves `console.connectOnLaunch` as it is —
-   * quitting is not disconnecting, and the next launch is exactly when it is meant to apply.
+   * quitting is not a reason to stop, and the next launch is exactly when it is meant to apply.
    */
   shutdown(): Promise<void>
 }
@@ -251,7 +246,7 @@ export function createConnectionManager(options: ConnectionManagerOptions): Conn
   }
 
   /**
-   * **One at a time.** `connect`, `disconnect`, `applyConsoleChange` and `shutdown` all move the
+   * **One at a time.** `connect`, `credentialCleared`, `applyConsoleChange` and `shutdown` all move the
    * subscription, or the address it is bound to, across an `await` — and Settings drives them from
    * separate busy flags, so two of them overlapping is a normal thing for the UI to do.
    *
@@ -360,7 +355,7 @@ export function createConnectionManager(options: ConnectionManagerOptions): Conn
    * same two-step `applyConsoleChange` uses, touching that one field so a View or pin write queued
    * ahead of it is not overwritten. **Only when the value changes**: every reconnect reaches `open`
    * again, and a config write per reconnect would be pointless disk churn. `current` is set before
-   * the write rather than after so two calls in a row (an `open`, then a disconnect) compare against
+   * the write rather than after so two calls in a row (an `open`, then a key change) compare against
    * the newest value; the config store's own queue keeps the writes in call order. A failed write is
    * logged and swallowed — this is called from feed callbacks, and the session works either way; it
    * is only the next launch that would decide differently.
@@ -380,7 +375,7 @@ export function createConnectionManager(options: ConnectionManagerOptions): Conn
         (err: unknown) => {
           // Put memory back to what the disk still says, unless something newer has set it since:
           // otherwise the early return above would stop every later call from retrying the write,
-          // and a disconnect whose `false` never landed would reconnect at the next launch.
+          // and a key change whose `false` never landed would reconnect at the next launch.
           if (services.current.console.connectOnLaunch === value) {
             services.current = {
               ...services.current,
@@ -438,7 +433,8 @@ export function createConnectionManager(options: ConnectionManagerOptions): Conn
         slot.phase = 'reconnecting'
         break
       case 'stopped':
-        // A subscription stops for good either because we asked (disconnect, shutdown) or because
+        // A subscription stops for good either because we asked (a cleared key, a moved console,
+        // shutdown) or because
         // the key or the pin is wrong, which no retry can fix (subscriptions.ts rule 4). The second
         // case has already reported through `onError`, so the phase is that failure.
         slot.phase = stopRequested || slot.error === null ? 'idle' : 'error'
@@ -603,19 +599,6 @@ export function createConnectionManager(options: ConnectionManagerOptions): Conn
     // Independent of `alreadyUp`: the events feed may have stopped on its own while the devices feed
     // stayed up, and a repeated connect is the user's way of asking for everything again.
     if (eventsFeed === null) startEventsFeed(endpoint)
-    emitStatus()
-  }
-
-  async function disconnect(): Promise<void> {
-    await stopFeed()
-    // The user said stop (CON-4): the next launch respects that rather than reconnecting.
-    persistConnectOnLaunch(false)
-    const slot = state.protect
-    slot.phase = 'idle'
-    // An idle endpoint has no last failure to show; the contract keeps `error` for `error` and for
-    // a reconnect in progress.
-    slot.error = null
-    slot.updatedAt = now()
     emitStatus()
   }
 
@@ -895,7 +878,6 @@ export function createConnectionManager(options: ConnectionManagerOptions): Conn
     status,
     cachedCameras: () => [...inventory],
     connect: () => serialize(connect),
-    disconnect: () => serialize(disconnect),
     connectOnLaunch: () => serialize(connectOnLaunch),
     testConnection,
     cameras: () => refreshInventory('a camera list request'),

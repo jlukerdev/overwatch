@@ -173,7 +173,6 @@ function setup(options: SetupOptions = {}) {
     status: vi.fn(() => ConnectionStatusFromDefaults()),
     cachedCameras: vi.fn(() => [CameraSchema.parse({ id: 'cam-1' })]),
     connect: vi.fn(() => Promise.resolve()),
-    disconnect: vi.fn(() => Promise.resolve()),
     testConnection: vi.fn(() =>
       Promise.resolve({
         protect: { state: 'ok' as const, applicationVersion: '7.3.74' },
@@ -358,7 +357,6 @@ describe('request validation (CLAUDE.md)', () => {
     },
     { channel: IPC.testConnection.channel, payload: 1, why: 'an argument where there is none' },
     { channel: IPC.connect.channel, payload: {}, why: 'an argument where there is none' },
-    { channel: IPC.disconnect.channel, payload: 'stop', why: 'an argument where there is none' },
     { channel: IPC.listCameras.channel, payload: null, why: 'an argument where there is none' },
     { channel: IPC.snapshot.channel, payload: { cameraId: '' }, why: 'no camera id' },
     {
@@ -820,11 +818,6 @@ describe('the connection channels', () => {
     const result = await h.call(IPC.connect)
     expect(h.manager.connect).toHaveBeenCalledTimes(1)
     expect(result.ok).toBe(true)
-  })
-
-  it('delegates disconnect', async () => {
-    await h.call(IPC.disconnect)
-    expect(h.manager.disconnect).toHaveBeenCalledTimes(1)
   })
 
   it('delegates testConnection and passes its two probes through', async () => {

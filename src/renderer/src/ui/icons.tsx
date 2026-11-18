@@ -184,17 +184,6 @@ export function PlugIcon(props: IconProps): JSX.Element {
   )
 }
 
-/** Disconnect: the plug, struck through. */
-export function UnplugIcon(props: IconProps): JSX.Element {
-  return (
-    <Svg {...props}>
-      <path d="M5.5 1.5v3M10.5 1.5v3M8 11.5v3" />
-      <path d="M3.5 4.5h9v2.5a4.5 4.5 0 0 1-9 0z" />
-      <path d="M1.5 1.5l13 13" />
-    </Svg>
-  )
-}
-
 /**
  * The 2×2 grid: the Live screen, and FILL-1's "back to the grid". Filled squares rather than
  * outlines so it reads at the overlay's small size.

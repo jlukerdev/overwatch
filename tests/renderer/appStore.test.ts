@@ -121,7 +121,6 @@ function fakeBridge(overrides: Partial<ViewProtectApi> = {}): FakeBridge {
     repinCertificate: unimplemented('repinCertificate'),
     testConnection: unimplemented('testConnection'),
     connect: unimplemented('connect'),
-    disconnect: unimplemented('disconnect'),
     listCameras: unimplemented('listCameras'),
     snapshot: unimplemented('snapshot'),
     // P2.2: on the bridge, so the store's `ViewProtectApi` is complete. The player asks for streams

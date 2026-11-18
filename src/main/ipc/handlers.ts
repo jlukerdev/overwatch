@@ -415,11 +415,6 @@ export function createIpcRouter(deps: IpcRouterDeps): ReadonlyMap<string, IpcHan
     return state(ready)
   })
 
-  on(IPC.disconnect, async (_input, ready) => {
-    await ready.manager.disconnect()
-    return state(ready)
-  })
-
   on(IPC.listCameras, async (_input, ready) => ipcOk(await ready.manager.cameras()))
 
   on(IPC.snapshot, async (input, ready) => ipcOk(await ready.manager.snapshot(input)))

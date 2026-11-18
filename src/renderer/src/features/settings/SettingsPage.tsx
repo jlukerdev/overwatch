@@ -34,7 +34,7 @@ import { useCallback, useEffect, useRef, useState, type JSX, type ReactNode } fr
 import { GroupTitle } from './GroupTitle'
 import type { AccessProbe, IpcError, IpcSecretKey, ProtectProbe, Settings } from '@shared/ipc'
 import { useAppStore } from '../../state/appStore'
-import { CheckIcon, PlugIcon, PulseIcon, TrashIcon, UnplugIcon } from '../../ui/icons'
+import { CheckIcon, PlugIcon, PulseIcon, TrashIcon } from '../../ui/icons'
 import { CertificateCard } from './CertificateCard'
 import { DoorLinksCard } from './DoorLinksCard'
 import { doorListKey } from './doorLinks'
@@ -569,15 +569,16 @@ function CertificateSection({ accessEnabled }: { accessEnabled: boolean }): JSX.
 }
 
 // -------------------------------------------------------------------------------------------------
-// CON-4 / CON-5: Test connection, Connect / Disconnect, and the per-endpoint facts
+// CON-4 / CON-5: Test connection, Connect, and the per-endpoint facts. There is no Disconnect: the
+// user removed it on 2026-11-17, because it closed only the Protect live-update feeds while video
+// kept playing through go2rtc, and Access holds no connection at all.
 
 function ConnectionCard({ accessEnabled }: { accessEnabled: boolean }): JSX.Element | null {
   const connection = useAppStore((s) => s.connection)
   const testConnection = useAppStore((s) => s.testConnection)
   const connect = useAppStore((s) => s.connect)
-  const disconnect = useAppStore((s) => s.disconnect)
 
-  const [busy, setBusy] = useState<'test' | 'connect' | 'disconnect' | null>(null)
+  const [busy, setBusy] = useState<'test' | 'connect' | null>(null)
   const [probes, setProbes] = useState<{ protect: ProtectProbe; access: AccessProbe } | null>(null)
   const [testError, setTestError] = useState<IpcError | null>(null)
   const [connectError, setConnectError] = useState<IpcError | null>(null)
@@ -599,10 +600,10 @@ function ConnectionCard({ accessEnabled }: { accessEnabled: boolean }): JSX.Elem
     setProbes({ protect: result.value.protect, access: result.value.access })
   }
 
-  const run = async (action: 'connect' | 'disconnect'): Promise<void> => {
-    setBusy(action)
+  const runConnect = async (): Promise<void> => {
+    setBusy('connect')
     setConnectError(null)
-    const result = action === 'connect' ? await connect() : await disconnect()
+    const result = await connect()
     setBusy(null)
     if (!result.ok) setConnectError(result.error)
   }
@@ -611,8 +612,8 @@ function ConnectionCard({ accessEnabled }: { accessEnabled: boolean }): JSX.Elem
     <div className="settings__subsection">
       <h3 className="settings__subhead">Connection</h3>
       <p className="card__hint">
-        After a connect works, the app reconnects at launch until you disconnect, change the address
-        or replace the key.
+        After a connect works, the app reconnects at launch until you change the address or replace
+        the key.
       </p>
 
       <dl className="settings__facts">
@@ -643,22 +644,11 @@ function ConnectionCard({ accessEnabled }: { accessEnabled: boolean }): JSX.Elem
           className="button button--primary"
           disabled={busy !== null}
           onClick={() => {
-            void run('connect')
+            void runConnect()
           }}
         >
           <PlugIcon />
           {busy === 'connect' ? 'Connecting…' : 'Connect'}
-        </button>
-        <button
-          type="button"
-          className="button"
-          disabled={busy !== null}
-          onClick={() => {
-            void run('disconnect')
-          }}
-        >
-          <UnplugIcon />
-          {busy === 'disconnect' ? 'Disconnecting…' : 'Disconnect'}
         </button>
       </div>
       {connectError === null ? null : <p className="field__error">{connectError.message}</p>}

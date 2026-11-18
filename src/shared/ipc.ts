@@ -176,7 +176,8 @@ export type SecretsStored = z.infer<typeof SecretsStoredSchema>
  * - `unconfigured`: no host, no key, or an address that cannot be parsed (CON-1).
  * - `idle`: configured and pinned, but nothing has been asked of it yet. Nothing connects at
  *   startup on purpose (CON-4, and R9's budget) — unless a previous session's connect worked and
- *   the user has not disconnected since (`console.connectOnLaunch`), when main connects itself.
+ *   neither the key nor the address has changed since (`console.connectOnLaunch`), when main
+ *   connects itself.
  * - `connecting` / `connected` / `reconnecting`: the live device feed's state (CAM-2).
  * - `error`: the last attempt failed. `error` carries why.
  */
@@ -588,8 +589,6 @@ export const IPC = {
   testConnection: call('vp:connection/test', NoInput, TestConnectionSchema),
   /** Load the inventory and open the devices feed (CAM-1/2). Idempotent. */
   connect: call('vp:connection/start', NoInput, AppStateSchema),
-  /** Close the devices feed and go back to `idle`. The app stays configured. */
-  disconnect: call('vp:connection/stop', NoInput, AppStateSchema),
   /** CAM-1: re-read `GET /v1/cameras`. The authoritative inventory, per R11. */
   listCameras: call('vp:cameras/list', NoInput, z.array(CameraSchema)),
   /** CAM-1/3: one thumbnail. */
@@ -721,7 +720,6 @@ export interface ViewProtectApi {
   repinCertificate(input: AcceptCertInput): Promise<IpcResult<AppState>>
   testConnection(): Promise<IpcResult<TestConnection>>
   connect(): Promise<IpcResult<AppState>>
-  disconnect(): Promise<IpcResult<AppState>>
   listCameras(): Promise<IpcResult<Camera[]>>
   snapshot(input: SnapshotInput): Promise<IpcResult<SnapshotResult>>
   /** QUAL-8: on demand, per camera/quality pair, and again after a `streamRuntime` event. */

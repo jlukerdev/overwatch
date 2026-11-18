@@ -65,7 +65,6 @@ export interface AppStoreState {
   repinCertificate: (input: AcceptCertInput) => Promise<IpcResult<AppState>>
   testConnection: () => Promise<IpcResult<TestConnection>>
   connect: () => Promise<IpcResult<AppState>>
-  disconnect: () => Promise<IpcResult<AppState>>
   refreshCameras: () => Promise<IpcResult<Camera[]>>
   snapshot: (input: SnapshotInput) => Promise<IpcResult<SnapshotResult>>
   /**
@@ -183,7 +182,6 @@ export const useAppStore = create<AppStoreState>()((set, get) => {
     acceptCertificate: async (input) => fold(await bridge().acceptCertificate(input)),
     repinCertificate: async (input) => fold(await bridge().repinCertificate(input)),
     connect: async () => fold(await bridge().connect()),
-    disconnect: async () => fold(await bridge().disconnect()),
 
     testConnection: async () => {
       const result = await bridge().testConnection()

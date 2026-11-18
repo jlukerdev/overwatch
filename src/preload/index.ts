@@ -120,7 +120,6 @@ const impl: ViewProtectApi = {
   repinCertificate: (input): Promise<IpcResult<AppState>> => call(IPC.repinCertificate, input),
   testConnection: (): Promise<IpcResult<TestConnection>> => call(IPC.testConnection, undefined),
   connect: (): Promise<IpcResult<AppState>> => call(IPC.connect, undefined),
-  disconnect: (): Promise<IpcResult<AppState>> => call(IPC.disconnect, undefined),
   listCameras: (): Promise<IpcResult<Camera[]>> => call(IPC.listCameras, undefined),
   snapshot: (input): Promise<IpcResult<SnapshotResult>> => call(IPC.snapshot, input),
   ensureStream: (input): Promise<IpcResult<StreamHandle>> => call(IPC.ensureStream, input),

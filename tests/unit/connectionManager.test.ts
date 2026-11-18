@@ -488,24 +488,6 @@ describe('the devices feed (CAM-2, R11)', () => {
   })
 })
 
-describe('disconnect', () => {
-  it('stops the feed, goes back to idle and keeps the inventory', async () => {
-    await h.manager.connect()
-    h.feeds.last().emitState('open')
-    await h.manager.disconnect()
-    expect(h.feeds.last().stops).toBe(1)
-    const status = h.manager.status()
-    expect(status.protect.phase).toBe('idle')
-    expect(status.protect.error).toBeNull()
-    expect(h.manager.cachedCameras()).toHaveLength(2)
-  })
-
-  it('is safe with nothing connected', async () => {
-    await h.manager.disconnect()
-    expect(h.manager.status().protect.phase).toBe('idle')
-  })
-})
-
 describe('a cleared credential (CON-1/2)', () => {
   it('closes the feed, empties the inventory and reports what the config now derives', async () => {
     await h.manager.connect()
@@ -1072,16 +1054,8 @@ describe('the connect-on-launch flag (CON-4)', () => {
     expect(h.disk.console.host).toBe('192.0.2.10')
   })
 
-  it('is cleared by a disconnect: the user said stop', async () => {
-    await connectAndOpen(h)
-    await h.manager.disconnect()
-    await flush()
-    expect(h.console.connectOnLaunch).toBe(false)
-    expect(h.disk.console.connectOnLaunch).toBe(false)
-  })
-
-  it('writes nothing on a disconnect when it was already off', async () => {
-    await h.manager.disconnect()
+  it('writes nothing on a key change when it was already off', async () => {
+    await h.manager.credentialReplaced()
     await flush()
     expect(flagWrites(h)).toBe(0)
   })
@@ -1137,7 +1111,7 @@ describe('the connect-on-launch flag (CON-4)', () => {
     expect(flagWrites(h)).toBe(0)
   })
 
-  it('survives shutdown: quitting is not disconnecting', async () => {
+  it('survives shutdown: quitting does not clear it', async () => {
     await connectAndOpen(h)
     await h.manager.shutdown()
     await flush()
@@ -1155,12 +1129,11 @@ describe('the connect-on-launch flag (CON-4)', () => {
   it('puts memory back after a failed write, so the next change retries it', async () => {
     await connectAndOpen(h)
     h.update.mockRejectedValueOnce(new Error('EACCES'))
-    await h.manager.disconnect()
+    await h.manager.credentialReplaced()
     await flush()
-    // The disk still says true, so memory must too — or the next disconnect would skip the write.
+    // The disk still says true, so memory must too — or the next key change would skip the write.
     expect(h.console.connectOnLaunch).toBe(true)
-    await h.manager.connect()
-    await h.manager.disconnect()
+    await h.manager.credentialReplaced()
     await flush()
     expect(h.disk.console.connectOnLaunch).toBe(false)
   })
@@ -1170,7 +1143,6 @@ describe('the connect-on-launch flag (CON-4)', () => {
     await h.manager.credentialReplaced()
     await flush()
     expect(h.disk.console.connectOnLaunch).toBe(false)
-    await h.manager.disconnect()
     await connectAndOpen(h)
     expect(h.disk.console.connectOnLaunch).toBe(true)
   })
@@ -1178,7 +1150,8 @@ describe('the connect-on-launch flag (CON-4)', () => {
   it('ignores an `open` from a feed that is no longer the live one', async () => {
     await h.manager.connect()
     const stale = h.feeds.last()
-    await h.manager.disconnect()
+    delete h.services.credentials.protectApiKey
+    await h.manager.credentialCleared()
     stale.emitState('open')
     await flush()
     expect(h.console.connectOnLaunch).toBe(false)
@@ -1395,7 +1368,6 @@ describe('the events feed (CELL-2, P4.2)', () => {
   })
 
   const stoppers: { name: string; run: (harness: Harness) => Promise<void> }[] = [
-    { name: 'disconnect', run: (harness) => harness.manager.disconnect() },
     {
       name: 'credentialCleared',
       run: async (harness) => {
@@ -1428,7 +1400,9 @@ describe('the events feed (CELL-2, P4.2)', () => {
   it('a stop we asked for does not forget a feed opened after it', async () => {
     await h.manager.connect()
     const first = h.events.last()
-    await h.manager.disconnect()
+    delete h.services.credentials.protectApiKey
+    await h.manager.credentialCleared()
+    h.services.credentials.protectApiKey = API_KEY
     await h.manager.connect()
     // A late `stopped` from the old socket must not drop the new handle.
     first.emitState('stopped')

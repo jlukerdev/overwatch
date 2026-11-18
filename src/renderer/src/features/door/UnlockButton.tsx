@@ -33,10 +33,8 @@
 // aborted when the button stops being available. `<Cell>` keys it by camera ref, so a rotation to
 // another camera starts from a fresh, idle button.
 //
-// **Auto-hide (CELL-4).** It fades with the controls strip — it is a control over live video, and a
-// big green-or-grey disc in the middle of every linked cell would sit on the picture — but while a
-// hold, a request or the green moment is on (`holdsUnlockShown`) it carries `data-held`, which keeps
-// it visible and pressable whatever the strip does (door.css). Its presses never fill the cell, pan
+// **Always visible (user decision 2026-11-18).** Unlike the controls strip it does not auto-hide
+// (CELL-4): whenever it is drawn it is on screen, in the grid and in fill (door.css). Its presses never fill the cell, pan
 // the zoom or arm fill's double-click: the bottom slot stops them like the strip's slot does
 // (CellOverlay), and the zoom skips presses that start in it (ZoomPan).
 import {
@@ -56,7 +54,6 @@ import { parseCameraRef } from '@shared/cameraRef'
 import { doorForCell, unlockAvailable } from './doorLink'
 import {
   HOLD_MS,
-  holdsUnlockShown,
   INITIAL_UNLOCK_HOLD,
   reduceUnlockHold,
   UNLOCKED_SHOWN_MS,
@@ -239,7 +236,6 @@ export function UnlockButton({
       aria-busy={busy ? true : undefined}
       aria-disabled={busy ? true : undefined}
       data-phase={state.phase}
-      data-held={holdsUnlockShown(state) ? 'true' : undefined}
       onPointerDown={onPointerDown}
       onPointerUp={onPointerEnd}
       onPointerLeave={onPointerEnd}

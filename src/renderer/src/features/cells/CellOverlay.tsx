@@ -21,9 +21,8 @@
 // (features/door/UnlockButton) sits alone at the bottom centre of the cell, larger than the strip's
 // chips, because it acts on the house rather than the picture. The slot is the strip's twin for
 // events — it stops pointer, click and double-click events from reaching the cell (FILL-1), and the
-// zoom skips presses that start in it (ZoomPan) — and it follows the strip's shown / hidden state
-// (CELL-4): the button fades with the strip via `cellOverlay--controlsShown`, except while it holds
-// itself shown (a hold, a request, the green moment; door.css `data-held`). Only `<Cell>` fills it,
+// zoom skips presses that start in it (ZoomPan) — but unlike the strip it does **not** auto-hide
+// (CELL-4): the button is always visible while drawn (user decision 2026-11-18, door.css). Only `<Cell>` fills it,
 // never `<MissingCell>`. An empty slot draws nothing (cells.css).
 //
 // **Name and badge are optional.** No name when the View hides names (VIEW-8), or on a multi-camera

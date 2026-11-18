@@ -6,9 +6,8 @@
  * Its border and hover / active fills are the strip's chip tokens (`--chip-*`, set on `.cellOverlay`
  * in features/cells/cells.css, which this button always sits inside).
  *
- * Shown with the controls strip (CELL-4): faded out, and taking no pointer, unless the overlay has
- * `--controlsShown` or the button holds itself shown (`data-held`: a hold, a request or the green
- * moment). The hold's fill grows from the centre over `--unlock-hold-ms` (set inline from HOLD_MS):
+ * Always shown while it is drawn, in the grid and in fill (user decision 2026-11-18): it does not
+ * fade with the auto-hiding strip (CELL-4). The hold's fill grows from the centre over `--unlock-hold-ms` (set inline from HOLD_MS):
  * `transform` and `opacity` only, so a hold costs no layout or per-frame React state over video.
  */
 .unlockButton {
@@ -29,20 +28,12 @@
   font: inherit;
   line-height: 0;
   cursor: pointer;
-  opacity: 0;
-  pointer-events: none;
+  pointer-events: auto;
   touch-action: none;
   -webkit-touch-callout: none;
   transition:
-    opacity 150ms ease-out,
     background-color 120ms ease,
     border-color 120ms ease;
-}
-
-.cellOverlay--controlsShown .unlockButton,
-.unlockButton[data-held='true'] {
-  opacity: 1;
-  pointer-events: auto;
 }
 
 .unlockButton:hover:not([aria-disabled='true']) {

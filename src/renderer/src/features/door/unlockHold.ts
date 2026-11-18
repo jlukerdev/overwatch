@@ -88,15 +88,6 @@ export function reduceUnlockHold(state: UnlockHoldState, event: UnlockHoldEvent)
   }
 }
 
-/**
- * The button stays on screen whatever the overlay's auto-hide says (CELL-4): a hold or a request in
- * progress, and the green "unlocked" moment after a success, which would otherwise fade with the
- * strip while the pointer rests on the button.
- */
-export function holdsUnlockShown(state: UnlockHoldState): boolean {
-  return state.phase !== 'idle'
-}
-
 /** The toast after a successful unlock (DOOR-3), naming the door by its camera. */
 export function unlockSuccessMessage(cameraName: string): string {
   return `Door unlocked for ${cameraName}.`

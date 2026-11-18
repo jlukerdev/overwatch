@@ -194,7 +194,7 @@
 
 /*
  * The bottom slot (P5.4, CellOverlay.tsx): the door unlock control, centred at the bottom of the
- * cell. The slot itself takes no pointer; its button does while shown (features/door/door.css). An
+ * cell. The slot itself takes no pointer; its button always does, since it never auto-hides (features/door/door.css). An
  * empty slot (no button drawn) takes no space.
  */
 .cellOverlay__bottom {

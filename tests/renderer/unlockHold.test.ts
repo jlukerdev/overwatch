@@ -9,7 +9,6 @@
 import { describe, expect, it } from 'vitest'
 import {
   HOLD_MS,
-  holdsUnlockShown,
   INITIAL_UNLOCK_HOLD,
   reduceUnlockHold,
   UNLOCKED_SHOWN_MS,
@@ -122,15 +121,6 @@ describe('reduceUnlockHold', () => {
   })
 })
 
-describe('holdsUnlockShown', () => {
-  it('holds the button on screen while holding, requesting or unlocked, not at rest', () => {
-    expect(holdsUnlockShown(INITIAL_UNLOCK_HOLD)).toBe(false)
-    expect(holdsUnlockShown(run([press()]))).toBe(true)
-    expect(holdsUnlockShown(run([press(), elapsed()]))).toBe(true)
-    expect(holdsUnlockShown(run([press(), elapsed(), { type: 'result', ok: true }]))).toBe(true)
-  })
-})
-
 describe('toast copy', () => {
   it('names the camera on success', () => {
     expect(unlockSuccessMessage('Front Door')).toBe('Door unlocked for Front Door.')
@@ -163,7 +153,6 @@ describe('unlockResultEvent (user decision 2026-11-18)', () => {
     expect(event).toEqual({ type: 'result', ok: false })
     const after = run([press(), elapsed(), event])
     expect(after).toEqual({ phase: 'idle' })
-    expect(holdsUnlockShown(after)).toBe(false)
   })
 
   it('is not green for a failure', () => {

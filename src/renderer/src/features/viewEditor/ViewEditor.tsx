@@ -309,7 +309,7 @@ function DraftEditor({
     requestCameras(snapshotPlan.cameraIds, { streams: false })
     requestPackages(snapshotPlan.packageIds)
   }, [snapshotPlan])
-  // Palette entries heading a cell are marked "In use" (VIEW-3), live with every draft change.
+  // Palette entries heading a cell are marked with a green check (VIEW-3), live with every draft change.
   const inUse = useMemo(() => inUseRefs(draft.cells), [draft.cells])
   const cellSnapshots = useMemo(
     () =>

@@ -408,14 +408,9 @@
 }
 
 .viewEditor__inUse {
+  display: inline-flex;
   flex-shrink: 0;
-  padding: 0.05rem 0.4rem;
-  border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
-  border-radius: 999px;
-  background: color-mix(in srgb, var(--accent) 16%, transparent);
-  color: var(--accent);
-  font-size: 0.7rem;
-  font-weight: 600;
+  color: var(--ok);
 }
 
 .viewEditor__paletteItem:hover {

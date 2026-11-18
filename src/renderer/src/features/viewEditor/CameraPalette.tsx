@@ -4,11 +4,12 @@
 // it on a canvas cell makes that cell show that camera alone (`dropCameraOnCell`). The keyboard way
 // to do the same is the cell inspector's "Add camera" picker.
 //
-// An entry whose exact ref heads at least one cell of the draft is marked "In use" (P5.2, VIEW-3;
+// An entry whose exact ref heads at least one cell of the draft is marked with a green check (P5.2, VIEW-3;
 // `inUseRefs`), with its label a little quieter. It stays draggable: one camera may head several
 // cells.
 import type { JSX } from 'react'
 import type { CameraChoice } from './editorModel'
+import { CheckIcon } from '../../ui/icons'
 import { CAMERA_DRAG_TYPE } from './viewEditorHelpers'
 
 export interface CameraPaletteProps {
@@ -54,8 +55,8 @@ export function CameraPalette({ choices, inUse }: CameraPaletteProps): JSX.Eleme
                 >
                   <span className="viewEditor__paletteLabel">{choice.label}</span>
                   {count > 0 ? (
-                    <span className="viewEditor__inUse" aria-label={inUseText(count)}>
-                      {count > 1 ? `In use ×${String(count)}` : 'In use'}
+                    <span className="viewEditor__inUse" role="img" aria-label={inUseText(count)}>
+                      <CheckIcon />
                     </span>
                   ) : null}
                 </li>

@@ -176,7 +176,7 @@
   min-width: 0;
 }
 
-.viewEditor__messageText {
+.viewEditor__message > span {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;

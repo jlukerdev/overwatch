@@ -18,7 +18,7 @@
 //    in its own record; any other quality shows the main-channel thumbnail.
 //  - A cached image is used **whatever its age**, like the View editor's (VIEW-3): it is a hint of
 //    what is coming, replaced by the live picture within a second.
-import { isQuality, type StreamQuality } from '@shared/quality'
+import { PACKAGE_CHANNEL, type StreamQuality } from '@shared/quality'
 import type { PackageSnapshots, ThumbnailEntry } from '../state/camerasStore'
 import type { PlayerPlaceholder } from './playerMachine'
 
@@ -37,7 +37,7 @@ export function placeholderSnapshot(
   packages: PackageSnapshots,
 ): PlaceholderSnapshot | null {
   if (placeholder?.kind !== 'connecting') return null
-  // Not one of the three qualities: the package channel, which has its own snapshots.
-  const entry = isQuality(quality) ? entries[cameraId] : packages[cameraId]
+  // The package channel has its own snapshots.
+  const entry = quality === PACKAGE_CHANNEL ? packages[cameraId] : entries[cameraId]
   return entry?.status === 'ready' ? entry : null
 }

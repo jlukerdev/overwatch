@@ -50,10 +50,8 @@ import {
   viewsActions,
 } from '../../state/viewsStore'
 import {
-  AlertIcon,
   CameraIcon,
   CameraOffIcon,
-  CheckIcon,
   CollapseIcon,
   GearIcon,
   GridIcon,
@@ -61,6 +59,8 @@ import {
 } from '../../ui/icons'
 import { overlayAutoHideMs } from '../cells/overlayVisibility'
 import { ConnectionAlerts } from '../status/ConnectionBadge'
+import { SetupChecklist } from '../../ui/SetupChecklist'
+import { StatusLine } from '../../ui/StatusLine'
 import { ViewEditor } from '../viewEditor/ViewEditor'
 import { isFocusModeKey } from '../viewSwitcher/focusMode'
 import { ViewSwitcher } from '../viewSwitcher/ViewSwitcher'
@@ -256,20 +256,7 @@ function LiveBody({ activeView, onOpenSettings, onOpenCameras }: LiveBodyProps):
         hint={`${String(open)} ${open === 1 ? 'step' : 'steps'} left before the wall can show live video.`}
         action={{ label: 'Open settings', icon: <GearIcon />, onClick: onOpenSettings }}
       >
-        <ol className="checklist">
-          {steps.map((step, index) => (
-            <li
-              key={step.id}
-              className={step.done ? 'checklist__step checklist__step--done' : 'checklist__step'}
-            >
-              <span className="checklist__mark" aria-hidden="true">
-                {step.done ? <CheckIcon /> : index + 1}
-              </span>
-              {step.label}
-              {step.done ? <span className="visuallyHidden"> (done)</span> : null}
-            </li>
-          ))}
-        </ol>
+        <SetupChecklist steps={steps} />
       </EmptyState>
     )
   }
@@ -384,10 +371,9 @@ function EmptyState({
         </div>
       )}
       {error === undefined || error === null ? null : (
-        <p className="status status--error" role="alert">
-          <AlertIcon />
+        <StatusLine kind="error" role="alert">
           {error}
-        </p>
+        </StatusLine>
       )}
     </div>
   )

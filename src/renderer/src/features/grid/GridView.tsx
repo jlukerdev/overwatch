@@ -342,6 +342,11 @@ export function GridView({ view, cameras, streams }: GridViewProps): JSX.Element
   useLayoutEffect(() => {
     const last = lastFillRef.current
     lastFillRef.current = { viewId: view.id, key: filledKey }
+    // The hot path (a camera push, a resize frame): the filled slot did not change, nothing to do.
+    if (last.key === filledKey) return
+    // Whatever was still running is over: the slot it was on is being re-placed again, or left.
+    fillAnimationRef.current?.cancel()
+    fillAnimationRef.current = null
     const grid = layoutGrid({
       width: box?.width ?? 0,
       height: box?.height ?? 0,
@@ -355,14 +360,8 @@ export function GridView({ view, cameras, streams }: GridViewProps): JSX.Element
       nextKey: filledKey,
       sameView: last.viewId === view.id,
       drawable: grid.unitWidth > 0 && grid.unitHeight > 0,
-      // Only asked when the filled slot changed at all.
-      reducedMotion: last.key !== filledKey && prefersReducedMotion(),
+      reducedMotion: prefersReducedMotion(),
     })
-    if (last.key !== filledKey) {
-      // Whatever was still running is over: the slot it was on is being re-placed again, or left.
-      fillAnimationRef.current?.cancel()
-      fillAnimationRef.current = null
-    }
     if (plan === null || box === null) return
     const element = Array.from(rootRef.current?.children ?? []).find(
       (child): child is HTMLElement =>

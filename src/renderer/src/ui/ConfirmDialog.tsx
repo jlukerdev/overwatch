@@ -50,9 +50,13 @@ export function ConfirmHost(): JSX.Element | null {
   useEffect(() => {
     const dialog = dialogRef.current
     if (pending === null || dialog === null) return undefined
+    // What had the focus when the question was asked. React removes the dialog before this
+    // cleanup can close it, and a detached dialog does not hand the focus back by itself.
+    const opener = document.activeElement
     if (!dialog.open) dialog.showModal()
     return () => {
       if (dialog.open) dialog.close()
+      if (opener instanceof HTMLElement && opener.isConnected) opener.focus()
     }
   }, [pending])
 

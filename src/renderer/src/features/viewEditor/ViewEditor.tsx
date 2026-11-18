@@ -57,7 +57,7 @@ import {
   requestPackages,
   useThumbnails,
 } from '../../state/thumbnailsStore'
-import { setUnsaved } from '../../state/unsavedGuard'
+import { LEAVE_PROMPT, setUnsaved } from '../../state/unsavedGuard'
 import {
   neighbourAfterDelete,
   useViews,
@@ -66,7 +66,6 @@ import {
 } from '../../state/viewsStore'
 import { confirmDialog } from '../../ui/ConfirmDialog'
 import {
-  AlertIcon,
   CheckIcon,
   ChevronDownIcon,
   ChevronUpIcon,
@@ -84,6 +83,7 @@ import { setCellQuality } from '../quality/qualityChoice'
 import { CameraPalette } from './CameraPalette'
 import { CellInspector } from './CellInspector'
 import { isTextEntryTarget, keyEventTarget } from '../viewSwitcher/viewShortcut'
+import { StatusLine } from '../../ui/StatusLine'
 import { EditorCanvas } from './EditorCanvas'
 import { editorPanelId, EditorTabList, editorTabId } from './EditorTabList'
 import { tabAfterSelect, type EditorTab } from './editorTabs'
@@ -242,10 +242,9 @@ function NoViewsToEdit({
           </button>
         </div>
         {error === null ? null : (
-          <p className="status status--error" role="alert">
-            <AlertIcon />
-            <span>{error}</span>
-          </p>
+          <StatusLine kind="error" role="alert">
+            {error}
+          </StatusLine>
         )}
       </div>
     </section>
@@ -441,12 +440,10 @@ function DraftEditor({
    */
   const mayLeave = async (): Promise<boolean> => {
     if (!dirty) return true
+    // The app nav's prompt (state/unsavedGuard.ts), naming the View since here it is known.
     const agreed = await confirmDialog({
-      title: 'Discard unsaved changes?',
+      ...LEAVE_PROMPT,
       message: `Your changes to "${saved.name}" have not been saved.`,
-      confirmLabel: 'Discard changes',
-      cancelLabel: 'Keep editing',
-      danger: true,
     })
     return agreed && alive.current
   }
@@ -708,10 +705,9 @@ function DraftEditor({
                 : `${String(selectedCount)} cells selected`}
           </span>
           {note === null ? null : (
-            <p className="status status--warn viewEditor__note" role="status">
-              <AlertIcon />
-              <span>{note}</span>
-            </p>
+            <StatusLine kind="warn" role="status" className="viewEditor__note">
+              {note}
+            </StatusLine>
           )}
         </div>
 
@@ -748,10 +744,9 @@ function DraftEditor({
           </span>
           {/* One line, so the bar's height never changes; the whole message is in the tooltip. */}
           {error === null ? null : (
-            <p className="status status--error viewEditor__message" role="alert" title={error}>
-              <AlertIcon />
-              <span className="viewEditor__messageText">{error}</span>
-            </p>
+            <StatusLine kind="error" role="alert" className="viewEditor__message" title={error}>
+              {error}
+            </StatusLine>
           )}
           <div className="viewEditor__saveActions">
             <button

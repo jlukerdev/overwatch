@@ -32,6 +32,7 @@ import { useCallback, useEffect, useRef, useState, type JSX, type Ref } from 're
 import type { View } from '@shared/models'
 import { selectionNeedsStore, useLastViewId, viewsActions } from '../../state/viewsStore'
 import { ExpandIcon, PencilIcon, PlusIcon, SidebarIcon } from '../../ui/icons'
+import { StatusLine } from '../../ui/StatusLine'
 import { nextViewName } from '../viewEditor/viewEditorHelpers'
 import {
   readSwitcherCollapsed,
@@ -88,9 +89,9 @@ export function ViewSwitcher({
   // Focus mode: no switcher, but a failed `1`–`9` switch must still be seen (grid.css).
   if (hidden) {
     return error === null ? null : (
-      <p className="viewSwitcher__floatingError status status--error" role="alert">
+      <StatusLine kind="error" role="alert" className="viewSwitcher__floatingError">
         {error}
-      </p>
+      </StatusLine>
     )
   }
 
@@ -159,7 +160,14 @@ export function ViewSwitcher({
       </div>
       {error === null ? null : (
         <p className="viewSwitcher__error" role="alert" title={collapsed ? error : undefined}>
-          {collapsed ? '!' : error}
+          {collapsed ? (
+            <>
+              <span aria-hidden="true">!</span>
+              <span className="visuallyHidden">{error}</span>
+            </>
+          ) : (
+            error
+          )}
         </p>
       )}
       <div className="viewSwitcher__actions">

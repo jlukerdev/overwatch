@@ -16,6 +16,7 @@ export function StatusLine({
   busy = false,
   role,
   className,
+  title,
   children,
 }: {
   kind: StatusKind
@@ -24,11 +25,13 @@ export function StatusLine({
   role?: 'status' | 'alert'
   /** Extra classes after `status status--<kind>` (spacing in a particular card). */
   className?: string
+  /** The whole message as a tooltip, where the line may be cut short. */
+  title?: string
   children: ReactNode
 }): JSX.Element {
   const classes = `status status--${kind}${className === undefined ? '' : ` ${className}`}`
   return (
-    <p className={classes} role={role}>
+    <p className={classes} role={role} title={title}>
       {busy ? (
         <span className="spinner" aria-hidden="true" />
       ) : kind === 'ok' ? (

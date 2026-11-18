@@ -66,9 +66,10 @@ import {
   startLoad,
   useThumbnails,
 } from '../../state/thumbnailsStore'
-import { AlertIcon, CameraIcon, CheckIcon, GearIcon, PlugIcon, RefreshIcon } from '../../ui/icons'
+import { AlertIcon, CameraIcon, GearIcon, PlugIcon, RefreshIcon } from '../../ui/icons'
 import { setupChecklist } from '../../state/setupChecklist'
 import { cameraCountLabel } from './cameraListText'
+import { SetupChecklist } from '../../ui/SetupChecklist'
 import { CameraCard } from './CameraCard'
 import { CameraThumbnail } from './CameraThumbnail'
 import './cameras.css'
@@ -201,7 +202,7 @@ export function CameraList({ onOpenSettings }: CameraListProps): JSX.Element {
     return (
       <section className="cameras">
         <div className="emptyState" role="status">
-          <span className="spinner" aria-hidden="true" />
+          <span className="spinner emptyState__spinner" aria-hidden="true" />
           <p className="emptyState__hint">Checking the console…</p>
         </div>
       </section>
@@ -373,22 +374,7 @@ function SetupState({
       <p className="emptyState__hint">
         Your cameras appear here once the app is connected to your console.
       </p>
-      <ol className="checklist">
-        {setupChecklist(protect).map((step, index) => (
-          <li
-            key={step.id}
-            className={step.done ? 'checklist__step checklist__step--done' : 'checklist__step'}
-          >
-            <span className="checklist__mark" aria-hidden="true">
-              {step.done ? <CheckIcon /> : String(index + 1)}
-            </span>
-            <span>
-              {step.label}
-              <span className="visuallyHidden">{step.done ? ' (done)' : ' (to do)'}</span>
-            </span>
-          </li>
-        ))}
-      </ol>
+      <SetupChecklist steps={setupChecklist(protect)} />
       <div className="emptyState__actions">
         <button type="button" className="button button--primary" onClick={onOpenSettings}>
           <GearIcon />

@@ -11,6 +11,7 @@
 /* --- Live screen: View switcher on the left, the grid filling the rest ------------------------ */
 
 .liveScreen {
+  position: relative;
   display: flex;
   height: 100%;
   min-height: 0;
@@ -23,12 +24,105 @@
   min-height: 0;
 }
 
-.liveScreen__notice {
-  max-width: 60ch;
-  margin: 1rem;
+/* The switcher's error while focus mode hides the switcher: a pill over the top of the wall. */
+.viewSwitcher__floatingError {
+  position: absolute;
+  z-index: 5;
+  top: 0.75rem;
+  left: 50%;
+  max-width: calc(100% - 1.5rem);
+  padding: 0.35rem 0.7rem;
+  transform: translateX(-50%);
+  border: 1px solid var(--error);
+  border-radius: 999px;
+  background: var(--bg-raised);
+  box-shadow: var(--shadow-pop);
 }
 
-/* --- View switcher (VIEW-4) -------------------------------------------------------------------- */
+/* --- Focus mode (features/viewSwitcher/focusMode.ts) -------------------------------------------
+ * The header and the switcher are not drawn, so `.liveScreen__main` is the whole window. What is
+ * left of the chrome floats at its bottom-left, clear of a cell's name (top-left) and controls
+ * (top-right): the badges of endpoints that are not connected, always visible (CON-5), then the
+ * exit control, which is transparent until the pointer moves (`--revealed`, LiveScreen.tsx), it is
+ * hovered, or it has keyboard focus. Hidden, it lets clicks through to the cell under it but stays
+ * in the tab order. The badges come first so they do not shift when the exit control appears.
+ */
+.focusBar {
+  display: flex;
+  position: absolute;
+  z-index: 5;
+  bottom: 0.75rem;
+  left: 0.75rem;
+  align-items: center;
+  gap: 0.5rem;
+  max-width: calc(100% - 1.5rem);
+  pointer-events: none;
+}
+
+.focusBar .badges {
+  margin-left: 0;
+  pointer-events: auto;
+}
+
+.focusBar__exit {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 0.4rem;
+  min-height: var(--control-height);
+  padding: 0 0.7rem;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--scrim);
+  box-shadow: var(--shadow-pop);
+  color: var(--fg);
+  font: inherit;
+  font-size: var(--font-sm);
+  white-space: nowrap;
+  opacity: 0;
+  cursor: pointer;
+  pointer-events: none;
+  transition:
+    opacity 200ms ease,
+    border-color 120ms ease;
+}
+
+.focusBar--revealed .focusBar__exit,
+.focusBar__exit:hover,
+.focusBar__exit:focus-visible {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.focusBar__exit:hover {
+  border-color: var(--accent);
+}
+
+.focusBar__exit:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* The key that toggles it, as a keycap. */
+.focusBar__key {
+  padding: 0 0.35rem;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--muted);
+  font: inherit;
+  font-size: var(--font-xs);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .focusBar__exit {
+    transition: none;
+  }
+}
+
+/* --- View switcher (VIEW-4) --------------------------------------------------------------------
+ * A 12rem sidebar, or — collapsed (`--collapsed`, remembered per machine) — a slim rail of the
+ * Views' numbers. The same elements in both; only what each draws changes (ViewSwitcher.tsx).
+ */
 
 .viewSwitcher {
   display: flex;
@@ -40,6 +134,34 @@
   background: var(--bg-raised);
 }
 
+.viewSwitcher--collapsed {
+  width: 2.75rem;
+}
+
+/* The caption, then focus mode and the collapse toggle at the right; stacked on the rail. */
+.viewSwitcher__head {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 0.15rem;
+  padding: 0.4rem 0.5rem 0.15rem;
+}
+
+.viewSwitcher--collapsed .viewSwitcher__head {
+  flex-direction: column;
+  padding: 0.4rem 0 0.15rem;
+}
+
+.viewSwitcher__caption {
+  flex: 1;
+  padding-left: 0.5rem;
+  color: var(--muted);
+  font-size: var(--font-xs);
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
 /* A long list of Views scrolls here; the actions below it and the grid beside it never do. */
 .viewSwitcher__list {
   display: flex;
@@ -47,34 +169,35 @@
   flex-direction: column;
   gap: 0.25rem;
   min-height: 0;
-  padding: 0.5rem;
+  padding: 0.35rem 0.5rem 0.5rem;
   overflow-y: auto;
 }
 
+.viewSwitcher--collapsed .viewSwitcher__list {
+  align-items: center;
+  padding: 0.35rem 0 0.5rem;
+  /* The rail has no room for a scrollbar beside its buttons; the list still scrolls. */
+  scrollbar-width: none;
+}
+
+/* The look, hover, focus ring and the active accent bar are `.sideItem`'s (styles.css). */
 .viewSwitcher__item {
   display: flex;
+  flex-shrink: 0;
   align-items: baseline;
   gap: 0.5rem;
   width: 100%;
   min-width: 0;
   padding: 0.35rem 0.5rem;
-  border: 1px solid transparent;
-  border-radius: var(--radius);
-  background: none;
-  color: var(--muted);
-  font: inherit;
-  text-align: left;
-  cursor: pointer;
+  font-size: var(--font-md);
 }
 
-.viewSwitcher__item:hover {
-  color: var(--fg);
-}
-
-.viewSwitcher__item[aria-pressed='true'] {
-  border-color: var(--border);
-  background: var(--bg-sunken);
-  color: var(--fg);
+.viewSwitcher--collapsed .viewSwitcher__item {
+  justify-content: center;
+  width: var(--control-height);
+  height: var(--control-height);
+  padding: 0;
+  align-items: center;
 }
 
 /* The 1–9 shortcut. A fixed width keeps the names aligned whether a View has a number or not. */
@@ -83,6 +206,12 @@
   width: 1ch;
   color: var(--muted);
   font-variant-numeric: tabular-nums;
+  text-align: center;
+}
+
+/* On the rail the number is all there is of a View, so it takes the row's own colour. */
+.viewSwitcher--collapsed .viewSwitcher__key {
+  color: inherit;
 }
 
 .viewSwitcher__name {
@@ -105,11 +234,21 @@
   width: 100%;
 }
 
+/* Icon-only on the rail. */
+.viewSwitcher--collapsed .viewSwitcher__actions {
+  align-items: center;
+  padding: 0.6rem 0;
+}
+
+.viewSwitcher--collapsed .viewSwitcher__actions .button {
+  width: var(--control-height);
+}
+
 .viewSwitcher__empty,
 .viewSwitcher__error {
   margin: 0;
   padding: 0.35rem 0.5rem;
-  font-size: 0.85rem;
+  font-size: var(--font-sm);
 }
 
 .viewSwitcher__empty {
@@ -120,6 +259,13 @@
   color: var(--error);
 }
 
+/* On the rail an error is a mark; the message is its tooltip (and still read out, `role=alert`). */
+.viewSwitcher--collapsed .viewSwitcher__error {
+  padding: 0.35rem 0;
+  font-weight: 700;
+  text-align: center;
+}
+
 /* --- The View grid (VIEW-5/7) ------------------------------------------------------------------ */
 
 .gridView {
@@ -128,8 +274,14 @@
   inset: 0;
 }
 
+/*
+ * `transform-origin: 0 0` is for the fill / back transition (features/fill/fillTransition.ts): the
+ * one transform this element ever has is that animation's, written by `<GridView>` through the Web
+ * Animations API and gone when it ends. Nothing here transitions or animates layout.
+ */
 .gridView__slot {
   position: absolute;
+  transform-origin: 0 0;
 }
 
 /*
@@ -144,12 +296,27 @@
   inset: 0;
 }
 
+/*
+ * A slot shrinking back to its rectangle (the transition's `unfill`) is no longer `--filled`, and
+ * must still paint over the slots after it in the DOM until it is home. `<GridView>` sets the
+ * attribute for the length of the animation and removes it when it ends or is cancelled.
+ */
+.gridView__slot[data-fill-transition] {
+  z-index: 1;
+}
+
+/*
+ * A size container (`cell`), so what is drawn in a cell can scale with it: the no-picture
+ * composition (player/player.css, `.noPicture`) of a missing-camera cell. The box is 100% × 100% of
+ * its slot, so size containment changes nothing about its own layout.
+ */
 .gridCell {
   position: relative;
   overflow: hidden;
   width: 100%;
   height: 100%;
   background: var(--bg-sunken);
+  container: cell / size;
 }
 
 /* An empty cell is still visibly a cell, set off from the letterbox bars and gaps around it. */
@@ -157,20 +324,8 @@
   background: var(--bg-raised);
 }
 
-/* A cell whose camera is no longer on the console (gridLayout.ts). */
-.gridCell--missing {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.gridCell__missing {
-  max-width: 90%;
-  overflow: hidden;
-  color: var(--muted);
-  font-size: 0.85rem;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-/* A camera cell's name and controls are its overlay's (features/cells/cells.css). */
+/*
+ * A cell whose camera is no longer on the console, or has no package camera (gridLayout.ts): its
+ * icon and label are `.noPicture` (player/player.css), which centres itself over the cell.
+ * A camera cell's name and controls are its overlay's (features/cells/cells.css).
+ */

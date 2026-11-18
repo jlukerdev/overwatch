@@ -1,8 +1,9 @@
 // Small decisions the View editor's components need that are not edits of a View (those are
-// ./editorModel): the next free "View N" name, keeping the draft in step with the stored View, and
-// reading what a drag carries. Pure, so they are unit-tested in vitest's node environment
-// (vitest.config.mts; tests/renderer/viewEditorHelpers.test.ts), per CLAUDE.md's "keep logic that
-// has no UI pure and unit-tested", and the components stay thin.
+// ./editorModel): the next free "View N" name, keeping the draft in step with the stored View,
+// reading what a drag carries, and the selection toolbar's tooltips. Pure, so they are unit-tested
+// in vitest's node environment (vitest.config.mts; tests/renderer/viewEditorHelpers.test.ts and
+// editorPanel.test.ts), per CLAUDE.md's "keep logic that has no UI pure and unit-tested", and the
+// components stay thin.
 import type { View } from '@shared/models'
 import { isDraftDirty } from './editorModel'
 
@@ -90,4 +91,48 @@ export function layoutLossNote(count: number): string | null {
   return count === 1
     ? '1 cell with cameras did not fit the new layout and lost them.'
     : `${String(count)} cells with cameras did not fit the new layout and lost them.`
+}
+
+/** What the selection toolbar needs to know about the selection (`selectionActions`, the draft). */
+export interface ToolbarSelection {
+  /** How many cells are selected. */
+  readonly count: number
+  readonly canMerge: boolean
+  readonly canSplit: boolean
+  /** Whether any selected cell has a camera. */
+  readonly hasCameras: boolean
+}
+
+/**
+ * The tooltips of Merge, Split and Clear cameras (UX polish 2026-11-17): what the button does when
+ * it can act on the selection, and otherwise why it cannot, so a dimmed button explains itself.
+ */
+export function toolbarTitles(selection: ToolbarSelection): {
+  readonly merge: string
+  readonly split: string
+  readonly clear: string
+} {
+  const { count, canMerge, canSplit, hasCameras } = selection
+  const merge = canMerge
+    ? 'Merge the selected cells into one'
+    : count < 2
+      ? 'Select two or more cells to merge them (drag across cells, or Shift-click)'
+      : 'These cells cannot be merged'
+  const split = canSplit
+    ? 'Split the selected cell back into single cells'
+    : count === 0
+      ? 'Select a merged cell to split it'
+      : count === 1
+        ? 'This cell is not merged, so there is nothing to split'
+        : 'Select one merged cell to split it'
+  const clear = hasCameras
+    ? count === 1
+      ? 'Remove the cameras from the selected cell'
+      : 'Remove the cameras from the selected cells'
+    : count === 0
+      ? 'Select cells to remove their cameras'
+      : count === 1
+        ? 'The selected cell has no cameras'
+        : 'The selected cells have no cameras'
+  return { merge, split, clear }
 }

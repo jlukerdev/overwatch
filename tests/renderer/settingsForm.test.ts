@@ -307,7 +307,7 @@ describe('describeEndpointStatus', () => {
 
   it('reads as a checklist of the three things that can be missing (CON-5)', () => {
     expect(describeEndpointStatus(status())).toBe(
-      '192.0.2.10:443 · certificate pinned · credential stored',
+      '192.0.2.10:443 · certificate accepted · credential stored',
     )
     expect(
       describeEndpointStatus(status({ hostPort: null, pinned: false, credentialStored: false })),

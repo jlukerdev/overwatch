@@ -13,29 +13,38 @@
 // listener (`blockUnload`) holds a window close or reload (main asks the user, src/main/index.ts).
 //
 // The connection indicator lives in the header, outside the switch: CON-5 asks for it to be visible
-// at all times, not only on the Settings screen.
+// at all times, not only on the Settings screen. Each badge is also a way into Settings.
+//
+// **Focus mode** (UX polish 2026-11-17; features/viewSwitcher/focusMode.ts). The Live screen can ask
+// for the whole window: the header is then not drawn (and Live hides its switcher). The request is
+// state here because the header is; it applies only while Live is showing and the editor is closed
+// (`focusModeApplies`), and it is dropped on leaving Live or opening the editor, so the chrome is
+// back for good. It is never stored: a launch always has its header. While the header is hidden,
+// Live shows the endpoints that are not connected itself (CON-5).
 import { useEffect, useState, type JSX } from 'react'
 import { CameraList } from './features/cameras/CameraList'
 import { LiveScreen } from './features/grid/LiveScreen'
 import { SettingsPage } from './features/settings/SettingsPage'
 import { ConnectionBadge } from './features/status/ConnectionBadge'
+import { focusModeApplies } from './features/viewSwitcher/focusMode'
 import { initialScreen, type Screen } from './initialScreen'
 import { navClass } from './navClass'
 import { useAppStore } from './state/appStore'
 import { blockUnload, confirmLeave } from './state/unsavedGuard'
 import { ConfirmHost, confirmDialog } from './ui/ConfirmDialog'
-import { CameraIcon, GearIcon, GridIcon, RefreshIcon } from './ui/icons'
+import { AlertIcon, CameraIcon, GearIcon, GridIcon, RefreshIcon } from './ui/icons'
 
 export function App(): JSX.Element {
   const phase = useAppStore((s) => s.phase)
   const loadError = useAppStore((s) => s.loadError)
-  const version = useAppStore((s) => s.version)
   const load = useAppStore((s) => s.load)
   const subscribe = useAppStore((s) => s.subscribe)
 
   const [screen, setScreen] = useState<Screen | null>(null)
   // The id of the View the editor is on, or `null` when not editing (see the header).
   const [editingViewId, setEditingViewId] = useState<string | null>(null)
+  // The user asked for focus mode; whether it applies right now is `focusMode` below.
+  const [focusRequested, setFocusRequested] = useState(false)
 
   useEffect(() => {
     window.addEventListener('beforeunload', blockUnload)
@@ -65,19 +74,32 @@ export function App(): JSX.Element {
 
   // Settings until the load says otherwise (see the effect above).
   const current = screen ?? 'settings'
+  const focusMode = focusModeApplies(focusRequested, current === 'grid', editingViewId !== null)
 
   /** Switches screens, unless that would drop unsaved editor changes the user wants to keep. */
   const go = (next: Screen): void => {
     if (next === current) return
     void confirmLeave(confirmDialog).then((leave) => {
-      if (leave) setScreen(next)
+      if (!leave) return
+      setScreen(next)
+      // Leaving Live ends focus mode, so coming back shows the chrome.
+      setFocusRequested(false)
     })
+  }
+
+  /** Opens or closes the View editor; opening it ends focus mode. */
+  const setEditing = (id: string | null): void => {
+    setEditingViewId(id)
+    if (id !== null) setFocusRequested(false)
   }
 
   if (phase === 'loading') {
     return (
       <main className="app app--centred">
-        <p className="app__muted">Starting…</p>
+        <div className="emptyState" role="status">
+          <span className="spinner emptyState__spinner" aria-hidden="true" />
+          <h1 className="emptyState__title">Starting…</h1>
+        </div>
       </main>
     )
   }
@@ -85,60 +107,73 @@ export function App(): JSX.Element {
   if (phase === 'failed') {
     return (
       <main className="app app--centred">
-        <h1 className="app__title">View Protect</h1>
-        <p className="app__error">
-          {loadError?.message ?? 'The app could not read its own state from the main process.'}
-        </p>
-        <button type="button" className="button button--primary" onClick={() => void load()}>
-          <RefreshIcon />
-          Try again
-        </button>
+        <div className="emptyState">
+          <span className="emptyState__icon emptyState__icon--error">
+            <AlertIcon />
+          </span>
+          <h1 className="app__title">View Protect could not start</h1>
+          <p className="emptyState__hint" role="alert">
+            {loadError?.message ?? 'The app could not read its own state from the main process.'}
+          </p>
+          <div className="emptyState__actions">
+            <button type="button" className="button button--primary" onClick={() => void load()}>
+              <RefreshIcon />
+              Try again
+            </button>
+          </div>
+        </div>
       </main>
     )
   }
 
   return (
     <div className="app">
-      <header className="app__header">
-        <h1 className="app__brand">View Protect</h1>
-        <nav className="app__nav">
-          <button
-            type="button"
-            className={navClass(current === 'cameras')}
-            aria-current={current === 'cameras' ? 'page' : undefined}
-            onClick={() => {
-              go('cameras')
-            }}
-          >
-            <CameraIcon />
-            Cameras
-          </button>
-          <button
-            type="button"
-            className={navClass(current === 'grid')}
-            aria-current={current === 'grid' ? 'page' : undefined}
-            onClick={() => {
-              go('grid')
-            }}
-          >
-            <GridIcon />
-            Live
-          </button>
-          <button
-            type="button"
-            className={navClass(current === 'settings')}
-            aria-current={current === 'settings' ? 'page' : undefined}
-            onClick={() => {
+      {/* Focus mode: no header at all, so nothing hidden is still reachable by Tab. */}
+      {focusMode ? null : (
+        <header className="app__header">
+          <h1 className="app__brand">View Protect</h1>
+          <nav className="app__nav">
+            <button
+              type="button"
+              className={navClass(current === 'cameras')}
+              aria-current={current === 'cameras' ? 'page' : undefined}
+              onClick={() => {
+                go('cameras')
+              }}
+            >
+              <CameraIcon />
+              Cameras
+            </button>
+            <button
+              type="button"
+              className={navClass(current === 'grid')}
+              aria-current={current === 'grid' ? 'page' : undefined}
+              onClick={() => {
+                go('grid')
+              }}
+            >
+              <GridIcon />
+              Live
+            </button>
+            <button
+              type="button"
+              className={navClass(current === 'settings')}
+              aria-current={current === 'settings' ? 'page' : undefined}
+              onClick={() => {
+                go('settings')
+              }}
+            >
+              <GearIcon />
+              Settings
+            </button>
+          </nav>
+          <ConnectionBadge
+            onOpenSettings={() => {
               go('settings')
             }}
-          >
-            <GearIcon />
-            Settings
-          </button>
-        </nav>
-        <ConnectionBadge />
-        <span className="app__version">v{version}</span>
-      </header>
+          />
+        </header>
+      )}
       {/* The grid fills the body and must never scroll (VIEW-5); the other screens may. */}
       <main className={current === 'grid' ? 'app__body app__body--fill' : 'app__body'}>
         {current === 'cameras' ? (
@@ -150,7 +185,9 @@ export function App(): JSX.Element {
         ) : current === 'grid' ? (
           <LiveScreen
             editingViewId={editingViewId}
-            onEditingChange={setEditingViewId}
+            onEditingChange={setEditing}
+            focusMode={focusMode}
+            onFocusModeChange={setFocusRequested}
             onOpenSettings={() => {
               go('settings')
             }}

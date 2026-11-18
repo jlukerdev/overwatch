@@ -9,7 +9,7 @@
 //    "Custom…" keeps the current ratio and only reveals the inputs. Custom mode is sticky: it
 //    starts on when the ratio is not a listed one, and once on (picked, or the inputs typed in) it
 //    is left only through the select, so the inputs do not vanish mid-typing when a ratio reduces
-//    to a listed one (16:10 → 16:9). The editor remounts this row (`key`) when the draft goes back
+//    to a listed one (16:10 → 16:9). The editor remounts the View tab's settings (`key`) when the draft goes back
 //    to the stored View, which resets the mode.
 //  - Gap → a 0–MAX_GRID_GAP range plus a number input for an exact value.
 //  - Fit → contain / cover.
@@ -19,9 +19,13 @@
 //    option inherits (`null`) and names what that gives now, from `settings.streams` (QUAL-1):
 //    "App default (LOW)". Saved with the rest of the draft, like every setting here.
 //
-// The controls sit in three titled groups (P3.8): Grid (layout preset, columns, rows), Display (aspect,
-// gap, fit, show camera names) and Quality (grid, fill). Each group is a `fieldset`, so its caption is read with the
-// controls inside it.
+// Two components (UX polish 2026-11-17, so the canvas gets the room the three groups used to take):
+//  - `EditorGridSettings`: Layout, Columns and Rows on one compact row in the editor's header,
+//    beside the name — they reshape the canvas, so they stay next to it.
+//  - `EditorViewSettings`: the side panel's **View** tab — Display (aspect, gap, fit, show camera
+//    names) and Quality (grid, fill), one control per line in the narrow column. Each group is a
+//    `fieldset`, so its caption is read with the controls inside it. It holds the custom-aspect
+//    mode, so it is the one the editor remounts on a reset.
 //
 // Layout changes report how many camera cells they dropped, so the editor can say so.
 import { useId, useState, type JSX } from 'react'
@@ -48,31 +52,21 @@ const CUSTOM = 'custom'
 
 const GRID_SIZES = Array.from({ length: MAX_GRID_DIMENSION }, (_, i) => i + 1)
 
-export interface EditorSettingsProps {
+export interface EditorGridSettingsProps {
   readonly draft: View
-  /** A setting that leaves the cells alone (aspect, gap, fit, names, the two qualities). */
-  readonly onEdit: (next: View) => void
   /** A change of layout: the selection no longer means anything, and `lost` camera cells went. */
   readonly onLayout: (next: View, lost: number) => void
   /** A refused operation's reason, shown by the editor. */
   readonly onError: (reason: string) => void
 }
 
-export function EditorSettings({
+/** Layout, Columns and Rows, on one row in the editor's header (header comment). */
+export function EditorGridSettings({
   draft,
-  onEdit,
   onLayout,
   onError,
-}: EditorSettingsProps): JSX.Element {
-  const aspectId = useId()
-  const gapId = useId()
-  const showNamesId = useId()
-  const [customAspect, setCustomAspect] = useState(() => aspectChoiceLabel(draft.aspect) === null)
+}: EditorGridSettingsProps): JSX.Element {
   const presetId = matchingPresetId(draft)
-  const aspectLabel = aspectChoiceLabel(draft.aspect)
-  const showCustomAspect = customAspect || aspectLabel === null
-  // QUAL-1's defaults, for the inherit options' labels. `undefined` before settings load.
-  const streams = useAppStore((s) => s.settings?.streams)
 
   const resize = (cols: number, rows: number): void => {
     const result = resizeGrid(draft, cols, rows)
@@ -81,76 +75,95 @@ export function EditorSettings({
   }
 
   return (
-    <div className="viewEditor__settings">
-      <fieldset className="viewEditor__group">
-        <legend className="viewEditor__groupTitle">Grid</legend>
-        <label className="viewEditor__setting">
-          <span className="field__label">Layout</span>
-          <select
-            className="field__input"
-            value={presetId ?? CUSTOM}
-            onChange={(event) => {
-              const preset = LAYOUT_PRESETS.find((p) => p.id === event.target.value)
-              if (preset === undefined) return
-              const result = applyPreset(draft, preset)
-              onLayout(result.view, result.dropped)
-            }}
-          >
-            {presetId === null ? (
-              <option value={CUSTOM} disabled>
-                Custom
-              </option>
-            ) : null}
-            {LAYOUT_PRESETS.map((preset) => (
-              <option key={preset.id} value={preset.id}>
-                {preset.label}
-              </option>
-            ))}
-          </select>
-        </label>
+    <div className="viewEditor__gridSettings" role="group" aria-label="Grid">
+      <label className="viewEditor__setting">
+        <span className="field__label">Layout</span>
+        <select
+          className="field__input"
+          value={presetId ?? CUSTOM}
+          onChange={(event) => {
+            const preset = LAYOUT_PRESETS.find((p) => p.id === event.target.value)
+            if (preset === undefined) return
+            const result = applyPreset(draft, preset)
+            onLayout(result.view, result.dropped)
+          }}
+        >
+          {presetId === null ? (
+            <option value={CUSTOM} disabled>
+              Custom
+            </option>
+          ) : null}
+          {LAYOUT_PRESETS.map((preset) => (
+            <option key={preset.id} value={preset.id}>
+              {preset.label}
+            </option>
+          ))}
+        </select>
+      </label>
 
-        <label className="viewEditor__setting">
-          <span className="field__label">Columns</span>
-          <select
-            className="field__input"
-            value={draft.cols}
-            onChange={(event) => {
-              resize(Number(event.target.value), draft.rows)
-            }}
-          >
-            {GRID_SIZES.map((n) => (
-              <option key={n} value={n}>
-                {String(n)}
-              </option>
-            ))}
-          </select>
-        </label>
+      <label className="viewEditor__setting">
+        <span className="field__label">Columns</span>
+        <select
+          className="field__input"
+          value={draft.cols}
+          onChange={(event) => {
+            resize(Number(event.target.value), draft.rows)
+          }}
+        >
+          {GRID_SIZES.map((n) => (
+            <option key={n} value={n}>
+              {String(n)}
+            </option>
+          ))}
+        </select>
+      </label>
 
-        <label className="viewEditor__setting">
-          <span className="field__label">Rows</span>
-          <select
-            className="field__input"
-            value={draft.rows}
-            onChange={(event) => {
-              resize(draft.cols, Number(event.target.value))
-            }}
-          >
-            {GRID_SIZES.map((n) => (
-              <option key={n} value={n}>
-                {String(n)}
-              </option>
-            ))}
-          </select>
-        </label>
-      </fieldset>
+      <label className="viewEditor__setting">
+        <span className="field__label">Rows</span>
+        <select
+          className="field__input"
+          value={draft.rows}
+          onChange={(event) => {
+            resize(draft.cols, Number(event.target.value))
+          }}
+        >
+          {GRID_SIZES.map((n) => (
+            <option key={n} value={n}>
+              {String(n)}
+            </option>
+          ))}
+        </select>
+      </label>
+    </div>
+  )
+}
 
-      <fieldset className="viewEditor__group">
-        <legend className="viewEditor__groupTitle">Display</legend>
+export interface EditorViewSettingsProps {
+  readonly draft: View
+  /** A setting that leaves the cells alone (aspect, gap, fit, names, the two qualities). */
+  readonly onEdit: (next: View) => void
+}
+
+/** The side panel's View tab: the Display and Quality groups (header comment). */
+export function EditorViewSettings({ draft, onEdit }: EditorViewSettingsProps): JSX.Element {
+  const aspectId = useId()
+  const gapId = useId()
+  const showNamesId = useId()
+  const [customAspect, setCustomAspect] = useState(() => aspectChoiceLabel(draft.aspect) === null)
+  const aspectLabel = aspectChoiceLabel(draft.aspect)
+  const showCustomAspect = customAspect || aspectLabel === null
+  // QUAL-1's defaults, for the inherit options' labels. `undefined` before settings load.
+  const streams = useAppStore((s) => s.settings?.streams)
+
+  return (
+    <div className="viewEditor__viewSettings">
+      <fieldset className="viewEditor__section">
+        <legend className="viewEditor__panelTitle">Display</legend>
         <div className="viewEditor__setting">
           <label className="field__label" htmlFor={aspectId}>
             Aspect
           </label>
-          <div className="row">
+          <div className="viewEditor__settingRow">
             <select
               id={aspectId}
               className="field__input"
@@ -173,7 +186,7 @@ export function EditorSettings({
               <option value={CUSTOM}>Custom…</option>
             </select>
             {showCustomAspect ? (
-              <>
+              <span className="viewEditor__aspectPair">
                 <BoundedNumberInput
                   className="viewEditor__number"
                   label="Aspect width"
@@ -197,18 +210,19 @@ export function EditorSettings({
                     onEdit({ ...draft, aspect: { ...draft.aspect, h } })
                   }}
                 />
-              </>
+              </span>
             ) : null}
           </div>
         </div>
 
         <div className="viewEditor__setting">
           <label className="field__label" htmlFor={gapId}>
-            Gap (px)
+            Gap between cells (px)
           </label>
-          <div className="row">
+          <div className="viewEditor__settingRow">
             <input
               id={gapId}
+              className="viewEditor__range"
               type="range"
               min={0}
               max={MAX_GRID_GAP}
@@ -259,8 +273,8 @@ export function EditorSettings({
         </div>
       </fieldset>
 
-      <fieldset className="viewEditor__group">
-        <legend className="viewEditor__groupTitle">Quality</legend>
+      <fieldset className="viewEditor__section">
+        <legend className="viewEditor__panelTitle">Quality</legend>
         <label className="viewEditor__setting">
           <span className="field__label">Grid quality</span>
           <select

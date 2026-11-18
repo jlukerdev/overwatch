@@ -9,31 +9,42 @@
 //    `viewsActions.updateView`; a refusal is shown inline (role=alert). **Discard** resets the draft
 //    to the stored View.
 //  - If the stored View changes while the draft is clean, the draft follows it (`syncDraft`).
-//  - Leaving the View (another View in the list, New View, Close) with unsaved changes asks first.
+//  - Leaving the View (another View in the list, New View, Close) with unsaved changes asks first,
+//    in the app's own dialog (ui/ConfirmDialog; "Discard changes" / "Keep editing"). The dialog is
+//    asynchronous, so the answer is acted on only if this editor is still the one on screen
+//    (`alive`: it is keyed by View, so a View that went away meanwhile drops the answer).
 //    So does leaving the Live screen: the draft reports its dirty flag to `unsavedGuard`, which the
 //    app's nav and a `beforeunload` listener consult (App). Which View is open is App's state
 //    (`viewId` / `onOpen`), so coming back to Live reopens the editor on it.
 //  - List operations — new, duplicate, delete, reorder — act on the stored Views at once through
 //    `viewsActions`. Duplicate is disabled while the draft is dirty (it would copy the stored View,
-//    not what is on screen); Delete asks for confirmation, and moves the editor to the neighbour
-//    (`neighbourAfterDelete`) as it sends the delete, so it never lands on the first View meanwhile.
+//    not what is on screen); Delete asks for confirmation (the same dialog), and moves the editor
+//    to the neighbour (`neighbourAfterDelete`) as it sends the delete, so it never lands on the
+//    first View meanwhile.
 //
-// Layout (P3.8: each action sits by what it acts on). On the left, the list of Views (reorder on
-// each row) with a footer pinned under it: New View, and Duplicate / Delete for the View being
-// edited. In the middle: the header (the name, and Close at the far right), the settings in three
-// groups (Grid, Display, Quality), the selection toolbar (Merge, Split, Clear cameras at the left,
-// then the count of the selected cells), the canvas, and the save bar under it — the draft's state ("Unsaved
-// changes" / "All changes saved", and the last error beside it) with Discard and Save. The save bar is always
-// rendered so the canvas never jumps. It is also where every failure is reported — a refused
-// Save, a merge or split, and the list footer's New / Duplicate / Delete and the reorder buttons
-// — next to the status, on one line (full text in its tooltip). On the right, the cell inspector
-// and the camera palette.
+// Layout (P3.8: each action sits by what it acts on; UX polish 2026-11-17: the canvas is the hero).
+// On the left, the list of Views (reorder on each row) with a footer pinned under it: New View, and
+// Duplicate / Delete for the View being edited. In the middle, only what the canvas needs around
+// it: a compact header (the name, the Grid controls — Layout, Columns, Rows — and Close at the far
+// right), the selection toolbar (Merge, Split, Clear cameras at the left, then the count of the
+// selected cells; a button that cannot act says why in its tooltip, `toolbarTitles`), the canvas,
+// and the save bar under it — the draft's state ("Unsaved changes" / "All changes saved", and the
+// last error beside it) with Discard and Save. The save bar is always rendered so the canvas never
+// jumps. It is also where every failure is reported — a refused Save, a merge or split, and the
+// list footer's New / Duplicate / Delete and the reorder buttons — next to the status, on one line
+// (full text in its tooltip).
+// On the right, a tabbed panel over the camera palette. **View** holds the View's Display and
+// Quality settings; **Cell** holds the cell inspector. Both panels stay mounted (the inactive one
+// `hidden`), so a change of tab loses no local state. Picking a cell when nothing was selected
+// brings the Cell tab forward (`tabAfterSelect`, ./editorTabs); after that the tab is the user's.
+// The palette stays under the tabs in both, since it is the drag source, and scrolls on its own.
 // Each cell with a camera shows its head camera's snapshot behind the name (P5.2, VIEW-3), read
 // from and fetched into the cache the Cameras tab shares (state/thumbnailsStore); which image and
 // what to fetch are ./editorThumbnails.
-// The subcomponents (EditorCanvas, EditorSettings, CellInspector, CameraPalette) only turn events
-// into calls; the decisions are in ./editorModel, ./editorThumbnails and ./viewEditorHelpers, pure
-// and tested.
+// So does each palette entry, from the same cache, without fetching anything for it.
+// The subcomponents (EditorCanvas, EditorSettings, EditorTabList, CellInspector, CameraPalette)
+// only turn events into calls; the decisions are in ./editorModel, ./editorThumbnails,
+// ./editorTabs and ./viewEditorHelpers, pure and tested.
 import { useEffect, useId, useMemo, useRef, useState, type JSX } from 'react'
 import type { AppState, Camera } from '@shared/ipc'
 import type { View } from '@shared/models'
@@ -53,12 +64,15 @@ import {
   viewsActions,
   type ViewResult,
 } from '../../state/viewsStore'
+import { confirmDialog } from '../../ui/ConfirmDialog'
 import {
+  AlertIcon,
   CheckIcon,
   ChevronDownIcon,
   ChevronUpIcon,
   CopyIcon,
   EraserIcon,
+  GridIcon,
   MergeIcon,
   PlusIcon,
   SplitIcon,
@@ -69,8 +83,17 @@ import {
 import { setCellQuality } from '../quality/qualityChoice'
 import { CameraPalette } from './CameraPalette'
 import { CellInspector } from './CellInspector'
+import { isTextEntryTarget, keyEventTarget } from '../viewSwitcher/viewShortcut'
 import { EditorCanvas } from './EditorCanvas'
-import { cellSnapshot, editorRetryPlan, editorSnapshotPlan, inUseRefs } from './editorThumbnails'
+import { editorPanelId, EditorTabList, editorTabId } from './EditorTabList'
+import { tabAfterSelect, type EditorTab } from './editorTabs'
+import {
+  cellSnapshot,
+  editorRetryPlan,
+  editorSnapshotPlan,
+  inUseRefs,
+  paletteSnapshots,
+} from './editorThumbnails'
 import {
   addCellCamera,
   cameraChoices,
@@ -91,13 +114,14 @@ import {
   validateDraft,
   type Slot,
 } from './editorModel'
-import { EditorSettings } from './EditorSettings'
+import { EditorGridSettings, EditorViewSettings } from './EditorSettings'
 import {
   layoutLossNote,
   mergeLossNote,
   nextViewName,
   startDraft,
   syncDraft,
+  toolbarTitles,
   type DraftState,
 } from './viewEditorHelpers'
 import './viewEditor.css'
@@ -193,11 +217,16 @@ function NoViewsToEdit({
     })
   }
   return (
-    <section className="viewEditor viewEditor--empty">
-      <div className="card viewEditor__emptyCard">
-        <h3 className="card__title">No Views</h3>
-        <p className="card__hint">Every View has been deleted. Make a new one, or go back.</p>
-        <div className="row">
+    <section className="viewEditor" aria-label="View editor">
+      <div className="emptyState">
+        <span className="emptyState__icon" aria-hidden="true">
+          <GridIcon />
+        </span>
+        <h3 className="emptyState__title">No Views</h3>
+        <p className="emptyState__hint">
+          Every View has been deleted. Make a new one to start again, or close the editor.
+        </p>
+        <div className="emptyState__actions">
           <button
             type="button"
             className="button button--primary"
@@ -213,8 +242,9 @@ function NoViewsToEdit({
           </button>
         </div>
         {error === null ? null : (
-          <p className="field__error" role="alert">
-            {error}
+          <p className="status status--error" role="alert">
+            <AlertIcon />
+            <span>{error}</span>
           </p>
         )}
       </div>
@@ -252,8 +282,35 @@ function DraftEditor({
   onClose,
 }: DraftEditorProps): JSX.Element {
   const nameId = useId()
+  const panelId = useId()
+  // Which side panel tab is open (./editorTabs). A fresh editor (another View) starts on View.
+  const [tab, setTab] = useState<EditorTab>('view')
+  // Whether this editor — keyed by View — is still on screen, for answers that arrive later (the
+  // confirm dialog's): the View may have been deleted, or the editor closed, while it was open.
+  const alive = useRef(true)
+  useEffect(() => {
+    alive.current = true
+    return () => {
+      alive.current = false
+    }
+  }, [])
   const [state, setState] = useState<DraftState>(() => startDraft(saved))
   const [selection, setSelection] = useState<Selection | null>(null)
+  // `Esc` clears the selection, so the next pick is a first pick again and brings the Cell tab
+  // forward (./editorTabs). Not while typing in a field, and not while a dialog is open: there
+  // `Esc` is the field's or the dialog's.
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent): void => {
+      if (event.key !== 'Escape' || event.ctrlKey || event.metaKey || event.altKey) return
+      if (isTextEntryTarget(keyEventTarget(event.target))) return
+      if (document.querySelector('dialog[open]') !== null) return
+      setSelection(null)
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => {
+      window.removeEventListener('keydown', onKeyDown)
+    }
+  }, [])
   // A non-error remark about the last edit (cameras lost to a merge or a layout change).
   const [note, setNote] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(initialError)
@@ -266,7 +323,7 @@ function DraftEditor({
   }
   const [pending, setPending] = useState(false)
   // Bumped whenever the draft goes back to the stored View (Discard, or following it), so the
-  // settings row drops local state such as its custom-aspect mode.
+  // View tab's settings drop local state such as their custom-aspect mode.
   const [resetCount, setResetCount] = useState(0)
 
   // Follow the stored View while the draft is clean (header). Adjusting state during render, not
@@ -315,6 +372,17 @@ function DraftEditor({
     () =>
       draft.cells.map((cell) => cellSnapshot(cell, cameras, thumbnailEntries, packageSnapshots)),
     [draft.cells, cameras, thumbnailEntries, packageSnapshots],
+  )
+  // The palette's thumbnails: whatever the cache holds already, nothing fetched for them.
+  const paletteImages = useMemo(
+    () =>
+      paletteSnapshots(
+        choices.map((choice) => choice.ref),
+        cameras,
+        thumbnailEntries,
+        packageSnapshots,
+      ),
+    [choices, cameras, thumbnailEntries, packageSnapshots],
   )
 
   // Tell the app shell, so leaving Live or closing the window asks first (unsavedGuard).
@@ -366,12 +434,35 @@ function DraftEditor({
     })
   }
 
-  /** Whether it is fine to leave this draft: clean, or the user agrees to lose the changes. */
-  const mayLeave = (): boolean =>
-    !dirty || window.confirm(`Discard the unsaved changes to "${saved.name}"?`)
+  /**
+   * Whether it is fine to leave this draft: clean, or the user agrees to lose the changes. `false`
+   * too when this editor went away while the dialog was open (the View was deleted underneath, or
+   * something else closed the editor): there is nothing left to leave.
+   */
+  const mayLeave = async (): Promise<boolean> => {
+    if (!dirty) return true
+    const agreed = await confirmDialog({
+      title: 'Discard unsaved changes?',
+      message: `Your changes to "${saved.name}" have not been saved.`,
+      confirmLabel: 'Discard changes',
+      cancelLabel: 'Keep editing',
+      danger: true,
+    })
+    return agreed && alive.current
+  }
+
+  /** Runs `then` once it is fine to leave the draft (asking first when it is dirty). */
+  const leaveThen = (then: () => void): void => {
+    void mayLeave().then((ok) => {
+      if (ok) then()
+    })
+  }
 
   const openOther = (id: string): void => {
-    if (id !== saved.id && mayLeave()) onOpen(id)
+    if (id === saved.id) return
+    leaveThen(() => {
+      onOpen(id)
+    })
   }
 
   const openNewState = (next: AppState): void => {
@@ -398,8 +489,15 @@ function DraftEditor({
   }
 
   const remove = (): void => {
-    if (window.confirm(`Delete the View "${saved.name}"? This cannot be undone.`))
-      onDelete(saved.id)
+    void confirmDialog({
+      title: `Delete "${saved.name}"?`,
+      message: 'This cannot be undone.',
+      confirmLabel: 'Delete View',
+      danger: true,
+    }).then((agreed) => {
+      // Still this View's editor: not deleted elsewhere or closed while the dialog was open.
+      if (agreed && alive.current) onDelete(saved.id)
+    })
   }
 
   const merge = (): void => {
@@ -427,6 +525,8 @@ function DraftEditor({
   }
 
   const select = (slot: Slot, extend: boolean): void => {
+    // The first pick brings the Cell tab forward; later ones leave the tab alone (./editorTabs).
+    setTab((current) => tabAfterSelect(current, rect !== null))
     setSelection((current) =>
       extend && current !== null && inGrid(draft, current.anchor)
         ? { anchor: current.anchor, focus: slot }
@@ -435,6 +535,15 @@ function DraftEditor({
   }
 
   const selectedCount = selectedIndexes.length
+  const selectionHasCameras = selectedIndexes.some(
+    (i) => (draft.cells[i]?.cameraIds.length ?? 0) > 0,
+  )
+  const titles = toolbarTitles({
+    count: selectedCount,
+    canMerge: actions?.canMerge === true,
+    canSplit: actions?.canSplit === true,
+    hasCameras: selectionHasCameras,
+  })
 
   return (
     <section className="viewEditor" aria-label="View editor">
@@ -445,7 +554,7 @@ function DraftEditor({
             <li key={view.id} className="viewEditor__listRow">
               <button
                 type="button"
-                className="viewEditor__listItem"
+                className="sideItem viewEditor__listItem"
                 aria-pressed={view.id === saved.id}
                 title={view.name}
                 onClick={() => {
@@ -488,7 +597,9 @@ function DraftEditor({
             className="button button--primary"
             disabled={pending}
             onClick={() => {
-              if (mayLeave()) run(viewsActions.createView(nextViewName(views)), openNewState)
+              leaveThen(() => {
+                run(viewsActions.createView(nextViewName(views)), openNewState)
+              })
             }}
           >
             <PlusIcon />
@@ -541,12 +652,13 @@ function DraftEditor({
               }}
             />
           </div>
+          <EditorGridSettings draft={draft} onLayout={editLayout} onError={setError} />
           <button
             type="button"
             className="button button--ghost viewEditor__close"
             title="Close the editor"
             onClick={() => {
-              if (mayLeave()) onClose()
+              leaveThen(onClose)
             }}
           >
             <XIcon />
@@ -554,20 +666,12 @@ function DraftEditor({
           </button>
         </header>
 
-        <EditorSettings
-          key={resetCount}
-          draft={draft}
-          onEdit={edit}
-          onLayout={editLayout}
-          onError={setError}
-        />
-
         <div className="viewEditor__toolbar" role="toolbar" aria-label="Selected cells">
           <button
             type="button"
             className="button button--sm"
             disabled={actions?.canMerge !== true}
-            title="Merge the selected cells into one"
+            title={titles.merge}
             onClick={merge}
           >
             <MergeIcon />
@@ -577,7 +681,7 @@ function DraftEditor({
             type="button"
             className="button button--sm"
             disabled={actions?.canSplit !== true}
-            title="Split the selected cell back into single cells"
+            title={titles.split}
             onClick={split}
           >
             <SplitIcon />
@@ -586,14 +690,17 @@ function DraftEditor({
           <button
             type="button"
             className="button button--sm"
-            disabled={!selectedIndexes.some((i) => (draft.cells[i]?.cameraIds.length ?? 0) > 0)}
-            title="Remove the cameras from the selected cells"
+            disabled={!selectionHasCameras}
+            title={titles.clear}
             onClick={clearCameras}
           >
             <EraserIcon />
             Clear cameras
           </button>
-          <span className="viewEditor__selectionCount">
+          <span
+            className="viewEditor__selectionCount"
+            title={selectedCount === 0 ? undefined : 'Press Esc to clear the selection'}
+          >
             {selectedCount === 0
               ? 'No cells selected'
               : selectedCount === 1
@@ -601,9 +708,10 @@ function DraftEditor({
                 : `${String(selectedCount)} cells selected`}
           </span>
           {note === null ? null : (
-            <span className="field__hint viewEditor__note" role="status">
-              {note}
-            </span>
+            <p className="status status--warn viewEditor__note" role="status">
+              <AlertIcon />
+              <span>{note}</span>
+            </p>
           )}
         </div>
 
@@ -640,8 +748,9 @@ function DraftEditor({
           </span>
           {/* One line, so the bar's height never changes; the whole message is in the tooltip. */}
           {error === null ? null : (
-            <p className="field__error viewEditor__message" role="alert" title={error}>
-              {error}
+            <p className="status status--error viewEditor__message" role="alert" title={error}>
+              <AlertIcon />
+              <span className="viewEditor__messageText">{error}</span>
             </p>
           )}
           <div className="viewEditor__saveActions">
@@ -669,46 +778,64 @@ function DraftEditor({
       </div>
 
       <aside className="viewEditor__side">
-        <CellInspector
-          cell={inspected}
-          selectedCount={selectedIndexes.length}
-          cameras={cameras}
-          choices={choices}
-          onAdd={(ref) => {
-            edit(addCellCamera(draft, inspectedIndex, ref))
-          }}
-          onRemove={(position) => {
-            edit(removeCellCamera(draft, inspectedIndex, position))
-          }}
-          onMove={(position, delta) => {
-            edit(moveCellCamera(draft, inspectedIndex, position, delta))
-          }}
-          viewDefaultQuality={
-            streams === undefined
-              ? draft.gridQuality
-              : resolveGridQuality({ cell: { quality: null }, view: draft, streams })
-          }
-          onQualityChange={(quality) => {
-            if (inspected !== null)
-              edit(setCellQuality(draft, inspected.col, inspected.row, quality))
-          }}
-          onRotateChange={(sec) => {
-            edit(setCellRotation(draft, inspectedIndex, sec))
-          }}
-          onMotionSwitchChange={(on) => {
-            edit(setCellMotionSwitch(draft, inspectedIndex, on))
-          }}
-          onMotionTriggersChange={(triggers) => {
-            edit(setCellMotionTriggers(draft, inspectedIndex, triggers))
-          }}
-          onSmartDetectTypesChange={(types) => {
-            edit(setCellSmartDetectTypes(draft, inspectedIndex, types))
-          }}
-          onMotionHoldChange={(sec) => {
-            edit(setCellMotionHold(draft, inspectedIndex, sec))
-          }}
-        />
-        <CameraPalette choices={choices} inUse={inUse} />
+        <EditorTabList idPrefix={panelId} tab={tab} onChange={setTab} />
+        <div
+          className="viewEditor__tabPanel"
+          role="tabpanel"
+          id={editorPanelId(panelId, 'view')}
+          aria-labelledby={editorTabId(panelId, 'view')}
+          hidden={tab !== 'view'}
+        >
+          <EditorViewSettings key={resetCount} draft={draft} onEdit={edit} />
+        </div>
+        <div
+          className="viewEditor__tabPanel"
+          role="tabpanel"
+          id={editorPanelId(panelId, 'cell')}
+          aria-labelledby={editorTabId(panelId, 'cell')}
+          hidden={tab !== 'cell'}
+        >
+          <CellInspector
+            cell={inspected}
+            selectedCount={selectedIndexes.length}
+            cameras={cameras}
+            choices={choices}
+            onAdd={(ref) => {
+              edit(addCellCamera(draft, inspectedIndex, ref))
+            }}
+            onRemove={(position) => {
+              edit(removeCellCamera(draft, inspectedIndex, position))
+            }}
+            onMove={(position, delta) => {
+              edit(moveCellCamera(draft, inspectedIndex, position, delta))
+            }}
+            viewDefaultQuality={
+              streams === undefined
+                ? draft.gridQuality
+                : resolveGridQuality({ cell: { quality: null }, view: draft, streams })
+            }
+            onQualityChange={(quality) => {
+              if (inspected !== null)
+                edit(setCellQuality(draft, inspected.col, inspected.row, quality))
+            }}
+            onRotateChange={(sec) => {
+              edit(setCellRotation(draft, inspectedIndex, sec))
+            }}
+            onMotionSwitchChange={(on) => {
+              edit(setCellMotionSwitch(draft, inspectedIndex, on))
+            }}
+            onMotionTriggersChange={(triggers) => {
+              edit(setCellMotionTriggers(draft, inspectedIndex, triggers))
+            }}
+            onSmartDetectTypesChange={(types) => {
+              edit(setCellSmartDetectTypes(draft, inspectedIndex, types))
+            }}
+            onMotionHoldChange={(sec) => {
+              edit(setCellMotionHold(draft, inspectedIndex, sec))
+            }}
+          />
+        </div>
+        <CameraPalette choices={choices} inUse={inUse} snapshots={paletteImages} />
       </aside>
     </section>
   )

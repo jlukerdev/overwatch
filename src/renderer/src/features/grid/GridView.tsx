@@ -47,6 +47,20 @@
 // filled, and which clicks and keys enter and leave, are the pure rules in features/fill/fillMode.ts;
 // this file keeps the state, listens for `Esc` while filled, and draws the answer.
 //
+// **The fill / back transition** (FILL-1, UX polish; features/fill/fillTransition.ts). The re-placing
+// above is still instant: layout changes once, in the commit. Right after it — in a layout effect, so
+// before the browser paints the new placement — the slot that filled or unfilled gets one Web
+// Animation on its own element: a `transform` from "drawn where it came from" to none, ~170 ms,
+// ease-out. Transform only (the compositor runs it; no width / height / top / left is animated, no
+// React state changes per frame), on `.gridView__slot`, never on the zoom's `.zoomPan` layer inside
+// the cell, and the slot's `<Cell>` and player are untouched, so FILL-2's "same player" holds and
+// the quality swap runs under it as before. A slot shrinking back carries `data-fill-transition`
+// until it is home, to stay above its siblings (grid.css). Skipped under
+// `prefers-reduced-motion`, on a View switch (the grid under the fill is another grid), and when the
+// layout has no size; a new transition cancels one still running, and a cancelled or finished
+// animation leaves no transform behind. Nothing waits for it: `Esc`, double-click, the back control
+// and a View switch act at once, as before, and the animation only follows.
+//
 // **Quality pickers live here too** (P3.7; QUAL-4/5/6). A cell's picker in the grid saves the cell's
 // override straight away (`viewsActions.updateView` + `setCellQuality`); the store's answer changes
 // the slot's `quality`, and the player's seamless swap does the rest (QUAL-6). The fill picker's pick
@@ -97,6 +111,13 @@ import {
   type FillQualityPick,
   type FillState,
 } from '../fill/fillMode'
+import {
+  FILL_TRANSITION_EASING,
+  FILL_TRANSITION_MS,
+  fillTransitionPlan,
+  flipTransform,
+  flipTransformCss,
+} from '../fill/fillTransition'
 import { setCellQuality } from '../quality/qualityChoice'
 import { keyEventTarget } from '../viewSwitcher/viewShortcut'
 import { buildViewSlots, schedulerEntries, type GridSlot } from './gridLayout'
@@ -113,6 +134,14 @@ export interface GridViewProps {
 interface BoxSize {
   readonly width: number
   readonly height: number
+}
+
+/** Set on a slot while it shrinks back from fill (grid.css). */
+const FILL_TRANSITION_ATTRIBUTE = 'data-fill-transition'
+
+/** Read when a transition is about to start, never subscribed to: the next one sees a change. */
+function prefersReducedMotion(): boolean {
+  return window.matchMedia('(prefers-reduced-motion: reduce)').matches
 }
 
 export function GridView({ view, cameras, streams }: GridViewProps): JSX.Element {
@@ -299,6 +328,76 @@ export function GridView({ view, cameras, streams }: GridViewProps): JSX.Element
     }
   }, [anyAudible])
 
+  // The fill / back transition (header): what was filled, and in which View, at the last commit,
+  // and the animation still running. The slot's element is looked up by its `data-slot-key` among
+  // the root's children when a transition starts — once per fill, so no ref per slot is kept.
+  const lastFillRef = useRef<{ readonly viewId: string; readonly key: string | null }>({
+    viewId: view.id,
+    key: null,
+  })
+  const fillAnimationRef = useRef<Animation | null>(null)
+  // Runs on every commit that changes any of these, and acts only when the filled slot did
+  // (`fillTransitionPlan`): the other dependencies are what the geometry is read from. No cleanup
+  // on re-run — a camera push that rebuilds `slots` mid-animation must not cut it short.
+  useLayoutEffect(() => {
+    const last = lastFillRef.current
+    lastFillRef.current = { viewId: view.id, key: filledKey }
+    const grid = layoutGrid({
+      width: box?.width ?? 0,
+      height: box?.height ?? 0,
+      cols: view.cols,
+      rows: view.rows,
+      aspect: view.aspect,
+      gap: view.gap,
+    })
+    const plan = fillTransitionPlan({
+      previousKey: last.key,
+      nextKey: filledKey,
+      sameView: last.viewId === view.id,
+      drawable: grid.unitWidth > 0 && grid.unitHeight > 0,
+      // Only asked when the filled slot changed at all.
+      reducedMotion: last.key !== filledKey && prefersReducedMotion(),
+    })
+    if (last.key !== filledKey) {
+      // Whatever was still running is over: the slot it was on is being re-placed again, or left.
+      fillAnimationRef.current?.cancel()
+      fillAnimationRef.current = null
+    }
+    if (plan === null || box === null) return
+    const element = Array.from(rootRef.current?.children ?? []).find(
+      (child): child is HTMLElement =>
+        child instanceof HTMLElement && child.dataset.slotKey === plan.slotKey,
+    )
+    const slot = slots.find((candidate) => candidate.key === plan.slotKey)
+    if (element === undefined || slot === undefined) return
+    const cell = cellRect(grid, slot.placement)
+    const area: Rect = { x: 0, y: 0, width: box.width, height: box.height }
+    const flip = plan.direction === 'fill' ? flipTransform(cell, area) : flipTransform(area, cell)
+    if (flip === null) return
+    const animation = element.animate(
+      [{ transform: flipTransformCss(flip) }, { transform: 'none' }],
+      { duration: FILL_TRANSITION_MS, easing: FILL_TRANSITION_EASING },
+    )
+    fillAnimationRef.current = animation
+    if (plan.direction === 'unfill') {
+      // Above its siblings until it is home (grid.css); `finish` and `cancel` both end it.
+      element.setAttribute(FILL_TRANSITION_ATTRIBUTE, '')
+      const done = (): void => {
+        element.removeAttribute(FILL_TRANSITION_ATTRIBUTE)
+      }
+      animation.addEventListener('finish', done)
+      animation.addEventListener('cancel', done)
+    }
+  }, [filledKey, view, slots, box])
+  // Unmounting mid-animation: nothing left running on a detached element.
+  useEffect(
+    () => () => {
+      fillAnimationRef.current?.cancel()
+      fillAnimationRef.current = null
+    },
+    [],
+  )
+
   // FILL-1's `Esc`: listening only while something is filled, so the key is free otherwise.
   useEffect(() => {
     if (!isFilled) return undefined
@@ -341,6 +440,8 @@ export function GridView({ view, cameras, streams }: GridViewProps): JSX.Element
             return (
               <div
                 key={slot.key}
+                // For the fill / back transition's lookup (header).
+                data-slot-key={slot.key}
                 className={filled ? 'gridView__slot gridView__slot--filled' : 'gridView__slot'}
                 // Filled: the class places it, whatever the layout says (even a zero one).
                 style={

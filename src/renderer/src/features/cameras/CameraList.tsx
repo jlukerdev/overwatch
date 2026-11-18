@@ -21,7 +21,7 @@
 //     the last has settled the reducer swaps the grid in at once. On Refresh the old grid stays up
 //     until then, and a Refresh during a load supersedes it. Because the cache outlives the tab, a
 //     re-open after a completed load behaves like Refresh too (the last grid stays up with the
-//     progress in the header); only a first open shows the loading card. Every request is bounded
+//     progress in the header); only a first open shows the loading state. Every request is bounded
 //     by main's own per-request timeout, so a hung camera cannot hold the load for ever. The feed
 //     state is a GET only: looking at the list never creates a stream (QUAL-8). Outside a load, a
 //     camera that comes back online (CAM-3) or is added (CAM-2) fetches its own thumbnail and feed
@@ -30,8 +30,13 @@
 //     feed pushes into `appStore` (CAM-2). A camera that goes offline shows a placeholder within
 //     the 10 seconds G1 allows even though its last thumbnail loaded perfectly — during a load too,
 //     because the grid always renders the live inventory.
+//
+// A screen with no grid (first load, setup missing, not connected, no cameras) is the shared
+// centred `.emptyState` (styles.css), the setup one with a checklist of what is done and what is
+// missing (../../state/setupChecklist.ts). There is no Settings button in the header: the app nav has one,
+// and every state that needs Settings offers "Open settings" itself.
 import { useCallback, useEffect, useMemo, useState, type JSX } from 'react'
-import type { ConnectionPhase, IpcError, IpcResult } from '@shared/ipc'
+import type { ConnectionPhase, EndpointStatus, IpcError, IpcResult } from '@shared/ipc'
 import { useAppStore } from '../../state/appStore'
 import type { LoadProgress, SetupGap } from '../../state/camerasStore'
 import {
@@ -61,7 +66,9 @@ import {
   startLoad,
   useThumbnails,
 } from '../../state/thumbnailsStore'
-import { GearIcon, PlugIcon, RefreshIcon } from '../../ui/icons'
+import { AlertIcon, CameraIcon, CheckIcon, GearIcon, PlugIcon, RefreshIcon } from '../../ui/icons'
+import { setupChecklist } from '../../state/setupChecklist'
+import { cameraCountLabel } from './cameraListText'
 import { CameraCard } from './CameraCard'
 import { CameraThumbnail } from './CameraThumbnail'
 import './cameras.css'
@@ -187,13 +194,16 @@ export function CameraList({ onOpenSettings }: CameraListProps): JSX.Element {
   }, [runLoad])
 
   // Derived, not dispatched: a load about to start already shows its (indeterminate) progress, so
-  // the first render is the loading card and never a bare grid.
+  // the first render is the loading state and never a bare grid.
   const progress = loadProgress(thumbnails, cameras.length, opening)
 
   if (connection === null) {
     return (
       <section className="cameras">
-        <p className="app__muted">Reading the console status…</p>
+        <div className="emptyState" role="status">
+          <span className="spinner" aria-hidden="true" />
+          <p className="emptyState__hint">Checking the console…</p>
+        </div>
       </section>
     )
   }
@@ -209,18 +219,14 @@ export function CameraList({ onOpenSettings }: CameraListProps): JSX.Element {
     <section className="cameras">
       <header className="cameras__header row">
         <h2 className="cameras__title">Cameras</h2>
-        <span className="app__muted">
-          {firstLoad ? null : shown.length === 0 ? 'none yet' : `${String(shown.length)} adopted`}
-        </span>
+        {firstLoad ? null : (
+          <span className="cameras__count app__muted">{cameraCountLabel(shown.length)}</span>
+        )}
         <div className="cameras__actions row">
           {progress !== null && !firstLoad ? <LoadBar progress={progress} compact /> : null}
           <button type="button" className="button" onClick={onRefresh} disabled={busy}>
             <RefreshIcon />
             Refresh
-          </button>
-          <button type="button" className="button" onClick={onOpenSettings}>
-            <GearIcon />
-            Settings
           </button>
         </div>
       </header>
@@ -241,13 +247,18 @@ export function CameraList({ onOpenSettings }: CameraListProps): JSX.Element {
       ) : null}
 
       {body === 'loading' && progress !== null ? (
-        <div className="card cameras__loading">
-          <LoadBar progress={progress} />
+        <div className="emptyState cameras__empty">
+          <span className="emptyState__icon">
+            <CameraIcon />
+          </span>
+          <div className="cameras__loading">
+            <LoadBar progress={progress} />
+          </div>
         </div>
       ) : body === 'setup' ? (
-        <SetupCard gaps={gaps} onOpenSettings={onOpenSettings} />
+        <SetupState protect={connection.protect} onOpenSettings={onOpenSettings} />
       ) : body === 'empty' ? (
-        <EmptyCard
+        <EmptyState
           phase={connectionPhase}
           connecting={connecting}
           onConnect={onConnect}
@@ -319,7 +330,7 @@ function LoadBar({
 }
 
 /**
- * The same CON-1/3 information as {@link SetupCard}, one line high, for a screen that has cameras
+ * The same CON-1/3 information as {@link SetupState}, one line high, for a screen that has cameras
  * to show. Clearing the API key on a working console makes the rows stale, not wrong, so they stay
  * on screen — with the live state they already had (CAM-2) and a note of what will stop working.
  */
@@ -331,46 +342,54 @@ function SetupBanner({
   onOpenSettings: () => void
 }): JSX.Element {
   return (
-    <div className="cameras__warning" role="status">
-      <span className="cameras__warningText">
-        {/* Not lower-cased: `Protect API key` is a product name and an acronym, and "no protect
-            api key stored" reads like a typo. The labels are written to follow a colon as they are. */}
-        {`Setup is incomplete, so this list may stop updating: ${gaps
-          .map((gap) => SETUP_GAP_LABELS[gap])
-          .join('; ')}.`}
-      </span>
-      <button type="button" className="button" onClick={onOpenSettings}>
-        <GearIcon />
-        Open settings
-      </button>
-    </div>
+    <Banner kind="warn" onOpenSettings={onOpenSettings}>
+      {/* Not lower-cased: `Protect API key` is a product name and an acronym, and "no protect
+          api key stored" reads like a typo. The labels are written to follow a colon as they are. */}
+      {`Setup is incomplete, so this list may stop updating: ${gaps
+        .map((gap) => SETUP_GAP_LABELS[gap])
+        .join('; ')}.`}
+    </Banner>
   )
 }
 
 /**
  * The CON-1/3 setup state. Not an error: a fresh install has no host, no key and no accepted
- * certificate, and this says so in those words. Read from `connection.protect`, never inferred
- * from the list being empty.
+ * certificate, and the checklist says so step by step — done ones ticked, the rest numbered. Read
+ * from `connection.protect` (`setupChecklist`), never inferred from the list being empty.
  */
-function SetupCard({
-  gaps,
+function SetupState({
+  protect,
   onOpenSettings,
 }: {
-  gaps: readonly SetupGap[]
+  protect: EndpointStatus
   onOpenSettings: () => void
 }): JSX.Element {
   return (
-    <div className="card cameras__notice">
-      <h3 className="card__title">Not set up yet</h3>
-      <p className="card__hint">
-        The app has never reached a console, so there is nothing to list. What is still missing:
+    <div className="emptyState cameras__empty">
+      <span className="emptyState__icon">
+        <CameraIcon />
+      </span>
+      <h3 className="emptyState__title">Finish setting up</h3>
+      <p className="emptyState__hint">
+        Your cameras appear here once the app is connected to your console.
       </p>
-      <ul className="cameras__gaps">
-        {gaps.map((gap) => (
-          <li key={gap}>{SETUP_GAP_LABELS[gap]}</li>
+      <ol className="checklist">
+        {setupChecklist(protect).map((step, index) => (
+          <li
+            key={step.id}
+            className={step.done ? 'checklist__step checklist__step--done' : 'checklist__step'}
+          >
+            <span className="checklist__mark" aria-hidden="true">
+              {step.done ? <CheckIcon /> : String(index + 1)}
+            </span>
+            <span>
+              {step.label}
+              <span className="visuallyHidden">{step.done ? ' (done)' : ' (to do)'}</span>
+            </span>
+          </li>
         ))}
-      </ul>
-      <div className="row">
+      </ol>
+      <div className="emptyState__actions">
         <button type="button" className="button button--primary" onClick={onOpenSettings}>
           <GearIcon />
           Open settings
@@ -385,7 +404,7 @@ function SetupCard({
  * — on purpose: nothing connects at startup (CON-4, SPEC R9) — or it answered with an empty
  * inventory, which is a true answer and not a failure.
  */
-function EmptyCard({
+function EmptyState({
   phase,
   connecting,
   onConnect,
@@ -398,14 +417,15 @@ function EmptyCard({
 }): JSX.Element {
   const connected = phase === 'connected'
   return (
-    <div className="card cameras__notice">
-      <h3 className="card__title">{connected ? 'No cameras adopted' : 'Not connected yet'}</h3>
-      <p className="card__hint">
+    <div className="emptyState cameras__empty">
+      <span className="emptyState__icon">{connected ? <CameraIcon /> : <PlugIcon />}</span>
+      <h3 className="emptyState__title">{connected ? 'No cameras yet' : 'Not connected'}</h3>
+      <p className="emptyState__hint">
         {connected
-          ? 'The console answered with an empty camera list. Adopt a camera in Protect and refresh.'
-          : 'The console is configured and its certificate is accepted. The list is empty until you connect; after a connect that works, the app connects by itself at every launch until you change the console address or replace the API key.'}
+          ? 'Your console has no cameras. Adopt one in Protect, then press Refresh.'
+          : 'Setup is complete. Connect to see your cameras; after that the app connects by itself each time it opens, until you change the console address or replace the API key.'}
       </p>
-      <div className="row">
+      <div className="emptyState__actions">
         <button
           type="button"
           className="button button--primary"
@@ -433,9 +453,30 @@ function Problem({
   onOpenSettings: () => void
 }): JSX.Element {
   return (
-    <div className="cameras__problem" role="status">
-      <span className="cameras__problemText">{error.message}</span>
-      <button type="button" className="button" onClick={onOpenSettings}>
+    <Banner kind="error" onOpenSettings={onOpenSettings}>
+      {error.message}
+    </Banner>
+  )
+}
+
+/**
+ * One look for everything reported above the grid: an alert icon, the line, and "Open settings".
+ * `warn` is missing setup, `error` a failed request; only the colour differs.
+ */
+function Banner({
+  kind,
+  onOpenSettings,
+  children,
+}: {
+  kind: 'warn' | 'error'
+  onOpenSettings: () => void
+  children: string
+}): JSX.Element {
+  return (
+    <div className={`cameras__banner cameras__banner--${kind}`} role="status">
+      <AlertIcon />
+      <span className="cameras__bannerText">{children}</span>
+      <button type="button" className="button button--sm" onClick={onOpenSettings}>
         <GearIcon />
         Open settings
       </button>

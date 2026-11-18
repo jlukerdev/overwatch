@@ -4,6 +4,7 @@
 // revoked in one effect); the shared cache (state/thumbnailsStore) holds only the JPEG bytes.
 import type { JSX } from 'react'
 import type { CameraPlaceholder, ThumbnailEntry } from '../../state/camerasStore'
+import { CameraOffIcon } from '../../ui/icons'
 import { SnapshotImage } from '../../ui/SnapshotImage'
 
 /** What a placeholder says. CAM-3's two words, and nothing that looks like a failure. */
@@ -23,7 +24,20 @@ export function CameraThumbnail({ name, placeholder, entry }: CameraThumbnailPro
   // The state field is what makes a camera offline (CAM-2/3, gate G1's 10 seconds), so it is
   // checked before the cache: a cached image must never outlive the state it was taken in.
   if (placeholder !== null) {
-    return <Placeholder text={PLACEHOLDER_LABELS[placeholder]} />
+    // Offline reads at a glance: the crossed-out camera above the word, on the dimmed slot
+    // (`.cameraCard--offline`). "Connecting…" is on its way back, so it gets a spinner instead.
+    return (
+      <Placeholder
+        text={PLACEHOLDER_LABELS[placeholder]}
+        icon={
+          placeholder === 'offline' ? (
+            <CameraOffIcon />
+          ) : (
+            <span className="spinner" aria-hidden="true" />
+          )
+        }
+      />
+    )
   }
 
   if (entry === undefined || entry.status === 'loading') {
@@ -53,10 +67,12 @@ export function CameraThumbnail({ name, placeholder, entry }: CameraThumbnailPro
 function Placeholder({
   text,
   title,
+  icon,
   muted = false,
 }: {
   text: string
   title?: string
+  icon?: JSX.Element
   muted?: boolean
 }): JSX.Element {
   return (
@@ -66,7 +82,8 @@ function Placeholder({
       }
       title={title}
     >
-      {text}
+      {icon}
+      <span>{text}</span>
     </div>
   )
 }

@@ -274,3 +274,72 @@ export function SpeakerMutedIcon(props: IconProps): JSX.Element {
     </Svg>
   )
 }
+
+/** A window with its left pane marked: collapses / expands a sidebar. */
+export function SidebarIcon(props: IconProps): JSX.Element {
+  return (
+    <Svg {...props}>
+      <rect x="2" y="3" width="12" height="10" rx="1.5" />
+      <path d="M6 3v10" />
+    </Svg>
+  )
+}
+
+/** Four corners pointing out: hide the app chrome, give the picture the window. */
+export function ExpandIcon(props: IconProps): JSX.Element {
+  return (
+    <Svg {...props}>
+      <path d="M2.5 6V2.5H6M10 2.5h3.5V6M13.5 10v3.5H10M6 13.5H2.5V10" />
+    </Svg>
+  )
+}
+
+/** Four corners pointing in: bring the app chrome back. */
+export function CollapseIcon(props: IconProps): JSX.Element {
+  return (
+    <Svg {...props}>
+      <path d="M6 2.5V6H2.5M13.5 6H10V2.5M10 13.5V10h3.5M2.5 10H6v3.5" />
+    </Svg>
+  )
+}
+
+/** A camera with a slash: offline, or no camera here. */
+export function CameraOffIcon(props: IconProps): JSX.Element {
+  return (
+    <Svg {...props}>
+      <path d="M5.5 4.5h3.5a1.5 1.5 0 0 1 1.5 1.5v1l3-1.5v5l-2-1" />
+      <path d="M10.5 10.5a1.5 1.5 0 0 1-1.5 1H3.5A1.5 1.5 0 0 1 2 10V6a1.5 1.5 0 0 1 1-1.4" />
+      <path d="M2 2l12 12" />
+    </Svg>
+  )
+}
+
+/** A triangle with an exclamation mark: a warning or an error line. */
+export function AlertIcon(props: IconProps): JSX.Element {
+  return (
+    <Svg {...props}>
+      <path d="M8 2.5l6 10.5H2z" />
+      <path d="M8 6.5v3M8 11.4v.1" />
+    </Svg>
+  )
+}
+
+/** A circled "i": a neutral note. */
+export function InfoIcon(props: IconProps): JSX.Element {
+  return (
+    <Svg {...props}>
+      <circle cx="8" cy="8" r="6" />
+      <path d="M8 7.5v3.5M8 5v.1" />
+    </Svg>
+  )
+}
+
+/** A microphone: the camera is an audio source. */
+export function MicIcon(props: IconProps): JSX.Element {
+  return (
+    <Svg {...props}>
+      <rect x="6" y="2" width="4" height="7" rx="2" />
+      <path d="M3.5 7.5a4.5 4.5 0 0 0 9 0M8 12v2" />
+    </Svg>
+  )
+}

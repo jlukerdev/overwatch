@@ -23,6 +23,7 @@ import { initialScreen, type Screen } from './initialScreen'
 import { navClass } from './navClass'
 import { useAppStore } from './state/appStore'
 import { blockUnload, confirmLeave } from './state/unsavedGuard'
+import { ConfirmHost, confirmDialog } from './ui/ConfirmDialog'
 import { CameraIcon, GearIcon, GridIcon, RefreshIcon } from './ui/icons'
 
 export function App(): JSX.Element {
@@ -67,8 +68,10 @@ export function App(): JSX.Element {
 
   /** Switches screens, unless that would drop unsaved editor changes the user wants to keep. */
   const go = (next: Screen): void => {
-    if (next !== current && !confirmLeave()) return
-    setScreen(next)
+    if (next === current) return
+    void confirmLeave(confirmDialog).then((leave) => {
+      if (leave) setScreen(next)
+    })
   }
 
   if (phase === 'loading') {
@@ -159,6 +162,7 @@ export function App(): JSX.Element {
           <SettingsPage />
         )}
       </main>
+      <ConfirmHost />
     </div>
   )
 }

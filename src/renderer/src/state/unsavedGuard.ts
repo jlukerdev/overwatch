@@ -5,10 +5,16 @@
 // switching screens, and `blockUnload` from a `beforeunload` listener.
 //
 // One flag, module-level: there is one editor at a time, and the shell must read it synchronously
-// from an event handler. The prompt is injectable so the rule is unit-tested without a DOM.
+// from an event handler. The prompt is injected so the rule is unit-tested without a DOM.
 
-/** What the navigation prompt asks. */
-export const LEAVE_MESSAGE = 'You have unsaved changes to a View. Leave and discard them?'
+/** What the navigation prompt asks (the app's own dialog, ui/ConfirmDialog.tsx). */
+export const LEAVE_PROMPT = {
+  title: 'Discard unsaved changes?',
+  message: 'You have unsaved changes to a View. Leaving the editor discards them.',
+  confirmLabel: 'Discard changes',
+  cancelLabel: 'Keep editing',
+  danger: true,
+} as const
 
 let unsaved = false
 
@@ -22,13 +28,14 @@ export function hasUnsaved(): boolean {
 }
 
 /**
- * Whether the user may leave: always with nothing unsaved; otherwise only if `ask` (by default
- * `window.confirm`) agrees. Not asked at all when clean.
+ * Whether the user may leave: always with nothing unsaved; otherwise only if `ask` (the app shell
+ * passes `confirmDialog`) agrees. Not asked at all when clean. Asynchronous, because the app's own
+ * dialog is; the caller navigates when this resolves `true`.
  */
-export function confirmLeave(
-  ask: (message: string) => boolean = (message) => window.confirm(message),
-): boolean {
-  return !unsaved || ask(LEAVE_MESSAGE)
+export async function confirmLeave(
+  ask: (prompt: typeof LEAVE_PROMPT) => boolean | Promise<boolean>,
+): Promise<boolean> {
+  return !unsaved || (await ask(LEAVE_PROMPT))
 }
 
 /**

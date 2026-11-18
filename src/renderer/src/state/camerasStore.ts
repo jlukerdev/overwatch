@@ -2,12 +2,14 @@
 //
 // The inventory itself lives in `appStore` — main pushes it and the store folds it in (CAM-2). This
 // module owns only what the list *makes* of it: how a camera reads (name fallback, online state,
-// placeholder, audio), the order the rows appear in, and the thumbnail cache. There is no zustand
-// store here on purpose: two copies of the inventory is how a row ends up disagreeing with the
-// badge, and CLAUDE.md asks for logic without UI to be pure and unit-tested. The project has no
+// placeholder, audio), the order the rows appear in, and the thumbnail cache's rules. There is no
+// zustand store here on purpose: two copies of the inventory is how a row ends up disagreeing with
+// the badge, and CLAUDE.md asks for logic without UI to be pure and unit-tested. The cache itself
+// lives in `thumbnailsStore` (P5.2), a small zustand store that only applies these reducers, so the
+// Cameras tab and the View editor share one cache (VIEW-3). The project has no
 // jsdom, so anything a test must reach has to be callable without a DOM — which is also why the
 // cache keeps snapshot **bytes** and never an object URL: `URL.createObjectURL` belongs to the one
-// component that can also revoke it (CameraThumbnail).
+// component that can also revoke it (ui/SnapshotImage).
 //
 // Requirements served: CAM-1 (name/model/state/audio/thumbnail), CAM-2 and CAM-3 (the list reacts
 // to `state` from the devices feed, not to whether a snapshot loaded — gate G1 times that at 10 s),
@@ -41,6 +43,10 @@
 // rate limit would fail the GET just the same, so it is not sent and the row says "streams
 // unknown" straight away. What differs from a thumbnail is the failure: not knowing which streams exist is not
 // worth an error, so it is a quiet "streams unknown" on the row and never the list-level `error`.
+//
+// One exception (P5.2): the View editor asks for thumbnails only (`request` with `streams: false`),
+// so a camera can have an entry and no streams slot. The Cameras tab asks for that camera's feed
+// state alone between loads ({@link streamsPlan}, `requestStreams`), and every load refetches both.
 import { isCameraOnline } from '@shared/models'
 import { cameraHasAudio } from '../features/audio/cameraAudio'
 import { QUALITIES, PACKAGE_CHANNEL, qualityBadgeLabel, type StreamQuality } from '@shared/quality'
@@ -198,7 +204,27 @@ export type ThumbnailsAction =
       readonly type: 'request'
       readonly requestId: number
       readonly cameraIds: readonly string[]
+      /**
+       * Whether the feed state is asked for too (default true). The View editor asks for the
+       * snapshot only (P5.2), leaving the camera with no streams slot; the Cameras tab fills that
+       * in later ({@link streamsPlan}).
+       */
+      readonly streams?: boolean
     }
+  /**
+   * Outside a load: the feed state alone for cameras that have a thumbnail entry but no streams
+   * slot (one the View editor fetched), stamped under `requestId` (QUAL-7, {@link streamsPlan}).
+   */
+  | {
+      readonly type: 'requestStreams'
+      readonly requestId: number
+      readonly cameraIds: readonly string[]
+    }
+  /**
+   * Forget the committed `failed` / `unavailable` entries of these cameras (and their streams
+   * slot), so they are asked for again: the View editor's one retry when it opens (P5.2).
+   */
+  | { readonly type: 'forget'; readonly cameraIds: readonly string[] }
   /**
    * Whatever `snapshot()` answered, for a load or for a `request`, told apart by `requestId`. The
    * reducer, not the component, applies the CAM-3 rule.
@@ -252,18 +278,37 @@ export function thumbnailsReducer(
     }
 
     case 'request': {
-      const entries = { ...state.entries }
-      const streams = { ...state.streams }
-      let changed = false
-      for (const cameraId of action.cameraIds) {
-        if (cameraId in entries) continue
-        const loading = { status: 'loading', requestId: action.requestId } as const
-        entries[cameraId] = loading
+      const fresh = unrequested(state.entries, action.cameraIds)
+      if (fresh.length === 0) return state
+      return {
+        ...state,
+        entries: withLoading(state.entries, fresh, action.requestId),
         // Together with the thumbnail, so the two can never be asked for by different requests.
-        streams[cameraId] = loading
-        changed = true
+        streams:
+          action.streams === false
+            ? state.streams
+            : withLoading(state.streams, fresh, action.requestId),
       }
-      return changed ? { ...state, entries, streams } : state
+    }
+
+    case 'requestStreams': {
+      const fresh = unrequested(state.streams, action.cameraIds).filter(
+        (cameraId) => cameraId in state.entries,
+      )
+      if (fresh.length === 0) return state
+      return { ...state, streams: withLoading(state.streams, fresh, action.requestId) }
+    }
+
+    case 'forget': {
+      const drop = new Set(
+        action.cameraIds.filter((cameraId) => isSettledFailure(state.entries[cameraId])),
+      )
+      if (drop.size === 0) return state
+      return {
+        ...state,
+        entries: without(state.entries, drop),
+        streams: without(state.streams, drop),
+      }
     }
 
     case 'result':
@@ -321,12 +366,12 @@ function applyReply<S extends ThumbnailSheet>(
     // and its entry was dropped (writing it back would put an image next to an "Offline"
     // placeholder, CAM-3), and a reply from an earlier request for a camera a later one has
     // already asked about again.
-    const entry = sheet.entries[cameraId]
-    if (entry?.status !== 'loading' || entry.requestId !== requestId) return sheet
+    const entries = settleEntry(sheet.entries, cameraId, requestId, action.result)
+    if (entries === sheet.entries) return sheet
     const listLevel = !action.result.ok
     return {
       ...sheet,
-      entries: { ...sheet.entries, [cameraId]: toEntry(action.result) },
+      entries,
       // A list-level failure means the feed-state GET is not sent (`wantsStreamsQuery`), so the
       // camera reads "streams unknown" now rather than "loading" for ever. The streams slot always
       // belongs to the same request as an entry that passed the check above: both are stamped
@@ -339,8 +384,7 @@ function applyReply<S extends ThumbnailSheet>(
     }
   }
   // The same three stale cases, against the streams slot.
-  const entry = sheet.streams[cameraId]
-  if (entry?.status !== 'loading' || entry.requestId !== requestId) return sheet
+  if (!isLoadingFor(sheet.streams[cameraId], requestId)) return sheet
   // Defensive: the snapshot beside it failed at list level, so no GET should have been sent; if one
   // was, the row still reads "streams unknown", as above.
   const listLevel = sheet.entries[cameraId]?.status === 'failed'
@@ -351,6 +395,64 @@ function applyReply<S extends ThumbnailSheet>(
   // `error` is left alone on purpose: a failure here is "streams unknown" on the row, and a bad
   // key or a missing pin is already reported by the thumbnail beside it.
   return { ...sheet, streams: { ...sheet.streams, [cameraId]: next } }
+}
+
+/** A settled answer that is worth one more try: `failed` or `unavailable` (P5.2, the editor's retry). */
+function isSettledFailure(entry: ThumbnailEntry | undefined): boolean {
+  return entry?.status === 'failed' || entry?.status === 'unavailable'
+}
+
+/** `record` without the keys in `drop`. */
+function without<T>(
+  record: Readonly<Record<string, T>>,
+  drop: ReadonlySet<string>,
+): Readonly<Record<string, T>> {
+  const out: Record<string, T> = {}
+  for (const [key, value] of Object.entries(record)) if (!drop.has(key)) out[key] = value
+  return out
+}
+
+/** Whether `entry` is in flight for exactly `requestId`: the only slot that request's reply fills. */
+function isLoadingFor(
+  entry: ThumbnailEntry | StreamQualitiesEntry | undefined,
+  requestId: number,
+): boolean {
+  return entry?.status === 'loading' && entry.requestId === requestId
+}
+
+/** The ids in `cameraIds` with no slot in `record` yet, each once, in order. */
+function unrequested(
+  record: Readonly<Record<string, unknown>>,
+  cameraIds: readonly string[],
+): string[] {
+  return [...new Set(cameraIds)].filter((cameraId) => !(cameraId in record))
+}
+
+/** `record` with each of `cameraIds` stamped as in flight under `requestId`. */
+function withLoading<T>(
+  record: Readonly<Record<string, T>>,
+  cameraIds: readonly string[],
+  requestId: number,
+): Readonly<Record<string, T | { readonly status: 'loading'; readonly requestId: number }>> {
+  const out: Record<string, T | { readonly status: 'loading'; readonly requestId: number }> = {
+    ...record,
+  }
+  for (const cameraId of cameraIds) out[cameraId] = { status: 'loading', requestId }
+  return out
+}
+
+/**
+ * A snapshot reply applied to a record of thumbnail entries: filled in only if the slot is still
+ * in flight for this very request (see `applyReply`), otherwise `record` itself.
+ */
+function settleEntry(
+  record: Readonly<Record<string, ThumbnailEntry>>,
+  cameraId: string,
+  requestId: number,
+  result: IpcResult<SnapshotResult>,
+): Readonly<Record<string, ThumbnailEntry>> {
+  if (!isLoadingFor(record[cameraId], requestId)) return record
+  return { ...record, [cameraId]: toEntry(result) }
 }
 
 function toEntry(result: IpcResult<SnapshotResult>): ThumbnailEntry {
@@ -435,6 +537,79 @@ export function thumbnailPlan(
     .map((camera) => camera.id)
 }
 
+/**
+ * Which cameras need their feed state alone (QUAL-7): online, with a thumbnail that answered for
+ * the camera (`ready` or `unavailable`, so the console is reachable; `wantsStreamsQuery`'s rule) and
+ * no streams slot — a thumbnail the View editor fetched, which asks for the snapshot only (P5.2).
+ * One still loading waits for its answer; one that failed at list level gets no GET, as in a load.
+ */
+export function streamsPlan(
+  cameras: readonly Camera[],
+  sheet: Pick<ThumbnailSheet, 'entries' | 'streams'>,
+): string[] {
+  return cameras
+    .filter((camera) => {
+      const status = sheet.entries[camera.id]?.status
+      return (
+        isCameraOnline(camera.state) &&
+        (status === 'ready' || status === 'unavailable') &&
+        !(camera.id in sheet.streams)
+      )
+    })
+    .map((camera) => camera.id)
+}
+
+// -------------------------------------------------------------------------------------------------
+// Package-channel snapshots (P5.2, CAM-4, VIEW-3)
+
+/**
+ * A doorbell's package-camera snapshots, keyed by camera id (not by the `<id>:package` ref). Only
+ * the View editor asks for them (a cell showing a package ref); the Cameras tab never does. Same
+ * {@link ThumbnailEntry} lifecycle as the thumbnails: stamped with the request that asked, filled
+ * only by that request's reply, dropped when the camera goes offline, leaves, or loses its package
+ * camera, and cleared when the inventory empties. No streams slot: nothing reads one for this
+ * channel.
+ */
+export type PackageSnapshots = Readonly<Record<string, ThumbnailEntry>>
+
+export type PackageSnapshotsAction =
+  | { readonly type: 'sync'; readonly cameras: readonly Camera[] }
+  | { readonly type: 'request'; readonly requestId: number; readonly cameraIds: readonly string[] }
+  | {
+      readonly type: 'result'
+      readonly requestId: number
+      readonly cameraId: string
+      readonly result: IpcResult<SnapshotResult>
+    }
+  /** As the thumbnails' `forget`: drop `failed` / `unavailable` entries so they are asked again. */
+  | { readonly type: 'forget'; readonly cameraIds: readonly string[] }
+
+export function packageSnapshotsReducer(
+  state: PackageSnapshots,
+  action: PackageSnapshotsAction,
+): PackageSnapshots {
+  switch (action.type) {
+    case 'sync': {
+      const keep = new Set(
+        action.cameras
+          .filter((c) => c.hasPackageCamera && isCameraOnline(c.state))
+          .map((c) => c.id),
+      )
+      return keepOnly(state, keep)
+    }
+    case 'request': {
+      const fresh = unrequested(state, action.cameraIds)
+      return fresh.length === 0 ? state : withLoading(state, fresh, action.requestId)
+    }
+    case 'result':
+      return settleEntry(state, action.cameraId, action.requestId, action.result)
+    case 'forget': {
+      const drop = new Set(action.cameraIds.filter((cameraId) => isSettledFailure(state[cameraId])))
+      return drop.size === 0 ? state : without(state, drop)
+    }
+  }
+}
+
 // -------------------------------------------------------------------------------------------------
 // When to load, and what to show meanwhile (P4.5, CAM-1)
 
@@ -465,13 +640,17 @@ export interface LoadProgress {
 
 /**
  * The progress of the load in flight; an indeterminate one when a load is about to start
- * ({@link wantsLoad}), so the first render already shows the loading card and never a bare grid;
- * or `null` when there is neither.
+ * ({@link wantsLoad}, or `opening`: the tab has just opened and will start one), so the first
+ * render already shows the progress and never a bare grid; or `null` when there is neither.
  */
-export function loadProgress(state: ThumbnailsState, cameraCount: number): LoadProgress | null {
+export function loadProgress(
+  state: ThumbnailsState,
+  cameraCount: number,
+  opening = false,
+): LoadProgress | null {
   const load = state.load
   if (load === null) {
-    return wantsLoad(state, cameraCount)
+    return opening || wantsLoad(state, cameraCount)
       ? { settled: 0, total: null, label: 'Loading cameras…' }
       : null
   }

@@ -425,6 +425,41 @@
   border: 2px solid var(--accent);
 }
 
+/* P5.2 (VIEW-3): the head camera's snapshot, the bottom layer of the cell, fitted with the View's
+ * `fit` like the Live grid's video. It never takes the pointer, so selection, dragging the chip and
+ * dropping behave as on a text-only cell. */
+.editorCanvas__image {
+  position: absolute;
+  inset: 0;
+  display: block;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  user-select: none;
+}
+
+.editorCanvas__image--contain {
+  object-fit: contain;
+}
+
+.editorCanvas__image--cover {
+  object-fit: cover;
+}
+
+/* The selected tint is the cell's background, which the image covers: draw it over the image on
+ * the selection layer instead. The drop highlight is the cell's border, which the image never covers. */
+.editorCanvas__cell--image.editorCanvas__cell--selected .editorCanvas__select {
+  background: color-mix(in srgb, var(--accent) 30%, transparent);
+}
+
+/* The chip is opaque already; the "+N" next to it gets the same backing to stay legible. */
+.editorCanvas__cell--image .editorCanvas__more {
+  padding: 0.1rem 0.4rem;
+  border-radius: var(--radius);
+  background: var(--bg-raised);
+  color: var(--fg);
+}
+
 /* The selection layer: fills the cell, under the content. */
 .editorCanvas__select {
   position: absolute;

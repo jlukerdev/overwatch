@@ -1,6 +1,6 @@
 // The View editor's canvas (P3.3; VIEW-1, VIEW-3, VIEW-5): the draft View drawn with the same
 // geometry as the Live grid (`layoutGrid` / `cellRect`, absolutely positioned, re-measured through a
-// ResizeObserver), but with camera names instead of video. It is where cells are selected and where
+// ResizeObserver), but with camera names (over a still snapshot, P5.2) instead of video. It is where cells are selected and where
 // cameras are dropped.
 //
 // Thin on purpose: the tests run in vitest's node environment (vitest.config.mts), and CLAUDE.md
@@ -17,16 +17,29 @@
 //    cell index as `CELL_DRAG_TYPE`). A pointerdown on the chip never reaches the button, so
 //    starting a drag never starts a selection.
 // The whole cell is the drop target, for palette cameras (`CAMERA_DRAG_TYPE`) and for other cells.
+//
+// **Snapshots (P5.2, VIEW-3).** A cell whose head camera has a cached snapshot draws it as the
+// bottom layer, under the selection button, with `pointer-events: none`, so it never takes a click,
+// a drag or a drop: selection, dragging the chip and dropping all work exactly as on a text-only
+// cell. It is fitted with the View's `fit`, as the Live grid fits video. The selected and drop
+// highlights are drawn over it (viewEditor.css). Which image, if any, is `cellSnapshot`.
 import { useEffect, useRef, useState, type DragEvent, type JSX } from 'react'
 import type { Camera } from '@shared/ipc'
 import type { View } from '@shared/models'
 import { cellRect, layoutGrid, type CellPlacement, type Rect } from '@shared/viewLayout'
+import { SnapshotImage } from '../../ui/SnapshotImage'
 import { cameraRefLabel, cellsInRect, type Slot } from './editorModel'
+import type { ReadySnapshot } from './editorThumbnails'
 import { CAMERA_DRAG_TYPE, CELL_DRAG_TYPE, parseCellIndex } from './viewEditorHelpers'
 
 export interface EditorCanvasProps {
   readonly view: View
   readonly cameras: readonly Camera[]
+  /**
+   * VIEW-3 (P5.2): per cell, by index, the head camera's cached snapshot to draw behind its name,
+   * or `null` for a text-only cell (./editorThumbnails `cellSnapshot`).
+   */
+  readonly snapshots: readonly (ReadySnapshot | null)[]
   /** The selected rectangle, or `null` when nothing is selected. */
   readonly selection: CellPlacement | null
   /** A cell was picked at `slot`; `extend` (Shift) grows the selection from its anchor instead. */
@@ -45,6 +58,7 @@ interface BoxSize {
 export function EditorCanvas({
   view,
   cameras,
+  snapshots,
   selection,
   onSelect,
   onExtend,
@@ -111,7 +125,9 @@ export function EditorCanvas({
             const slot: Slot = { col: cell.col, row: cell.row }
             const labels = cell.cameraIds.map((ref) => cameraRefLabel(ref, cameras))
             const first = labels[0]
+            const image = snapshots[index] ?? null
             const classes = ['editorCanvas__cell']
+            if (image !== null) classes.push('editorCanvas__cell--image')
             if (selected.has(index)) classes.push('editorCanvas__cell--selected')
             if (dropIndex === index) classes.push('editorCanvas__cell--drop')
             if (first === undefined) classes.push('editorCanvas__cell--empty')
@@ -151,6 +167,13 @@ export function EditorCanvas({
                   if (from !== null) onSwapCells(from, index)
                 }}
               >
+                {image === null ? null : (
+                  <SnapshotImage
+                    className={`editorCanvas__image editorCanvas__image--${view.fit}`}
+                    bytes={image.bytes}
+                    mimeType={image.mimeType}
+                  />
+                )}
                 <button
                   type="button"
                   className="editorCanvas__select"

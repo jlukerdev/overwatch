@@ -35,9 +35,11 @@ import {
   fetchesIncrementally,
   gridCameras,
   loadProgress,
+  packageSnapshotsReducer,
   rtspsSummary,
   setupGaps,
   sortCameras,
+  streamsPlan,
   thumbnailPlan,
   thumbnailsReducer,
   wantsLoad,
@@ -759,6 +761,13 @@ describe('loading the list all at once (P4.5, CAM-1/QUAL-7)', () => {
     expect(loadProgress(loaded(['a']), 1)).toBeNull()
   })
 
+  it('shows indeterminate progress on a re-open that is about to reload (P5.2)', () => {
+    // The cache outlives the tab, so a re-open finds a loaded grid; it reloads like Refresh and
+    // the header shows the progress from the first render.
+    const pending = { settled: 0, total: null, label: 'Loading cameras…' }
+    expect(loadProgress(loaded(['a']), 1, true)).toEqual(pending)
+  })
+
   it('counts cameras, each settling when its snapshot and its feed state have answered', () => {
     let state = plan(start(EMPTY_THUMBNAILS), ['a', 'b', 'c'])
     expect(loadProgress(state, 3)).toEqual({
@@ -931,5 +940,224 @@ describe('loading the list all at once (P4.5, CAM-1/QUAL-7)', () => {
     expect(thumbnailsReducer(EMPTY_THUMBNAILS, { type: 'sync', cameras: [] })).toBe(
       EMPTY_THUMBNAILS,
     )
+  })
+})
+
+describe('packageSnapshotsReducer (P5.2, CAM-4)', () => {
+  const bell = (state = 'CONNECTED', hasPackageCamera = true): Camera =>
+    camera({ id: 'bell', state, hasPackageCamera })
+
+  it('stamps only cameras with no entry, and leaves the state alone when there are none', () => {
+    const asked = packageSnapshotsReducer(
+      {},
+      { type: 'request', requestId: 1, cameraIds: ['bell'] },
+    )
+    expect(asked).toEqual({ bell: { status: 'loading', requestId: 1 } })
+    const again = packageSnapshotsReducer(asked, {
+      type: 'request',
+      requestId: 2,
+      cameraIds: ['bell'],
+    })
+    expect(again).toBe(asked)
+  })
+
+  it("fills a slot only from the request that stamped it, with CAM-3's meaning", () => {
+    const asked = packageSnapshotsReducer(
+      {},
+      { type: 'request', requestId: 1, cameraIds: ['bell'] },
+    )
+    const stale = packageSnapshotsReducer(asked, {
+      type: 'result',
+      requestId: 7,
+      cameraId: 'bell',
+      result: okSnapshot(9),
+    })
+    expect(stale).toBe(asked)
+    const ready = packageSnapshotsReducer(asked, {
+      type: 'result',
+      requestId: 1,
+      cameraId: 'bell',
+      result: okSnapshot(9),
+    })
+    expect(ready.bell).toMatchObject({ status: 'ready', bytes: new Uint8Array([9]) })
+    const none = packageSnapshotsReducer(asked, {
+      type: 'result',
+      requestId: 1,
+      cameraId: 'bell',
+      result: UNAVAILABLE,
+    })
+    expect(none.bell).toEqual({ status: 'unavailable', reason: 'Camera is offline' })
+    const failed = packageSnapshotsReducer(asked, {
+      type: 'result',
+      requestId: 1,
+      cameraId: 'bell',
+      result: { ok: false, error: ERROR },
+    })
+    expect(failed.bell).toEqual({ status: 'failed', error: ERROR })
+  })
+
+  it('drops a reply that arrives after the camera went offline', () => {
+    const asked = packageSnapshotsReducer(
+      {},
+      { type: 'request', requestId: 1, cameraIds: ['bell'] },
+    )
+    const dropped = packageSnapshotsReducer(asked, {
+      type: 'sync',
+      cameras: [bell('DISCONNECTED')],
+    })
+    expect(dropped).toEqual({})
+    const late = packageSnapshotsReducer(dropped, {
+      type: 'result',
+      requestId: 1,
+      cameraId: 'bell',
+      result: okSnapshot(1),
+    })
+    expect(late).toEqual({})
+  })
+
+  it('keeps an entry while the camera is online with a package camera, and drops it otherwise', () => {
+    const ready = packageSnapshotsReducer(
+      packageSnapshotsReducer({}, { type: 'request', requestId: 1, cameraIds: ['bell'] }),
+      { type: 'result', requestId: 1, cameraId: 'bell', result: okSnapshot(1) },
+    )
+    expect(packageSnapshotsReducer(ready, { type: 'sync', cameras: [bell()] })).toBe(ready)
+    expect(packageSnapshotsReducer(ready, { type: 'sync', cameras: [bell('CONNECTING')] })).toEqual(
+      {},
+    )
+    expect(
+      packageSnapshotsReducer(ready, { type: 'sync', cameras: [bell('CONNECTED', false)] }),
+    ).toEqual({})
+    expect(
+      packageSnapshotsReducer(ready, { type: 'sync', cameras: [camera({ id: 'other' })] }),
+    ).toEqual({})
+    // An emptied inventory clears the record.
+    expect(packageSnapshotsReducer(ready, { type: 'sync', cameras: [] })).toEqual({})
+  })
+})
+
+describe('snapshot-only requests, feed state alone, and forgetting failures (P5.2)', () => {
+  const AVAILABLE: RtspsAvailability = { high: true, medium: false, low: false, package: false }
+
+  it('a request without streams stamps the thumbnail only', () => {
+    const state = thumbnailsReducer(EMPTY_THUMBNAILS, {
+      type: 'request',
+      requestId: 4,
+      cameraIds: ['a', 'a'],
+      streams: false,
+    })
+    expect(state.entries).toEqual({ a: { status: 'loading', requestId: 4 } })
+    expect(state.streams).toEqual({})
+    // A list-level failure then leaves no streams slot behind, rather than "unknown".
+    const failed = thumbnailsReducer(state, {
+      type: 'result',
+      requestId: 4,
+      cameraId: 'a',
+      result: { ok: false, error: ERROR },
+    })
+    expect(failed.streams).toEqual({})
+  })
+
+  it('streamsPlan picks online cameras with an answered thumbnail and no streams slot', () => {
+    const cameras = [
+      camera({ id: 'ready' }),
+      camera({ id: 'none' }),
+      camera({ id: 'loading' }),
+      camera({ id: 'failed' }),
+      camera({ id: 'has' }),
+      camera({ id: 'off', state: 'DISCONNECTED' }),
+      camera({ id: 'absent' }),
+    ]
+    const entries: Record<string, ThumbnailEntry> = {
+      ready: { status: 'ready', bytes: new Uint8Array([1]), mimeType: 'image/jpeg', capturedAt: 1 },
+      none: { status: 'unavailable', reason: 'x' },
+      loading: { status: 'loading', requestId: 1 },
+      failed: { status: 'failed', error: ERROR },
+      has: { status: 'unavailable', reason: 'x' },
+      off: { status: 'unavailable', reason: 'x' },
+    }
+    expect(streamsPlan(cameras, { entries, streams: { has: { status: 'unknown' } } })).toEqual([
+      'ready',
+      'none',
+    ])
+  })
+
+  it('requestStreams stamps only cameras with a thumbnail and no streams slot, then fills them', () => {
+    const base = thumbnailsReducer(
+      thumbnailsReducer(EMPTY_THUMBNAILS, {
+        type: 'request',
+        requestId: 1,
+        cameraIds: ['a'],
+        streams: false,
+      }),
+      { type: 'result', requestId: 1, cameraId: 'a', result: okSnapshot(1) },
+    )
+    const asked = thumbnailsReducer(base, {
+      type: 'requestStreams',
+      requestId: 2,
+      cameraIds: ['a', 'stranger'],
+    })
+    expect(asked.streams).toEqual({ a: { status: 'loading', requestId: 2 } })
+    expect(
+      thumbnailsReducer(asked, { type: 'requestStreams', requestId: 3, cameraIds: ['a'] }),
+    ).toBe(asked)
+    const known = thumbnailsReducer(asked, {
+      type: 'streams',
+      requestId: 2,
+      cameraId: 'a',
+      result: { ok: true, value: AVAILABLE },
+    })
+    expect(known.streams.a).toEqual({ status: 'known', available: AVAILABLE })
+  })
+
+  it('forget drops only failed and unavailable entries, with their streams slot', () => {
+    let state = thumbnailsReducer(EMPTY_THUMBNAILS, {
+      type: 'request',
+      requestId: 1,
+      cameraIds: ['bad', 'none', 'good', 'busy'],
+    })
+    state = thumbnailsReducer(state, {
+      type: 'result',
+      requestId: 1,
+      cameraId: 'bad',
+      result: { ok: false, error: ERROR },
+    })
+    state = thumbnailsReducer(state, {
+      type: 'result',
+      requestId: 1,
+      cameraId: 'none',
+      result: UNAVAILABLE,
+    })
+    state = thumbnailsReducer(state, {
+      type: 'result',
+      requestId: 1,
+      cameraId: 'good',
+      result: okSnapshot(1),
+    })
+    const forgotten = thumbnailsReducer(state, {
+      type: 'forget',
+      cameraIds: ['bad', 'none', 'good', 'busy', 'stranger'],
+    })
+    expect(Object.keys(forgotten.entries).sort()).toEqual(['busy', 'good'])
+    expect(Object.keys(forgotten.streams).sort()).toEqual(['busy', 'good'])
+    expect(thumbnailsReducer(forgotten, { type: 'forget', cameraIds: ['good'] })).toBe(forgotten)
+  })
+
+  it('forget works the same on the package record', () => {
+    const asked = packageSnapshotsReducer(
+      {},
+      { type: 'request', requestId: 1, cameraIds: ['p', 'q'] },
+    )
+    const answered = packageSnapshotsReducer(
+      packageSnapshotsReducer(asked, {
+        type: 'result',
+        requestId: 1,
+        cameraId: 'p',
+        result: UNAVAILABLE,
+      }),
+      { type: 'result', requestId: 1, cameraId: 'q', result: okSnapshot(2) },
+    )
+    const forgotten = packageSnapshotsReducer(answered, { type: 'forget', cameraIds: ['p', 'q'] })
+    expect(Object.keys(forgotten)).toEqual(['q'])
+    expect(packageSnapshotsReducer(forgotten, { type: 'forget', cameraIds: ['q'] })).toBe(forgotten)
   })
 })

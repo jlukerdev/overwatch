@@ -622,7 +622,12 @@ describe('testConnection (CON-4)', () => {
 describe('snapshot (CAM-3, R11)', () => {
   beforeEach(async () => {
     h = setup({
-      cameras: [camera('hd', { supportsFullHdSnapshot: true }), camera('sd')],
+      cameras: [
+        camera('hd', { supportsFullHdSnapshot: true }),
+        camera('sd'),
+        camera('bell', { hasPackageCamera: true }),
+        camera('hdbell', { hasPackageCamera: true, supportsFullHdSnapshot: true }),
+      ],
     })
     await h.manager.cameras()
   })
@@ -702,6 +707,49 @@ describe('snapshot (CAM-3, R11)', () => {
   it('asks for no highQuality for a camera the inventory does not know yet', async () => {
     await h.manager.snapshot({ cameraId: 'unknown', highQuality: true })
     expect(h.protect.snapshot).toHaveBeenLastCalledWith('unknown', {})
+  })
+
+  it('sends channel=package only for a camera with a package camera (CAM-4)', async () => {
+    await h.manager.snapshot({ cameraId: 'bell', highQuality: false, channel: 'package' })
+    expect(h.protect.snapshot).toHaveBeenLastCalledWith('bell', { channel: 'package' })
+  })
+
+  it('answers unavailable for channel=package on a camera without one, fetching nothing', async () => {
+    const result = await h.manager.snapshot({
+      cameraId: 'sd',
+      highQuality: false,
+      channel: 'package',
+    })
+    expect(result).toEqual({ state: 'unavailable', reason: expect.any(String) as string })
+    // Not the main channel's image under a package label.
+    expect(h.protect.snapshot).not.toHaveBeenCalled()
+    expect(h.logged.join('\n')).toMatch(/refused channel=package/)
+  })
+
+  it('answers unavailable for channel=package on a camera the inventory does not know', async () => {
+    const result = await h.manager.snapshot({
+      cameraId: 'unknown',
+      highQuality: false,
+      channel: 'package',
+    })
+    expect(result.state).toBe('unavailable')
+    expect(h.protect.snapshot).not.toHaveBeenCalled()
+  })
+
+  it('never sends the main channel explicitly: it is the default', async () => {
+    await h.manager.snapshot({ cameraId: 'bell', highQuality: false, channel: 'main' })
+    expect(h.protect.snapshot).toHaveBeenLastCalledWith('bell', {})
+  })
+
+  it('judges highQuality and the package channel separately', async () => {
+    await h.manager.snapshot({ cameraId: 'bell', highQuality: true, channel: 'package' })
+    // `bell` has no supportsFullHdSnapshot, so only the channel goes.
+    expect(h.protect.snapshot).toHaveBeenLastCalledWith('bell', { channel: 'package' })
+    await h.manager.snapshot({ cameraId: 'hdbell', highQuality: true, channel: 'package' })
+    expect(h.protect.snapshot).toHaveBeenLastCalledWith('hdbell', {
+      highQuality: true,
+      channel: 'package',
+    })
   })
 })
 

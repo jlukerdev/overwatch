@@ -28,14 +28,24 @@
 // Save, a merge or split, and the list footer's New / Duplicate / Delete and the reorder buttons
 // — next to the status, on one line (full text in its tooltip). On the right, the cell inspector
 // and the camera palette.
+// Each cell with a camera shows its head camera's snapshot behind the name (P5.2, VIEW-3), read
+// from and fetched into the cache the Cameras tab shares (state/thumbnailsStore); which image and
+// what to fetch are ./editorThumbnails.
 // The subcomponents (EditorCanvas, EditorSettings, CellInspector, CameraPalette) only turn events
-// into calls; the decisions are in ./editorModel and ./viewEditorHelpers, pure and tested.
+// into calls; the decisions are in ./editorModel, ./editorThumbnails and ./viewEditorHelpers, pure
+// and tested.
 import { useEffect, useId, useMemo, useRef, useState, type JSX } from 'react'
 import type { AppState, Camera } from '@shared/ipc'
 import type { View } from '@shared/models'
 import { resolveGridQuality } from '@shared/quality'
 import { mergeCells, splitCell } from '@shared/viewLayout'
 import { useAppStore } from '../../state/appStore'
+import {
+  forgetFailed,
+  requestCameras,
+  requestPackages,
+  useThumbnails,
+} from '../../state/thumbnailsStore'
 import { setUnsaved } from '../../state/unsavedGuard'
 import {
   neighbourAfterDelete,
@@ -60,6 +70,7 @@ import { setCellQuality } from '../quality/qualityChoice'
 import { CameraPalette } from './CameraPalette'
 import { CellInspector } from './CellInspector'
 import { EditorCanvas } from './EditorCanvas'
+import { cellSnapshot, editorRetryPlan, editorSnapshotPlan } from './editorThumbnails'
 import {
   addCellCamera,
   cameraChoices,
@@ -270,6 +281,39 @@ function DraftEditor({
   const choices = useMemo(() => cameraChoices(cameras), [cameras])
   // QUAL-1's defaults, for the inspector's "View default (X)". `undefined` before settings load.
   const streams = useAppStore((s) => s.settings?.streams)
+
+  // VIEW-3 (P5.2): each cell's head camera's snapshot, from the cache the Cameras tab shares. The
+  // plan is every head camera with no entry yet; it re-runs whenever the cells, the cameras or the
+  // cache change (opening a View, a drop, a picker change, a swap, a layout change), and marking
+  // the cameras in flight first is what keeps it from asking twice. Nothing on a timer, never
+  // `highQuality`, never a stream (QUAL-8).
+  // A camera a Cameras-tab load in flight covers is left to it. The editor asks for the snapshot
+  // only, never the feed state. Opening the editor tries each failed / unavailable head camera once
+  // more (`editorRetryPlan`, computed once per mount, so a draft change never retries).
+  const thumbnailEntries = useThumbnails((s) => s.thumbnails.entries)
+  const thumbnailLoad = useThumbnails((s) => s.thumbnails.load)
+  const packageSnapshots = useThumbnails((s) => s.packages)
+  const [retryPlan] = useState(() => {
+    const { thumbnails, packages } = useThumbnails.getState()
+    return editorRetryPlan(saved.cells, cameras, thumbnails.entries, packages)
+  })
+  useEffect(() => {
+    forgetFailed(retryPlan)
+  }, [retryPlan])
+  const snapshotPlan = useMemo(
+    () =>
+      editorSnapshotPlan(draft.cells, cameras, thumbnailEntries, packageSnapshots, thumbnailLoad),
+    [draft.cells, cameras, thumbnailEntries, packageSnapshots, thumbnailLoad],
+  )
+  useEffect(() => {
+    requestCameras(snapshotPlan.cameraIds, { streams: false })
+    requestPackages(snapshotPlan.packageIds)
+  }, [snapshotPlan])
+  const cellSnapshots = useMemo(
+    () =>
+      draft.cells.map((cell) => cellSnapshot(cell, cameras, thumbnailEntries, packageSnapshots)),
+    [draft.cells, cameras, thumbnailEntries, packageSnapshots],
+  )
 
   // Tell the app shell, so leaving Live or closing the window asks first (unsavedGuard).
   useEffect(() => {
@@ -565,6 +609,7 @@ function DraftEditor({
           <EditorCanvas
             view={draft}
             cameras={cameras}
+            snapshots={cellSnapshots}
             selection={rect}
             onSelect={select}
             onExtend={(slot) => {

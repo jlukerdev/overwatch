@@ -292,7 +292,7 @@ async function startServices(): Promise<void> {
     if (cached !== null && cached.baseUrl === endpoint.baseUrl) return cached.client
     const client = createAccessClient({
       endpoint,
-      // DOOR-0, read per call: the feature is off by default and the switch is in Settings (P5.2).
+      // DOOR-0, read per call: the feature is off by default and the switch is in Settings (P5.3).
       enabled: () => current.console.accessEnabled,
       token: () => credentials.accessToken ?? null,
       dispatcher: () => pins.agentFor(endpoint.host, endpoint.port),

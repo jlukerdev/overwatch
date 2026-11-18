@@ -66,7 +66,7 @@ import {
 } from './console/endpoints'
 import { toIpcError } from './ipc/errors'
 import type { RateLimiter } from './net/rateLimiter'
-import type { ProtectClient } from './protect/client'
+import type { ProtectClient, SnapshotOptions } from './protect/client'
 import { ProtectApiError } from './protect/errors'
 import type { RtspsStreams } from './protect/types'
 import {
@@ -694,10 +694,21 @@ export function createConnectionManager(options: ConnectionManagerOptions): Conn
     if (input.highQuality && !highQuality) {
       log('snapshot: dropped highQuality for a camera without supportsFullHdSnapshot (SPEC §5.1)')
     }
+    // CAM-4: `channel=package` only exists on a camera with `hasPackageCamera`. For any other (or
+    // one the inventory does not know) there is no package image to give, so the answer is CAM-3's
+    // "unavailable" — not a 400, and not the main channel's image, which would show the wrong
+    // camera's view under a package label.
+    const packageChannel = input.channel === 'package'
+    if (packageChannel && camera?.hasPackageCamera !== true) {
+      log('snapshot: refused channel=package for a camera without hasPackageCamera (CAM-4)')
+      return { state: 'unavailable', reason: 'This camera has no package camera.' }
+    }
+    const options: SnapshotOptions = {
+      ...(highQuality ? { highQuality: true } : {}),
+      ...(packageChannel ? { channel: 'package' } : {}),
+    }
     try {
-      const shot = await services
-        .protect()
-        .snapshot(input.cameraId, highQuality ? { highQuality: true } : {})
+      const shot = await services.protect().snapshot(input.cameraId, options)
       return {
         state: 'ok',
         mimeType: shot.contentType,

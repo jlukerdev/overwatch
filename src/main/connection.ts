@@ -40,19 +40,22 @@
 // tests drive every phase, the feed and the pin-clearing in plain Node with no window and no socket.
 import {
   IPC_EVENTS,
+  ipcFail,
+  ipcOk,
   type AccessProbe,
   type ConnectionPhase,
   type ConnectionStatus,
   type EndpointName,
   type EndpointStatus,
   type IpcError,
+  type IpcResult,
   type ProtectProbe,
   type RtspsAvailability,
   type SnapshotInput,
   type SnapshotResult,
   type TestConnection,
 } from '@shared/ipc'
-import type { Camera, ConsoleConfig } from '@shared/models'
+import type { Camera, ConsoleConfig, Door } from '@shared/models'
 import { STREAM_QUALITIES } from '@shared/quality'
 import type { AccessClient } from './access/client'
 import type { Config } from './config/schema'
@@ -152,6 +155,15 @@ export interface ConnectionManager {
    * list shows it as "streams unknown" rather than as an error.
    */
   streamQualities(cameraId: string): Promise<RtspsAvailability>
+  /**
+   * DOOR-1 (P5.3): `GET /doors` for Settings' door-link card. DOOR-0 first: while Access is off it
+   * answers `disabled` and **no** Access call is made — the client is not even resolved. Otherwise
+   * one request (no pacing of its own, SPEC §5.2), and the Access status follows it exactly as Test
+   * connection's probe does: `connected` on success, `error` with the failure otherwise, emitted
+   * either way. Answers an `IpcResult` rather than rejecting, so the error the card shows is the one
+   * the status recorded (`not-configured`, `pin-required`, `auth`, …, with the endpoint's host:port).
+   */
+  doors(): Promise<IpcResult<Door[]>>
   /**
    * CON-1/2: the Protect API key has just been deleted. Closes the feed and empties the inventory,
    * because nothing may keep running on a credential the user has removed. Clears
@@ -663,18 +675,67 @@ export function createConnectionManager(options: ConnectionManagerOptions): Conn
       slot.updatedAt = now()
       return { state: 'disabled' }
     }
+    const read = await readDoors()
+    return read.ok
+      ? { state: 'ok', doorCount: read.value.length }
+      : { state: 'error', error: read.error }
+  }
+
+  /**
+   * One `GET /doors`, with the Access status following it: `connected` on an answer, `error` with
+   * the mapped failure otherwise. Shared by Test connection's probe (CON-4) and the door-link card's
+   * list (DOOR-1), so the indicator says the same thing whichever of them asked last. The caller has
+   * already checked DOOR-0. `services.access()` throws `ConsoleEndpointError` for an address that
+   * does not resolve, which is mapped like any other failure (`not-configured`).
+   *
+   * **A read whose endpoint was replaced meanwhile leaves the status alone.** `applyConsoleChange`
+   * swaps `state.access` for a fresh slot when the console block is saved, so a read still in flight
+   * belongs to the endpoint that was just left; writing its answer (or its error) would put the old
+   * console's result on the new one's indicator. The slot captured here is compared by identity
+   * after the await, and the caller still gets its answer — only the status update is dropped.
+   */
+  async function readDoors(): Promise<IpcResult<Door[]>> {
+    const slot = state.access
     const hostPort = endpointOf('access')?.hostPort ?? null
+    let result: IpcResult<Door[]>
     try {
-      const doors = await services.access().doors()
+      result = ipcOk(await services.access().doors())
+    } catch (err) {
+      result = { ok: false, error: toIpcError(err, { endpoint: hostPort }) }
+    }
+    if (state.access !== slot) {
+      log('access: door read finished after the endpoint changed; status left alone')
+      return result
+    }
+    slot.updatedAt = now()
+    if (result.ok) {
       slot.phase = 'connected'
       slot.error = null
-      slot.updatedAt = now()
-      return { state: 'ok', doorCount: doors.length }
-    } catch (err) {
-      const error = recordError('access', err, hostPort)
+    } else {
       slot.phase = 'error'
-      return { state: 'error', error }
+      slot.error = result.error
+      log(`access: ${result.error.kind}: ${result.error.message}`)
     }
+    return result
+  }
+
+  async function doors(): Promise<IpcResult<Door[]>> {
+    // DOOR-0, before anything else: not a request that fails, a request that never happens. The
+    // status is left alone — it already derives `disabled` from the switch.
+    if (!services.current.console.accessEnabled) {
+      log('doors: not sent (UniFi Access is disabled, DOOR-0)')
+      return ipcFail(
+        'disabled',
+        'UniFi Access is turned off, so the door list was not read. Turn on "Enable UniFi ' +
+          'Access" in Settings first (DOOR-0).',
+        { endpoint: endpointOf('access')?.hostPort ?? null },
+      )
+    }
+    // The mapped error, not the raw cause: it is the one the status just recorded, endpoint and
+    // all, so the card and the indicator say the same thing.
+    const read = await readDoors()
+    emitStatus()
+    return read
   }
 
   async function testConnection(): Promise<TestConnection> {
@@ -828,8 +889,8 @@ export function createConnectionManager(options: ConnectionManagerOptions): Conn
   }
 
   // The six that move the subscriptions go through the queue; `testConnection`, `cameras`,
-  // `snapshot` and `streamQualities` are plain requests that touch none of that state, so serializing them would only
-  // make the UI wait for a reconnect's backoff.
+  // `snapshot`, `streamQualities` and `doors` are plain requests that touch none of that state, so
+  // serializing them would only make the UI wait for a reconnect's backoff.
   return {
     status,
     cachedCameras: () => [...inventory],
@@ -840,6 +901,7 @@ export function createConnectionManager(options: ConnectionManagerOptions): Conn
     cameras: () => refreshInventory('a camera list request'),
     snapshot,
     streamQualities,
+    doors,
     credentialCleared: () => serialize(credentialCleared),
     credentialReplaced: () =>
       serialize(() => {

@@ -21,15 +21,30 @@ export function cameraDisplayName(camera: Camera): string {
 }
 
 /**
- * Display order: by display name, case-insensitively, numbers compared as numbers (`Cam 10` after
- * `Cam 2`), and **ties keep their inventory order** — `Array.prototype.sort` is stable, so two
- * cameras with the same name never swap places between renders.
+ * The one collator every list in the app sorts by: case-insensitive, numbers compared as numbers
+ * (`Cam 10` after `Cam 2`). Module-level, because building an `Intl.Collator` is not free and a
+ * list re-sorts on every render that changes it.
+ */
+const LABEL_COLLATOR = new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' })
+
+/**
+ * `items` sorted by `label(item)` with {@link LABEL_COLLATOR}. A new array; **ties keep their input
+ * order** (`Array.prototype.sort` is stable), so two items with the same label never swap places
+ * between renders. Shared by the camera list and the door-link card's doors (P5.3), so the two
+ * lists in Settings order the same way.
+ */
+export function sortByLabel<T>(items: readonly T[], label: (item: T) => string): T[] {
+  return [...items].sort((a, b) => LABEL_COLLATOR.compare(label(a), label(b)))
+}
+
+/**
+ * Display order: by display name, through {@link sortByLabel} — case-insensitively, numbers as
+ * numbers, and **ties keep their inventory order**.
  *
  * Offline cameras are deliberately *not* grouped or pushed to the end. Being offline is a state,
  * not a position: a camera that drops off for a minute would otherwise jump to the bottom and back,
  * and the row the user is watching during the G1 unplug test has to stay where it is.
  */
 export function sortCameras(cameras: readonly Camera[]): Camera[] {
-  const collator = new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' })
-  return [...cameras].sort((a, b) => collator.compare(cameraDisplayName(a), cameraDisplayName(b)))
+  return sortByLabel(cameras, cameraDisplayName)
 }

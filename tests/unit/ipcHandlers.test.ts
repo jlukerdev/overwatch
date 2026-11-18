@@ -17,7 +17,13 @@ import {
   type IpcError,
   type IpcResult,
 } from '@shared/ipc'
-import { CameraSchema, ConsoleConfigSchema, type Settings } from '@shared/models'
+import {
+  CameraSchema,
+  ConsoleConfigSchema,
+  DoorSchema,
+  type Door,
+  type Settings,
+} from '@shared/models'
 import type { StreamQuality } from '@shared/quality'
 import { streamHandle } from '@shared/streams'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
@@ -76,6 +82,18 @@ const EMPTY_STATUS = {
 }
 
 /** The error `pinning.ts` raises for a stored value that is not a fingerprint at all. */
+/** A door as the manager hands it over (already trimmed by the Access client's `toDoor`). */
+const FRONT_DOOR: Door = DoorSchema.parse({
+  id: 'door-1',
+  name: 'Front Door',
+  fullName: 'Ground Floor - Front Door',
+  floorId: 'floor-1',
+  type: 'door',
+  boundToHub: true,
+  relay: 'lock',
+  position: 'close',
+})
+
 const UNUSABLE_PIN_ERROR = new Error(
   'The stored TLS pin for 192.0.2.10:443 is not a SHA-256 fingerprint. Re-accept the certificate ' +
     'in Settings (repin) to replace it.',
@@ -175,6 +193,11 @@ function setup(options: SetupOptions = {}) {
     // QUAL-7: booleans, which is all the real manager hands back (it drops the URLs itself).
     streamQualities: vi.fn(() =>
       Promise.resolve({ high: true, medium: false, low: true, package: false }),
+    ),
+    // DOOR-1: the real manager refuses with `disabled` while Access is off; that refusal is tested
+    // in connectionManager.test.ts, and here it is injected where a test needs it.
+    doors: vi.fn((): Promise<IpcResult<Door[]>> =>
+      Promise.resolve({ ok: true, value: [FRONT_DOOR] }),
     ),
     applyConsoleChange: vi.fn((next: Config['console']) => {
       current = { ...current, console: next }
@@ -368,6 +391,27 @@ describe('request validation (CLAUDE.md)', () => {
       payload: { cameraId: '' },
       why: 'no camera id',
     },
+    { channel: IPC.listDoors.channel, payload: {}, why: 'an argument where there is none' },
+    {
+      channel: IPC.setDoorLinks.channel,
+      payload: {},
+      why: 'no links, which must not be defaulted to an empty map (it would erase every link)',
+    },
+    {
+      channel: IPC.setDoorLinks.channel,
+      payload: { links: { 'cam-1': '' } },
+      why: 'an empty door id',
+    },
+    {
+      channel: IPC.setDoorLinks.channel,
+      payload: { links: { '': 'door-1' } },
+      why: 'an empty camera id',
+    },
+    {
+      channel: IPC.setDoorLinks.channel,
+      payload: { links: { 'cam-1': 7 } },
+      why: 'a door id that is not a string',
+    },
   ]
 
   for (const { channel, payload, why } of cases) {
@@ -422,6 +466,8 @@ function payloadFor(channel: string): unknown {
       return { views: [], lastViewId: null }
     case IPC.setLastView.channel:
       return { viewId: null }
+    case IPC.setDoorLinks.channel:
+      return { links: {} }
     default:
       return undefined
   }
@@ -1035,6 +1081,111 @@ describe('cameraStreamQualities (QUAL-7)', () => {
     )
     const result = await h.call(IPC.cameraStreamQualities, { cameraId: 'cam-1' })
     expect(failure(result).kind).toBe('rate-limit')
+  })
+})
+
+describe('listDoors (DOOR-1, P5.3)', () => {
+  it("passes the manager's doors through", async () => {
+    const result = await h.call(IPC.listDoors)
+    expect(h.manager.doors).toHaveBeenCalledTimes(1)
+    expect(result).toEqual({ ok: true, value: [FRONT_DOOR] })
+  })
+
+  it("passes the manager's mapped failure through unchanged, endpoint included", async () => {
+    // The manager maps the client's error once, for the status and for this answer alike
+    // (connectionManager.test.ts covers the mapping), so the handler must not re-map it.
+    const error: IpcError = {
+      kind: 'pin-required',
+      message: 'No TLS certificate is pinned for 192.0.2.10:12445 yet.',
+      endpoint: '192.0.2.10:12445',
+      retryable: false,
+    }
+    h.manager.doors.mockResolvedValueOnce({ ok: false, error })
+    const result = await h.call(IPC.listDoors)
+    expect(failure(result)).toEqual(error)
+  })
+
+  it('answers disabled while Access is off (DOOR-0)', async () => {
+    h.manager.doors.mockResolvedValueOnce({
+      ok: false,
+      error: { kind: 'disabled', message: 'off', endpoint: null, retryable: false },
+    })
+    const result = await h.call(IPC.listDoors)
+    expect(failure(result)).toMatchObject({ kind: 'disabled', retryable: false })
+  })
+
+  it('still never throws if the manager does', async () => {
+    h.manager.doors.mockRejectedValueOnce(new Error('a bug in main'))
+    const result = await h.call(IPC.listDoors)
+    expect(failure(result)).toMatchObject({ kind: 'internal', message: 'a bug in main' })
+  })
+})
+
+describe('setDoorLinks (DOOR-2, P5.3)', () => {
+  it('replaces the whole map through the config store and answers with the new state', async () => {
+    await h.call(IPC.setDoorLinks, { links: { 'cam-1': 'door-1', 'cam-2': 'door-1' } })
+    const result = await h.call<AppState>(IPC.setDoorLinks, {
+      links: { 'cam-2': 'door-2', 'cam-gone': 'door-9' },
+    })
+    expect(h.config.update).toHaveBeenCalledTimes(2)
+    // Replaced, not merged: cam-1 is gone because the renderer left it out.
+    expect(h.disk.doorLinks).toEqual({ 'cam-2': 'door-2', 'cam-gone': 'door-9' })
+    // A camera the inventory does not have is kept: links are never pruned (DOOR-0/2).
+    expect(result.ok && result.value.settings.doorLinks).toEqual({
+      'cam-2': 'door-2',
+      'cam-gone': 'door-9',
+    })
+    expect(h.services.current.doorLinks).toEqual({ 'cam-2': 'door-2', 'cam-gone': 'door-9' })
+    // The rest of the config goes along untouched.
+    expect(h.disk.console).toMatchObject({ host: '192.0.2.10', certFingerprint: FP_A })
+  })
+
+  it('saves while Access is off and makes no Access call (DOOR-0 keeps the links)', async () => {
+    expect(h.services.current.console.accessEnabled).toBe(false)
+    const result = await h.call(IPC.setDoorLinks, { links: { 'cam-1': 'door-1' } })
+    expect(result.ok).toBe(true)
+    expect(h.manager.doors).not.toHaveBeenCalled()
+    expect(h.disk.doorLinks).toEqual({ 'cam-1': 'door-1' })
+  })
+
+  it('clears every link with an empty map', async () => {
+    await h.call(IPC.setDoorLinks, { links: { 'cam-1': 'door-1' } })
+    await h.call(IPC.setDoorLinks, { links: {} })
+    expect(h.disk.doorLinks).toEqual({})
+  })
+
+  it('does not undo a console change that lands while the save is in flight', async () => {
+    let release = (): void => undefined
+    h.config.update.mockImplementationOnce(
+      (mutate: (latest: Config) => Config) =>
+        new Promise<Config>((resolve) => {
+          release = () => {
+            resolve(ConfigSchema.parse(mutate(h.disk)))
+          }
+        }),
+    )
+    const pending = h.call<AppState>(IPC.setDoorLinks, { links: { 'cam-1': 'door-1' } })
+    await Promise.resolve()
+    h.services.current = { ...h.services.current, console: { ...h.console, host: 'udm.local' } }
+    release()
+    expect((await pending).ok).toBe(true)
+    expect(h.services.current.console.host).toBe('udm.local')
+    expect(h.services.current.doorLinks).toEqual({ 'cam-1': 'door-1' })
+  })
+
+  it('is not blocked by the perf harness, whose settingsView never touches the links', async () => {
+    const p = setup({
+      viewWritesBlocked: () => 'Views blocked',
+      streamsWritesBlocked: () => 'streams blocked',
+    })
+    const result = await p.call(IPC.setDoorLinks, { links: { 'cam-1': 'door-1' } })
+    expect(result.ok).toBe(true)
+  })
+
+  it('reports a failed save as a failure, not a throw', async () => {
+    h.config.update.mockRejectedValueOnce(new Error('disk full'))
+    const result = await h.call(IPC.setDoorLinks, { links: { 'cam-1': 'door-1' } })
+    expect(failure(result)).toMatchObject({ kind: 'internal', message: 'disk full' })
   })
 })
 

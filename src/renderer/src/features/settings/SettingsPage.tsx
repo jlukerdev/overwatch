@@ -18,11 +18,17 @@
 // at a time (both selects are disabled while it is in flight) and builds each payload from the
 // store's defaults at the moment of the change, so a quick Grid-then-Fill change cannot have the
 // second save write back the Grid value the first one replaced.
+//
+// The Door links card (DOOR-1/2, P5.3, in ./DoorLinksCard) follows the same save-on-change rule and
+// is mounted only while the **saved** Access switch is on (DOOR-0): the form's unsaved checkbox
+// reveals the token and API-root fields, but nothing that would make an Access call.
 import { useState, type JSX } from 'react'
 import type { AccessProbe, IpcError, IpcSecretKey, ProtectProbe, Settings } from '@shared/ipc'
 import { useAppStore } from '../../state/appStore'
 import { CheckIcon, PlugIcon, PulseIcon, TrashIcon, UnplugIcon } from '../../ui/icons'
 import { CertificateCard } from './CertificateCard'
+import { DoorLinksCard } from './DoorLinksCard'
+import { doorListKey } from './doorLinks'
 import { QualityOptions } from '../quality/QualityOptions'
 import {
   streamsInputFrom,
@@ -40,6 +46,7 @@ import './settings.css'
 export function SettingsPage(): JSX.Element {
   const settings = useAppStore((s) => s.settings)
   const keystoreAvailable = useAppStore((s) => s.keystoreAvailable)
+  const secretsStored = useAppStore((s) => s.secretsStored)
 
   // `settings` is null only until the first `getState()` lands, which the shell already waits for;
   // this is the type-level version of that guarantee rather than a state the user ever sees.
@@ -57,6 +64,10 @@ export function SettingsPage(): JSX.Element {
       <ConsoleCard settings={settings} keystoreAvailable={keystoreAvailable} />
       <CertificateSection accessEnabled={settings.console.accessEnabled} />
       <ConnectionCard accessEnabled={settings.console.accessEnabled} />
+      {settings.console.accessEnabled ? (
+        // Keyed on what the door list depends on, so a new endpoint, pin or token reloads it.
+        <DoorLinksCard key={doorListKey(settings, secretsStored)} links={settings.doorLinks} />
+      ) : null}
       <StreamsCard streams={settings.streams} />
     </div>
   )

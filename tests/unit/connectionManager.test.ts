@@ -619,6 +619,158 @@ describe('testConnection (CON-4)', () => {
   })
 })
 
+describe('doors (DOOR-1, P5.3)', () => {
+  const door = {
+    id: 'door-1',
+    name: 'Front Door',
+    fullName: 'Ground Floor - Front Door',
+    floorId: 'floor-1',
+    type: 'door',
+    boundToHub: true,
+    relay: 'lock' as const,
+    position: null,
+  }
+
+  it('makes no Access call at all while Access is off, and says disabled (DOOR-0)', async () => {
+    const access = vi.fn(() => h.access)
+    h.services.access = access
+    const result = await h.manager.doors()
+    expect(result).toMatchObject({ ok: false, error: { kind: 'disabled' } })
+    // Not even the client is resolved, let alone asked.
+    expect(access).not.toHaveBeenCalled()
+    expect(h.access.doors).not.toHaveBeenCalled()
+    expect(h.manager.status().access.phase).toBe('disabled')
+  })
+
+  it('answers the doors and marks Access connected, as the probe does', async () => {
+    const enabled = setup({ accessEnabled: true })
+    enabled.access.doors.mockResolvedValueOnce([door] as never)
+    await expect(enabled.manager.doors()).resolves.toEqual({ ok: true, value: [door] })
+    expect(enabled.access.doors).toHaveBeenCalledTimes(1)
+    expect(enabled.manager.status().access).toMatchObject({ phase: 'connected', error: null })
+    // The indicator learns of it at once, without waiting for an unrelated push.
+    const pushed = enabled.payloads(IPC_EVENTS.connection.channel).at(-1)
+    expect(pushed).toMatchObject({ access: { phase: 'connected' } })
+  })
+
+  it('answers the same mapped error it records in the status, endpoint included', async () => {
+    const enabled = setup({ accessEnabled: true })
+    const { AccessApiError } = await import('../../src/main/access/client')
+    enabled.access.doors.mockRejectedValueOnce(
+      new AccessApiError('GET /doors failed with HTTP 401 CODE_AUTH_FAILED.', {
+        kind: 'auth',
+        status: 401,
+      }),
+    )
+    const result = await enabled.manager.doors()
+    expect(result).toMatchObject({
+      ok: false,
+      error: { kind: 'auth', endpoint: '192.0.2.10:12445' },
+    })
+    const status = enabled.manager.status().access
+    expect(status.phase).toBe('error')
+    expect(!result.ok && result.error).toEqual(status.error)
+    const pushed = enabled.payloads(IPC_EVENTS.connection.channel).at(-1)
+    expect(pushed).toMatchObject({ access: { phase: 'error' } })
+  })
+
+  // Each failure family, mapped to the kind the door-link card gives its hint for.
+  const cases: { why: string; kind: string; err: () => Promise<unknown> }[] = [
+    {
+      why: 'an unpinned Access endpoint',
+      kind: 'pin-required',
+      err: async () => {
+        const { AccessApiError } = await import('../../src/main/access/client')
+        return new AccessApiError('pin', {
+          kind: 'pin',
+          cause: new PinRequiredError('192.0.2.10:12445'),
+        })
+      },
+    },
+    {
+      why: 'a token without the door scopes',
+      kind: 'auth',
+      err: async () => {
+        const { AccessApiError } = await import('../../src/main/access/client')
+        return new AccessApiError('GET /doors failed with HTTP 403.', { kind: 'forbidden' })
+      },
+    },
+    {
+      why: 'a console that is down',
+      kind: 'network',
+      err: async () => {
+        const { AccessApiError } = await import('../../src/main/access/client')
+        return new AccessApiError('GET /doors failed: ECONNREFUSED.', { kind: 'network' })
+      },
+    },
+  ]
+  for (const { why, kind, err } of cases) {
+    it(`maps ${why} to ${kind}`, async () => {
+      const enabled = setup({ accessEnabled: true })
+      enabled.access.doors.mockRejectedValueOnce(await err())
+      const result = await enabled.manager.doors()
+      expect(result).toMatchObject({ ok: false, error: { kind } })
+    })
+  }
+
+  it('maps an address that does not resolve to not-configured', async () => {
+    const enabled = setup({ accessEnabled: true })
+    const { ConsoleEndpointError } = await import('../../src/main/console/endpoints')
+    enabled.services.access = () => {
+      throw new ConsoleEndpointError('No console address is set yet.')
+    }
+    const result = await enabled.manager.doors()
+    expect(result).toMatchObject({ ok: false, error: { kind: 'not-configured' } })
+    expect(enabled.manager.status().access.error).toMatchObject({ kind: 'not-configured' })
+  })
+
+  it('leaves the status alone when the console changes while the read is in flight', async () => {
+    const enabled = setup({ accessEnabled: true })
+    const { AccessApiError } = await import('../../src/main/access/client')
+    let fail = (): void => undefined
+    enabled.access.doors.mockImplementationOnce(
+      () =>
+        new Promise<never[]>((_resolve, reject) => {
+          fail = () => {
+            reject(new AccessApiError('GET /doors failed with HTTP 401.', { kind: 'auth' }))
+          }
+        }),
+    )
+    const pending = enabled.manager.doors()
+    await enabled.manager.applyConsoleChange({ ...enabled.console, host: '192.0.2.20' })
+    fail()
+    // The caller still hears how its read went…
+    expect(await pending).toMatchObject({ ok: false, error: { kind: 'auth' } })
+    // …but the new console's indicator does not inherit the old one's failure.
+    expect(enabled.manager.status().access).toMatchObject({ phase: 'idle', error: null })
+  })
+
+  it('drops a stale success the same way, and so does Test connection', async () => {
+    const enabled = setup({ accessEnabled: true })
+    let answer = (): void => undefined
+    enabled.access.doors.mockImplementation(
+      () =>
+        new Promise<never[]>((resolve) => {
+          answer = () => {
+            resolve([])
+          }
+        }),
+    )
+    const pending = enabled.manager.testConnection()
+    // Let the Protect half finish so the Access read is the one in flight.
+    await flush()
+    await enabled.manager.applyConsoleChange({
+      ...enabled.console,
+      accessBaseUrl: null,
+      host: 'udm.local',
+    })
+    answer()
+    const result = await pending
+    expect(result.access).toEqual({ state: 'ok', doorCount: 0 })
+    expect(enabled.manager.status().access.phase).toBe('idle')
+  })
+})
+
 describe('snapshot (CAM-3, R11)', () => {
   beforeEach(async () => {
     h = setup({

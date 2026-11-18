@@ -133,6 +133,9 @@ function fakeBridge(overrides: Partial<ViewProtectApi> = {}): FakeBridge {
     // P3.7 (QUAL-1/7).
     setStreams: unimplemented('setStreams'),
     cameraStreamQualities: unimplemented('cameraStreamQualities'),
+    // P5.3 (DOOR-1/2).
+    listDoors: unimplemented('listDoors'),
+    setDoorLinks: unimplemented('setDoorLinks'),
     onConnection: (listener) => subscribeTo(connectionListeners, listener),
     onCameras: (listener) => subscribeTo(cameraListeners, listener),
     onCameraState: (listener) => subscribeTo(stateListeners, listener),
@@ -398,6 +401,49 @@ describe('mutating actions', () => {
     expect(result.ok).toBe(true)
     expect(setStreams).toHaveBeenCalledWith(streams)
     expect(useAppStore.getState().settings?.streams).toEqual(streams)
+  })
+
+  it('folds the saved door links in (DOOR-2)', async () => {
+    const links = { 'cam-1': 'door-1' }
+    const setDoorLinks = vi.fn<ViewProtectApi['setDoorLinks']>(() =>
+      Promise.resolve<IpcResult<AppState>>({
+        ok: true,
+        value: appState({ settings: { ...appState().settings, doorLinks: links } }),
+      }),
+    )
+    fakeBridge({ setDoorLinks })
+
+    const result = await useAppStore.getState().setDoorLinks({ links })
+
+    expect(result.ok).toBe(true)
+    expect(setDoorLinks).toHaveBeenCalledWith({ links })
+    expect(useAppStore.getState().settings?.doorLinks).toEqual(links)
+  })
+
+  it('reads the doors and keeps them out of the store (DOOR-1)', async () => {
+    const doors = [
+      {
+        id: 'door-1',
+        name: 'Front Door',
+        fullName: 'Ground Floor - Front Door',
+        floorId: 'floor-1',
+        type: 'door',
+        boundToHub: true,
+        relay: 'lock' as const,
+        position: null,
+      },
+    ]
+    const listDoors = vi.fn<ViewProtectApi['listDoors']>(() =>
+      Promise.resolve({ ok: true, value: doors }),
+    )
+    fakeBridge({ listDoors })
+    const before = useAppStore.getState()
+
+    const result = await useAppStore.getState().listDoors()
+
+    expect(listDoors).toHaveBeenCalledTimes(1)
+    expect(result).toEqual({ ok: true, value: doors })
+    expect(useAppStore.getState()).toBe(before)
   })
 
   it('asks for one camera’s RTSPS qualities and keeps them out of the store (QUAL-7)', async () => {

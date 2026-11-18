@@ -24,6 +24,7 @@ import {
   type CameraEvent,
   type CameraStateChange,
   type ConnectionStatus,
+  type Door,
   type IpcResult,
   type PinCheck,
   type RtspsAvailability,
@@ -128,6 +129,8 @@ const impl: ViewProtectApi = {
   setStreams: (input): Promise<IpcResult<AppState>> => call(IPC.setStreams, input),
   cameraStreamQualities: (input): Promise<IpcResult<RtspsAvailability>> =>
     call(IPC.cameraStreamQualities, input),
+  listDoors: (): Promise<IpcResult<Door[]>> => call(IPC.listDoors, undefined),
+  setDoorLinks: (input): Promise<IpcResult<AppState>> => call(IPC.setDoorLinks, input),
 
   onConnection: (listener: (status: ConnectionStatus) => void): Unsubscribe =>
     subscribe(IPC_EVENTS.connection, listener),

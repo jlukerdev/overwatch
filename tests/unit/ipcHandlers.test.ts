@@ -23,6 +23,7 @@ import {
   ConsoleConfigSchema,
   DoorSchema,
   type Door,
+  type DoorStates,
   type Settings,
 } from '@shared/models'
 import type { StreamQuality } from '@shared/quality'
@@ -212,6 +213,13 @@ function setup(options: SetupOptions = {}) {
         },
       }),
     ),
+    // DOOR-6: the real manager's conditions (DOOR-0, token, links) are tested in
+    // connectionManager.test.ts; here it answers one known door unless a test injects otherwise.
+    watchDoors: vi.fn<(watching: boolean) => IpcResult<DoorStates>>(() => ({
+      ok: true,
+      value: { 'door-1': { relay: 'lock', position: null } },
+    })),
+    accessInputsChanged: vi.fn<(reason: string) => void>(),
     applyConsoleChange: vi.fn((next: Config['console']) => {
       current = { ...current, console: next }
       return Promise.resolve()
@@ -404,6 +412,12 @@ describe('request validation (CLAUDE.md)', () => {
       why: 'no camera id',
     },
     { channel: IPC.listDoors.channel, payload: {}, why: 'an argument where there is none' },
+    { channel: IPC.watchDoors.channel, payload: undefined, why: 'no payload' },
+    {
+      channel: IPC.watchDoors.channel,
+      payload: { watching: 'yes' },
+      why: 'a flag that is no boolean',
+    },
     {
       channel: IPC.setDoorLinks.channel,
       payload: {},
@@ -482,6 +496,8 @@ function payloadFor(channel: string): unknown {
       return { links: {} }
     case IPC.unlockDoor.channel:
       return { cameraRef: 'cam-1' }
+    case IPC.watchDoors.channel:
+      return { watching: true }
     default:
       return undefined
   }
@@ -1166,6 +1182,90 @@ describe('unlockDoor (DOOR-3/4/5, P5.4)', () => {
     const result = await h.call(IPC.unlockDoor, { cameraRef: 'cam-1' })
     expect(failure(result)).toMatchObject({ kind: 'internal', message: 'a bug in main' })
     expect(h.manager.unlockDoor).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('watchDoors (DOOR-6, P5.5)', () => {
+  it('passes the flag to the manager and its states back', async () => {
+    const result = await h.call(IPC.watchDoors, { watching: true })
+    expect(h.manager.watchDoors).toHaveBeenCalledExactlyOnceWith(true)
+    expect(result).toEqual({ ok: true, value: { 'door-1': { relay: 'lock', position: null } } })
+    h.manager.watchDoors.mockReturnValueOnce({ ok: true, value: {} })
+    expect(await h.call(IPC.watchDoors, { watching: false })).toEqual({ ok: true, value: {} })
+    expect(h.manager.watchDoors).toHaveBeenLastCalledWith(false)
+  })
+
+  it('takes no door id from the renderer: an unknown key is not passed on', async () => {
+    await h.call(IPC.watchDoors, { watching: true, doorIds: ['door-9'] })
+    expect(h.manager.watchDoors).toHaveBeenCalledExactlyOnceWith(true)
+  })
+
+  it('is allowed during a perf run: it changes no config', async () => {
+    const perf = setup({
+      viewWritesBlocked: () => 'Views cannot be changed during a perf run.',
+      streamsWritesBlocked: () => 'Stream quality defaults cannot be changed during a perf run.',
+    })
+    const result = await perf.call(IPC.watchDoors, { watching: true })
+    expect(result.ok).toBe(true)
+    expect(perf.manager.watchDoors).toHaveBeenCalledTimes(1)
+    expect(perf.config.update).not.toHaveBeenCalled()
+  })
+
+  it('still never throws if the manager does', async () => {
+    h.manager.watchDoors.mockImplementationOnce(() => {
+      throw new Error('a bug in main')
+    })
+    const result = await h.call(IPC.watchDoors, { watching: true })
+    expect(failure(result)).toMatchObject({ kind: 'internal', message: 'a bug in main' })
+  })
+})
+
+describe('telling the door-state monitor what changed (DOOR-6, P5.5)', () => {
+  it('after the Access token is saved, and not after the Protect key', async () => {
+    await h.call(IPC.setSecret, { key: 'protectApiKey', value: 'another-key' })
+    expect(h.manager.accessInputsChanged).not.toHaveBeenCalled()
+    await h.call(IPC.setSecret, { key: 'accessToken', value: 'a-token' })
+    expect(h.manager.accessInputsChanged).toHaveBeenCalledTimes(1)
+    // By then the token is where the manager reads it.
+    expect(h.services.credentials.accessToken).toBe('a-token')
+  })
+
+  it('after the Access token is cleared, once it is gone from memory', async () => {
+    h.services.credentials.accessToken = 'a-token'
+    let heldAtCall: string | undefined = 'not called'
+    h.manager.accessInputsChanged.mockImplementationOnce(() => {
+      heldAtCall = h.services.credentials.accessToken
+    })
+    await h.call(IPC.clearSecret, { key: 'accessToken' })
+    expect(h.manager.accessInputsChanged).toHaveBeenCalledTimes(1)
+    expect(heldAtCall).toBeUndefined()
+    await h.call(IPC.clearSecret, { key: 'protectApiKey' })
+    expect(h.manager.accessInputsChanged).toHaveBeenCalledTimes(1)
+  })
+
+  it('after a certificate is accepted or re-accepted, and not when either is refused', async () => {
+    await h.call(IPC.acceptCertificate, { endpoint: 'protect', fingerprint256: FP_B })
+    await h.call(IPC.repinCertificate, { endpoint: 'protect', fingerprint256: FP_B })
+    expect(h.pins.acceptPin).not.toHaveBeenCalled()
+    expect(h.pins.repin).not.toHaveBeenCalled()
+    expect(h.manager.accessInputsChanged).not.toHaveBeenCalled()
+
+    await h.call(IPC.acceptCertificate, { endpoint: 'protect', fingerprint256: FP_A })
+    expect(h.pins.acceptPin).toHaveBeenCalledTimes(1)
+    expect(h.manager.accessInputsChanged).toHaveBeenCalledTimes(1)
+    await h.call(IPC.repinCertificate, { endpoint: 'protect', fingerprint256: FP_A })
+    expect(h.pins.repin).toHaveBeenCalledTimes(1)
+    expect(h.manager.accessInputsChanged).toHaveBeenCalledTimes(2)
+  })
+
+  it('after the door links are saved, once they are the live config', async () => {
+    let linksAtCall: unknown = null
+    h.manager.accessInputsChanged.mockImplementationOnce(() => {
+      linksAtCall = h.services.current.doorLinks
+    })
+    await h.call(IPC.setDoorLinks, { links: { 'cam-1': 'door-1' } })
+    expect(h.manager.accessInputsChanged).toHaveBeenCalledTimes(1)
+    expect(linksAtCall).toEqual({ 'cam-1': 'door-1' })
   })
 })
 

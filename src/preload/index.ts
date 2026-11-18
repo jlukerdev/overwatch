@@ -25,6 +25,7 @@ import {
   type CameraStateChange,
   type ConnectionStatus,
   type Door,
+  type DoorStates,
   type IpcResult,
   type PinCheck,
   type RtspsAvailability,
@@ -132,6 +133,7 @@ const impl: ViewProtectApi = {
   listDoors: (): Promise<IpcResult<Door[]>> => call(IPC.listDoors, undefined),
   setDoorLinks: (input): Promise<IpcResult<AppState>> => call(IPC.setDoorLinks, input),
   unlockDoor: (input): Promise<IpcResult<UnlockResult>> => call(IPC.unlockDoor, input),
+  watchDoors: (input): Promise<IpcResult<DoorStates>> => call(IPC.watchDoors, input),
 
   onConnection: (listener: (status: ConnectionStatus) => void): Unsubscribe =>
     subscribe(IPC_EVENTS.connection, listener),
@@ -146,6 +148,9 @@ const impl: ViewProtectApi = {
   // to a port that is not go2rtc's (P2.2, SPEC §5.3 "Renderer isolation").
   onStreamRuntime: (listener: (runtime: StreamRuntime) => void): Unsubscribe =>
     subscribe(IPC_EVENTS.streamRuntime, listener),
+  // DOOR-6: validated like the rest, so a malformed map never colours an unlock button.
+  onDoorStates: (listener: (states: DoorStates) => void): Unsubscribe =>
+    subscribe(IPC_EVENTS.doorStates, listener),
 }
 
 contextBridge.exposeInMainWorld(BRIDGE_KEY, Object.freeze(impl))

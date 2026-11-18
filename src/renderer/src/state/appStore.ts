@@ -10,6 +10,7 @@
 // failure next to the control the user just used without reading an error out of global state.
 import { create } from 'zustand'
 import {
+  ipcFail,
   type AcceptCertInput,
   type AppState,
   type Camera,
@@ -17,6 +18,7 @@ import {
   type ConnectionStatus,
   type ConsoleInput,
   type Door,
+  type DoorStates,
   type IpcError,
   type IpcResult,
   type PinCheck,
@@ -50,11 +52,17 @@ export interface AppStoreState {
   secretsStored: SecretsStored
   connection: ConnectionStatus | null
   cameras: Camera[]
+  /**
+   * DOOR-6: the lock state of the linked doors main currently knows, by Access door id. A linked
+   * door that is missing is **unknown** and is drawn neutral (features/door/doorState.ts). Always
+   * `{}` while the Live screen is not watching ({@link AppStoreState.watchDoors}).
+   */
+  doorStates: DoorStates
 
   /** Load (or reload) everything. Safe to call again; the UI calls it once on mount. */
   load: () => Promise<void>
   /**
-   * Subscribes to main's pushes (status, inventory, camera state). Returns the unsubscribe, so the
+   * Subscribes to main's pushes (status, inventory, camera state, door states). Returns the unsubscribe, so the
    * caller is an effect in the app shell — not every screen, or a reconnect would fan out.
    */
   subscribe: () => () => void
@@ -98,9 +106,22 @@ export interface AppStoreState {
    * `connection` push.
    */
   unlockDoor: (input: UnlockDoorInput) => Promise<IpcResult<UnlockResult>>
+  /**
+   * DOOR-6: tell main whether the Live screen is showing at least one unlock control
+   * (features/door/useDoorWatch.ts is the only caller). `true` starts main's door monitor and folds
+   * what it knows now into `doorStates`; later changes arrive as `doorStates` pushes. `false` stops
+   * it. `doorStates` is emptied at once when stopping and when a call fails, and pushes are dropped
+   * while not watching, so a stale "unlocked" can never stay on screen. Only the **latest** call's
+   * answer is folded in: a `true` answered after a later `false` changes nothing. A read only: it
+   * never unlocks anything (DOOR-4).
+   */
+  watchDoors: (watching: boolean) => Promise<IpcResult<DoorStates>>
 }
 
 const NO_SECRETS: SecretsStored = { protectApiKey: false, accessToken: false }
+
+/** One object for "no door state known", so emptying an empty map re-renders nothing. */
+const NO_DOOR_STATES: DoorStates = {}
 
 /**
  * The bridge, read per call rather than captured at module load. That is not a style choice: this
@@ -122,6 +143,13 @@ export const useAppStore = create<AppStoreState>()((set, get) => {
    */
   let pushes = 0
 
+  // DOOR-6 (`watchDoors`). `doorWatching` is what the Live screen last asked for; `doorWatchCalls`
+  // numbers the calls, so only the latest one's answer counts; `doorPushes` counts the pushes
+  // applied, so an answer that a push overtook (the push is newer) does not undo it.
+  let doorWatching = false
+  let doorWatchCalls = 0
+  let doorPushes = 0
+
   /** Folds a mutating call's `AppState` into the store and passes the result through unchanged. */
   const fold = (result: IpcResult<AppState>): IpcResult<AppState> => {
     if (result.ok) set(fromAppState(result.value))
@@ -137,6 +165,7 @@ export const useAppStore = create<AppStoreState>()((set, get) => {
     secretsStored: NO_SECRETS,
     connection: null,
     cameras: [],
+    doorStates: NO_DOOR_STATES,
 
     load: async () => {
       const before = pushes
@@ -177,10 +206,19 @@ export const useAppStore = create<AppStoreState>()((set, get) => {
         pushes += 1
         set({ cameras: applyCameraState(get().cameras, change) })
       })
+      // DOOR-6: always the whole map, so it replaces ours. Not counted in `pushes`: door states
+      // are not part of the `AppState` snapshot `load()` protects. Dropped while not watching: a
+      // push main sent before it handled our stop must not bring a state back.
+      const offDoorStates = bridge().onDoorStates((doorStates: DoorStates) => {
+        if (!doorWatching) return
+        doorPushes += 1
+        set({ doorStates })
+      })
       return () => {
         offConnection()
         offCameras()
         offCameraState()
+        offDoorStates()
       }
     },
 
@@ -213,6 +251,28 @@ export const useAppStore = create<AppStoreState>()((set, get) => {
     listDoors: async () => bridge().listDoors(),
     setDoorLinks: async (input) => fold(await bridge().setDoorLinks(input)),
     unlockDoor: async (input) => bridge().unlockDoor(input),
+
+    watchDoors: async (watching) => {
+      doorWatchCalls += 1
+      const call = doorWatchCalls
+      const pushesBefore = doorPushes
+      doorWatching = watching
+      // Stopping: nothing is known from here on, whatever main answers and whenever.
+      if (!watching) set({ doorStates: NO_DOOR_STATES })
+      let result: IpcResult<DoorStates>
+      try {
+        result = await bridge().watchDoors({ watching })
+      } catch {
+        // The bridge itself failed (not an `IpcResult`): the same as a failed call.
+        result = ipcFail('internal', 'The app could not ask for the door states.')
+      }
+      // A later call owns the map now.
+      if (call !== doorWatchCalls) return result
+      if (!watching || !result.ok) set({ doorStates: NO_DOOR_STATES })
+      // A push that landed while the call was out is newer than its answer.
+      else if (doorPushes === pushesBefore) set({ doorStates: result.value })
+      return result
+    },
   }
 })
 

@@ -1,0 +1,18 @@
+{
+  "_source": "mock",
+  "request": {
+    "method": "PUT",
+    "path": "/doors/{id}/lock_rule",
+    "id": "door-001",
+    "body": {
+      "type": "custom",
+      "interval": 60
+    }
+  },
+  "status": 200,
+  "response": {
+    "code": "SUCCESS",
+    "msg": "success",
+    "data": "success"
+  }
+}

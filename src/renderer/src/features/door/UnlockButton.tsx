@@ -1,6 +1,7 @@
-// A cell's door unlock control (P5.4; DOOR-0, DOOR-2, DOOR-3, DOOR-4, CELL-3/4), drawn in the
-// overlay's bottom slot (CellOverlay `bottom`) by `<Cell>`, in the grid and in fill. Thin on purpose:
-// the hold is ./unlockHold's reducer and when it shows is ./doorLink's rule, both pure and tested.
+// A cell's door unlock control (P5.4, P5.5; DOOR-0, DOOR-2, DOOR-3, DOOR-4, DOOR-6, CELL-3/4), drawn
+// in the overlay's bottom slot (CellOverlay `bottom`) by `<Cell>`, in the grid and in fill. Thin on
+// purpose: the hold is ./unlockHold's reducer, when it shows is ./doorLink's rule and what it shows
+// of the door is ./doorState's, all pure and tested.
 //
 // **Press and hold for 1 s, pointer only** (user decision 2026-11-18). A mouse, touch or pen press
 // of the primary button starts a hold; a fill grows over `HOLD_MS` (CSS, started by `data-phase`,
@@ -8,7 +9,8 @@
 // the one unlock when it fires. Releasing, leaving the button, `pointercancel` or the window losing
 // focus before then cancels. The button has **no click or key handler**: Space, Enter or a synthetic
 // click do nothing, so no keyboard shortcut can ever unlock (DOOR-4). It is still focusable, so its
-// name and tooltip ("Hold to unlock the door") are reachable.
+// name and tooltip ("Hold to unlock the door") are reachable. The press-and-hold is the only thing
+// that sends an unlock: the door's pushed state (below) changes the look and nothing else.
 //
 // Touch pointers are implicitly captured by the element they press; that capture is released at
 // the press so `pointerleave` fires when a finger slides off, like a mouse. The long-press context
@@ -23,8 +25,15 @@
 // to read it from) and carries main's safe message. Nothing is retried. The toast is shown even if
 // the cell has gone meanwhile; only the button's own state and timers are skipped then.
 //
-// **Unlocked.** After a confirmed success the button shows the open door in green for
-// `UNLOCKED_SHOWN_MS`, then the neutral closed door again; an unknown outcome stays neutral. That is a stand-in until P5.5 reads the door's real state.
+// **The door's state (P5.5, DOOR-6).** The look is the linked door's real lock state, which main
+// watches and pushes (`doorStates` in the app store; the Live wall's `useDoorWatch` asks for it):
+// the open door in green while the door is unlocked — by this app, a card, the Access app or a
+// schedule — and the neutral closed door otherwise. Neutral means **locked or not known**: a door
+// main has no state for yet (or cannot read) looks like a locked one and is never green. The look
+// is `data-door`, separate from the hold's `data-phase`, so a hold on an already unlocked door
+// shows both; such a hold sends another unlock like any other. After this app's own unlock the
+// button goes back to idle and turns green when main's push says so (main re-reads the door right
+// after an unlock); an unknown outcome or a failure changes nothing here.
 //
 // **When it is drawn.** Only while Access is saved as on, the camera (or, for a package-channel
 // cell, its doorbell) has a door link, the camera is connected, and the cell's player is showing
@@ -52,11 +61,11 @@ import { showToast } from '../../state/toastStore'
 import { DoorIcon, DoorOpenIcon } from '../../ui/icons'
 import { parseCameraRef } from '@shared/cameraRef'
 import { doorForCell, unlockAvailable } from './doorLink'
+import { doorLook, unlockLabel, unlockRestTitle } from './doorState'
 import {
   HOLD_MS,
   INITIAL_UNLOCK_HOLD,
   reduceUnlockHold,
-  UNLOCKED_SHOWN_MS,
   unlockFailureMessage,
   unlockResultEvent,
   unlockSuccessMessage,
@@ -78,11 +87,10 @@ export interface UnlockButtonProps {
 /** The hold's length, for the CSS fill (door.css), so the two never drift apart. */
 const HOLD_STYLE = { '--unlock-hold-ms': `${String(HOLD_MS)}ms` } as CSSProperties
 
-const TITLES: Readonly<Record<UnlockHoldState['phase'], string>> = {
-  idle: 'Hold to unlock the door',
+/** The tooltip during a hold or a request; at rest it is the door state's (`unlockRestTitle`). */
+const BUSY_TITLES: Readonly<Record<Exclude<UnlockHoldState['phase'], 'idle'>, string>> = {
   holding: 'Keep holding to unlock the door',
   requesting: 'Unlocking the door…',
-  unlocked: 'Door unlocked. Hold to unlock it again',
 }
 
 export function UnlockButton({
@@ -98,12 +106,13 @@ export function UnlockButton({
     return camera !== undefined && isCameraOnline(camera.state)
   })
   const unlockDoor = useAppStore((s) => s.unlockDoor)
+  // DOOR-6: a string, so only a change of this door's look re-renders the button.
+  const look = useAppStore((s) => doorLook(doorId, s.doorStates))
   const available = unlockAvailable({ doorId, connected, streaming })
 
   const [state, setState] = useState<UnlockHoldState>(INITIAL_UNLOCK_HOLD)
   const stateRef = useRef<UnlockHoldState>(INITIAL_UNLOCK_HOLD)
   const holdTimerRef = useRef<number | null>(null)
-  const shownTimerRef = useRef<number | null>(null)
   const mountedRef = useRef(true)
   // What the request needs at the moment it is sent, without making `dispatch` depend on it.
   const requestRef = useRef({ cameraRef, cameraName, unlockDoor })
@@ -129,10 +138,6 @@ export function UnlockButton({
         window.clearTimeout(holdTimerRef.current)
         holdTimerRef.current = null
       }
-      if (previous.phase === 'unlocked' && shownTimerRef.current !== null) {
-        window.clearTimeout(shownTimerRef.current)
-        shownTimerRef.current = null
-      }
 
       if (next.phase === 'holding') {
         const pointerId = next.pointerId
@@ -140,11 +145,6 @@ export function UnlockButton({
           holdTimerRef.current = null
           step({ type: 'holdElapsed', pointerId })
         }, HOLD_MS)
-      } else if (next.phase === 'unlocked') {
-        shownTimerRef.current = window.setTimeout(() => {
-          shownTimerRef.current = null
-          step({ type: 'shownElapsed' })
-        }, UNLOCKED_SHOWN_MS)
       } else if (next.phase === 'requesting') {
         // Exactly one request per completed hold (unlockHold.ts); never retried.
         const request = requestRef.current
@@ -184,9 +184,7 @@ export function UnlockButton({
     return () => {
       mountedRef.current = false
       if (holdTimerRef.current !== null) window.clearTimeout(holdTimerRef.current)
-      if (shownTimerRef.current !== null) window.clearTimeout(shownTimerRef.current)
       holdTimerRef.current = null
-      shownTimerRef.current = null
     }
   }, [])
 
@@ -225,17 +223,17 @@ export function UnlockButton({
   if (!available && state.phase !== 'requesting') return null
 
   const busy = state.phase === 'requesting'
-  const unlocked = state.phase === 'unlocked'
   return (
     <button
       type="button"
       className="unlockButton"
       style={HOLD_STYLE}
-      aria-label="Unlock door"
-      title={TITLES[state.phase]}
+      aria-label={unlockLabel(look)}
+      title={state.phase === 'idle' ? unlockRestTitle(look) : BUSY_TITLES[state.phase]}
       aria-busy={busy ? true : undefined}
       aria-disabled={busy ? true : undefined}
       data-phase={state.phase}
+      data-door={look}
       onPointerDown={onPointerDown}
       onPointerUp={onPointerEnd}
       onPointerLeave={onPointerEnd}
@@ -248,7 +246,7 @@ export function UnlockButton({
       <span className="unlockButton__fill" aria-hidden="true" />
       {busy ? (
         <span className="spinner unlockButton__spinner" aria-hidden="true" />
-      ) : unlocked ? (
+      ) : look === 'unlocked' ? (
         <DoorOpenIcon className="unlockButton__icon" />
       ) : (
         <DoorIcon className="unlockButton__icon" />

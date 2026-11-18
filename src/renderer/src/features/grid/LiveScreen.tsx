@@ -58,6 +58,7 @@ import {
   PlusIcon,
 } from '../../ui/icons'
 import { overlayAutoHideMs } from '../cells/overlayVisibility'
+import { useDoorWatch } from '../door/useDoorWatch'
 import { ConnectionAlerts } from '../status/ConnectionBadge'
 import { SetupChecklist } from '../../ui/SetupChecklist'
 import { StatusLine } from '../../ui/StatusLine'
@@ -114,6 +115,8 @@ function LiveWall({
 }: LiveWallProps): JSX.Element {
   const views = useViews()
   const activeView = useActiveView()
+  // DOOR-6: main watches the linked doors only while this wall shows a View with a linked camera.
+  useDoorWatch(activeView)
   const autoHideMs = useAppStore((s) => overlayAutoHideMs(s.settings?.ui.overlayAutoHideSec))
   const [exitRevealed, revealExit] = useIdleReveal(autoHideMs)
 

@@ -1,0 +1,26 @@
+{
+  "_source": "reference",
+  "frame": {
+    "event": "access.data.device.remote_unlock",
+    "receiver_id": "",
+    "event_object_id": "hub-001",
+    "save_to_history": false,
+    "data": {
+      "unique_id": "door-001",
+      "name": "Door 236b",
+      "up_id": "uuid-001",
+      "timezone": "",
+      "location_type": "door",
+      "extra_type": "",
+      "full_name": "UDR-ML - 1F - Door 236b",
+      "level": 0,
+      "work_time": "[]",
+      "work_time_id": "",
+      "extras": {
+        "uah-input_state_dps": "off",
+        "uah-wiring_state_dps-neg": "off",
+        "uah-wiring_state_dps-pos": "off"
+      }
+    }
+  }
+}

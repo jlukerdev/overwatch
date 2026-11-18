@@ -15,6 +15,7 @@ import {
   type Camera,
   type CameraStateChange,
   type ConnectionStatus,
+  type DoorStates,
   type IpcResult,
   type StreamRuntime,
   type ViewProtectApi,
@@ -89,6 +90,7 @@ interface FakeBridge {
   pushConnection: (status: ConnectionStatus) => void
   pushCameras: (cameras: Camera[]) => void
   pushCameraState: (change: CameraStateChange) => void
+  pushDoorStates: (states: DoorStates) => void
   offCalls: () => number
 }
 
@@ -97,6 +99,7 @@ function fakeBridge(overrides: Partial<ViewProtectApi> = {}): FakeBridge {
   const cameraListeners = new Set<Listener<Camera[]>>()
   const stateListeners = new Set<Listener<CameraStateChange>>()
   const runtimeListeners = new Set<Listener<StreamRuntime>>()
+  const doorStateListeners = new Set<Listener<DoorStates>>()
   let offs = 0
 
   const subscribeTo = <T>(set: Set<Listener<T>>, listener: Listener<T>): (() => void) => {
@@ -136,10 +139,13 @@ function fakeBridge(overrides: Partial<ViewProtectApi> = {}): FakeBridge {
     listDoors: unimplemented('listDoors'),
     setDoorLinks: unimplemented('setDoorLinks'),
     unlockDoor: unimplemented('unlockDoor'),
+    // P5.5 (DOOR-6).
+    watchDoors: unimplemented('watchDoors'),
     onConnection: (listener) => subscribeTo(connectionListeners, listener),
     onCameras: (listener) => subscribeTo(cameraListeners, listener),
     onCameraState: (listener) => subscribeTo(stateListeners, listener),
     onStreamRuntime: (listener) => subscribeTo(runtimeListeners, listener),
+    onDoorStates: (listener) => subscribeTo(doorStateListeners, listener),
     // P4.2 (CELL-2): the event bus's source (state/eventBus.ts), not the store's; never pushed here.
     onCameraEvent: () => () => undefined,
     ...overrides,
@@ -161,6 +167,9 @@ function fakeBridge(overrides: Partial<ViewProtectApi> = {}): FakeBridge {
     },
     pushCameraState: (change) => {
       for (const listener of stateListeners) listener(change)
+    },
+    pushDoorStates: (states) => {
+      for (const listener of doorStateListeners) listener(states)
     },
     offCalls: () => offs,
   }
@@ -241,7 +250,7 @@ describe('load', () => {
 })
 
 describe('pushes from main', () => {
-  it('updates the status, replaces the inventory, and unsubscribes all three', () => {
+  it('updates the status, replaces the inventory, and unsubscribes all four', () => {
     const bridge = fakeBridge()
     const unsubscribe = useAppStore.getState().subscribe()
 
@@ -256,7 +265,7 @@ describe('pushes from main', () => {
     expect(useAppStore.getState().cameras.map((c) => c.id)).toEqual(['cam-1', 'cam-2'])
 
     unsubscribe()
-    expect(bridge.offCalls()).toBe(3)
+    expect(bridge.offCalls()).toBe(4)
     // After unsubscribing, a late push must not reach the store.
     bridge.pushCameras([])
     expect(useAppStore.getState().cameras).toHaveLength(2)
@@ -484,5 +493,198 @@ describe('mutating actions', () => {
     expect(cameraStreamQualities).toHaveBeenCalledWith({ cameraId: 'cam-1' })
     expect(result).toEqual({ ok: true, value: available })
     expect(useAppStore.getState()).toBe(before)
+  })
+})
+
+describe('door states (DOOR-6)', () => {
+  const UNLOCKED: DoorStates = { 'door-1': { relay: 'unlock', position: 'close' } }
+  const LOCKED: DoorStates = { 'door-1': { relay: 'lock', position: 'close' } }
+  const ok = (value: DoorStates): Promise<IpcResult<DoorStates>> =>
+    Promise.resolve({ ok: true, value })
+
+  /** A `watchDoors` whose answers the test hands out itself, in whatever order it likes. */
+  function deferredWatch(): {
+    watchDoors: ReturnType<typeof vi.fn<ViewProtectApi['watchDoors']>>
+    answer: (call: number, result: IpcResult<DoorStates>) => void
+  } {
+    const resolvers: ((result: IpcResult<DoorStates>) => void)[] = []
+    const watchDoors = vi.fn<ViewProtectApi['watchDoors']>(
+      () =>
+        new Promise<IpcResult<DoorStates>>((resolve) => {
+          resolvers.push(resolve)
+        }),
+    )
+    return {
+      watchDoors,
+      answer: (call, result) => {
+        resolvers[call]?.(result)
+      },
+    }
+  }
+
+  // The store's watch bookkeeping outlives `setState(initial)`: leave every test not watching.
+  beforeEach(async () => {
+    fakeBridge({ watchDoors: () => ok({}) })
+    await useAppStore.getState().watchDoors(false)
+  })
+
+  it('starts with no door state known', () => {
+    expect(useAppStore.getState().doorStates).toEqual({})
+  })
+
+  it('folds what main knows now when the watch starts', async () => {
+    const watchDoors = vi.fn<ViewProtectApi['watchDoors']>(() => ok(UNLOCKED))
+    fakeBridge({ watchDoors })
+
+    const result = await useAppStore.getState().watchDoors(true)
+
+    expect(watchDoors).toHaveBeenCalledExactlyOnceWith({ watching: true })
+    expect(result).toEqual({ ok: true, value: UNLOCKED })
+    expect(useAppStore.getState().doorStates).toEqual(UNLOCKED)
+  })
+
+  it('replaces the map wholesale on a push: a door that is gone from it is unknown again', async () => {
+    const bridge = fakeBridge({
+      watchDoors: () => ok({ ...UNLOCKED, 'door-2': { relay: 'lock', position: null } }),
+    })
+    const unsubscribe = useAppStore.getState().subscribe()
+    await useAppStore.getState().watchDoors(true)
+
+    bridge.pushDoorStates(LOCKED)
+    expect(useAppStore.getState().doorStates).toEqual(LOCKED)
+
+    bridge.pushDoorStates({})
+    expect(useAppStore.getState().doorStates).toEqual({})
+    unsubscribe()
+  })
+
+  it('empties the map when the watch stops, before main has answered', async () => {
+    const { watchDoors, answer } = deferredWatch()
+    fakeBridge({ watchDoors })
+    useAppStore.setState({ doorStates: UNLOCKED })
+
+    const stopping = useAppStore.getState().watchDoors(false)
+    expect(useAppStore.getState().doorStates).toEqual({})
+
+    // Whatever main answers to a stop, nothing is known.
+    answer(0, { ok: true, value: UNLOCKED })
+    await stopping
+    expect(watchDoors).toHaveBeenCalledExactlyOnceWith({ watching: false })
+    expect(useAppStore.getState().doorStates).toEqual({})
+  })
+
+  it('empties the map when the call fails', async () => {
+    fakeBridge({
+      watchDoors: () =>
+        Promise.resolve({
+          ok: false,
+          error: { kind: 'internal', message: 'No.', endpoint: null, retryable: false },
+        }),
+    })
+    useAppStore.setState({ doorStates: UNLOCKED })
+
+    const result = await useAppStore.getState().watchDoors(true)
+
+    expect(result.ok).toBe(false)
+    expect(useAppStore.getState().doorStates).toEqual({})
+  })
+
+  it('treats a bridge that throws as a failed call, not an unhandled rejection', async () => {
+    fakeBridge({ watchDoors: () => Promise.reject(new Error('no such channel')) })
+    useAppStore.setState({ doorStates: UNLOCKED })
+
+    const result = await useAppStore.getState().watchDoors(true)
+
+    expect(result.ok).toBe(false)
+    if (!result.ok) expect(result.error.message).not.toContain('no such channel')
+    expect(useAppStore.getState().doorStates).toEqual({})
+  })
+
+  it('ignores a start answered after a later stop (out of order)', async () => {
+    const { watchDoors, answer } = deferredWatch()
+    fakeBridge({ watchDoors })
+
+    const starting = useAppStore.getState().watchDoors(true)
+    const stopping = useAppStore.getState().watchDoors(false)
+    answer(1, { ok: true, value: {} })
+    await stopping
+    answer(0, { ok: true, value: UNLOCKED })
+    await starting
+
+    expect(useAppStore.getState().doorStates).toEqual({})
+  })
+
+  it('takes only the latest start: true, false, true (StrictMode) ends on the last answer', async () => {
+    const { watchDoors, answer } = deferredWatch()
+    fakeBridge({ watchDoors })
+
+    const first = useAppStore.getState().watchDoors(true)
+    const stop = useAppStore.getState().watchDoors(false)
+    const second = useAppStore.getState().watchDoors(true)
+    answer(2, { ok: true, value: LOCKED })
+    answer(1, { ok: true, value: {} })
+    answer(0, { ok: true, value: UNLOCKED })
+    await Promise.all([first, stop, second])
+
+    expect(watchDoors.mock.calls.map(([input]) => input.watching)).toEqual([true, false, true])
+    expect(useAppStore.getState().doorStates).toEqual(LOCKED)
+  })
+
+  it('a failed earlier call does not empty what a later one folded', async () => {
+    const { watchDoors, answer } = deferredWatch()
+    fakeBridge({ watchDoors })
+
+    const first = useAppStore.getState().watchDoors(true)
+    const second = useAppStore.getState().watchDoors(true)
+    answer(1, { ok: true, value: UNLOCKED })
+    await second
+    answer(0, {
+      ok: false,
+      error: { kind: 'internal', message: 'No.', endpoint: null, retryable: false },
+    })
+    await first
+
+    expect(useAppStore.getState().doorStates).toEqual(UNLOCKED)
+  })
+
+  it('keeps a push that overtook the start’s answer: the push is newer', async () => {
+    const { watchDoors, answer } = deferredWatch()
+    const bridge = fakeBridge({ watchDoors })
+    const unsubscribe = useAppStore.getState().subscribe()
+
+    const starting = useAppStore.getState().watchDoors(true)
+    bridge.pushDoorStates(UNLOCKED)
+    answer(0, { ok: true, value: {} })
+    await starting
+
+    expect(useAppStore.getState().doorStates).toEqual(UNLOCKED)
+    unsubscribe()
+  })
+
+  it('drops a push that arrives while not watching, so no stale state comes back', async () => {
+    const bridge = fakeBridge({ watchDoors: () => ok(UNLOCKED) })
+    const unsubscribe = useAppStore.getState().subscribe()
+    await useAppStore.getState().watchDoors(true)
+    await useAppStore.getState().watchDoors(false)
+
+    // Sent by main before it handled the stop.
+    bridge.pushDoorStates(UNLOCKED)
+
+    expect(useAppStore.getState().doorStates).toEqual({})
+    unsubscribe()
+  })
+
+  it('never sends an unlock: a watch and a push only read (DOOR-4)', async () => {
+    const unlockDoor = vi.fn<ViewProtectApi['unlockDoor']>()
+    const bridge = fakeBridge({ unlockDoor, watchDoors: () => ok(LOCKED) })
+    const unsubscribe = useAppStore.getState().subscribe()
+
+    await useAppStore.getState().watchDoors(true)
+    bridge.pushDoorStates(UNLOCKED)
+    bridge.pushDoorStates(LOCKED)
+    await useAppStore.getState().watchDoors(false)
+
+    expect(unlockDoor).not.toHaveBeenCalled()
+    unsubscribe()
   })
 })

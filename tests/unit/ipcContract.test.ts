@@ -333,6 +333,24 @@ describe('request schemas', () => {
     expect(IPC.listDoors.value.safeParse([{ ...door, boundToHub: 'false' }]).success).toBe(false)
   })
 
+  it('takes one boolean for watchDoors and answers the door-state map (DOOR-6)', () => {
+    expect(IPC.watchDoors.channel).toBe('vp:doors/watch')
+    expect(IPC.watchDoors.request.parse({ watching: true })).toEqual({ watching: true })
+    // No door id crosses: main watches the doors in the saved links, and an extra key is dropped.
+    expect(IPC.watchDoors.request.parse({ watching: false, doorIds: ['door-1'] })).toEqual({
+      watching: false,
+    })
+    for (const bad of [undefined, {}, { watching: 'true' }, { watching: null }]) {
+      expect(IPC.watchDoors.request.safeParse(bad).success, JSON.stringify(bad)).toBe(false)
+    }
+    const states = {
+      'door-1': { relay: 'unlock', position: 'open' },
+      'door-2': { relay: 'lock', position: null },
+    }
+    expect(IPC.watchDoors.value.parse(states)).toEqual(states)
+    expect(IPC.watchDoors.value.parse({})).toEqual({})
+  })
+
   it('accepts undefined for the calls that take no payload', () => {
     for (const spec of [
       IPC.getState,
@@ -424,6 +442,28 @@ describe('event payloads', () => {
 
   it('parses the whole inventory, since GET /v1/cameras stays the authority (R11)', () => {
     expect(IPC_EVENTS.cameras.payload.parse([{ id: 'cam-1' }])).toHaveLength(1)
+  })
+
+  it('parses the whole door-state map, and refuses a state it cannot draw (DOOR-6)', () => {
+    const { channel, payload } = IPC_EVENTS.doorStates
+    expect(channel).toBe('vp:event/doorStates')
+    expect(IPC_EVENT_CHANNELS).toContain(channel)
+    // `{}` is a real payload: every linked door is unknown (the monitor stopped, or reads fail).
+    expect(payload.parse({})).toEqual({})
+    const states = { 'door-1': { relay: 'lock', position: 'close' } }
+    expect(payload.parse(states)).toEqual(states)
+    for (const bad of [
+      { 'door-1': { relay: 'ajar', position: null } },
+      // A missing position must not be read as "no sensor".
+      { 'door-1': { relay: 'lock' } },
+      { 'door-1': null },
+      { '': { relay: 'lock', position: null } },
+      [],
+    ]) {
+      expect(payload.safeParse(bad).success, JSON.stringify(bad)).toBe(false)
+    }
+    // The same shape as the call's answer, so the renderer has one thing to hold.
+    expect(payload).toBe(IPC.watchDoors.value)
   })
 
   it('tells a new go2rtc port apart from no go2rtc at all (P2.1/P2.2, gate G2)', () => {

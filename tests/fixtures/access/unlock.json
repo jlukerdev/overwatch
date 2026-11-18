@@ -14,12 +14,12 @@
   },
   "relayAfterUnlock": [
     {
-      "tMs": 2,
+      "tMs": 1,
       "relay": "unlock",
       "position": "close"
     },
     {
-      "tMs": 5025,
+      "tMs": 5020,
       "relay": "lock",
       "position": "close"
     }

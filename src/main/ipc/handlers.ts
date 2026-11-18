@@ -328,6 +328,9 @@ export function createIpcRouter(deps: IpcRouterDeps): ReadonlyMap<string, IpcHan
     credentials[input.key] = input.value
     // CON-4: a new Protect key has to prove itself with a connect before a launch uses it unasked.
     if (input.key === 'protectApiKey' && replaced) await ready.manager.credentialReplaced()
+    // DOOR-6: the door-state monitor needs a token to run, and one that stopped on a rejected token
+    // has to hear that there is a new one.
+    if (input.key === 'accessToken') ready.manager.accessInputsChanged('the Access token was saved')
     return state(ready)
   })
 
@@ -339,12 +342,25 @@ export function createIpcRouter(deps: IpcRouterDeps): ReadonlyMap<string, IpcHan
     // credential — the clients read this object synchronously.
     forget(credentials, input.key)
     if (input.key === 'protectApiKey') {
-      // The devices feed authenticates with the key that has just been deleted (CON-1/2). Access
-      // has no subscription, so its token needs nothing beyond the delete above (DOOR-0).
+      // The devices feed authenticates with the key that has just been deleted (CON-1/2).
       await ready.manager.credentialCleared()
+    } else {
+      // DOOR-6: nothing may keep reading door states on a token the user has removed. The manager
+      // sees the missing credential (deleted above) and stops the monitor and its socket.
+      ready.manager.accessInputsChanged('the Access token was cleared')
     }
     return state(ready)
   })
+
+  /**
+   * DOOR-6: a door-state monitor that stopped because the Access certificate was not accepted (or
+   * no longer matched) starts again once one is. Told for either endpoint: Access may answer on the
+   * same `host:port` as Protect (SPEC §5.2), and for a monitor that is running fine it costs one
+   * read. While the monitor may not run (Access off, nobody watching) it sends nothing.
+   */
+  const certificateChanged = (ready: Ready): void => {
+    ready.manager.accessInputsChanged('a certificate was accepted')
+  }
 
   on(IPC.checkCertificate, async (input, ready) => {
     const endpoint = endpointFor(input.endpoint, ready.services)
@@ -390,6 +406,7 @@ export function createIpcRouter(deps: IpcRouterDeps): ReadonlyMap<string, IpcHan
       )
     }
     ready.services.pins.acceptPin(endpoint.host, endpoint.port, input.fingerprint256)
+    certificateChanged(ready)
     return state(ready)
   })
 
@@ -405,6 +422,7 @@ export function createIpcRouter(deps: IpcRouterDeps): ReadonlyMap<string, IpcHan
     const refusal = staleFingerprintRefusal(endpoint, cert.fingerprint256, input.fingerprint256)
     if (refusal !== null) return refusal
     ready.services.pins.repin(endpoint.host, endpoint.port, input.fingerprint256)
+    certificateChanged(ready)
     return state(ready)
   })
 
@@ -480,6 +498,9 @@ export function createIpcRouter(deps: IpcRouterDeps): ReadonlyMap<string, IpcHan
     // harness's `settingsView` does not touch `doorLinks`, so what the renderer sends back is the
     // user's own map, not a value the harness put on screen.
     await saveFields(ready, { doorLinks: input.links })
+    // DOOR-6: the monitor reports the linked doors only. Emptied links stop it, a first link starts
+    // it (if the Live screen is watching), and changed ones are re-read and re-filtered at once.
+    ready.manager.accessInputsChanged('the door links were saved')
     return state(ready)
   })
 
@@ -489,6 +510,13 @@ export function createIpcRouter(deps: IpcRouterDeps): ReadonlyMap<string, IpcHan
   // harness never presses the unlock control, and nothing it shows the renderer (`settingsView`)
   // touches `doorLinks` or the Access switch, so an unlock during a run is the user's own.
   on(IPC.unlockDoor, (input, ready) => ready.manager.unlockDoor(input.cameraRef))
+
+  // DOOR-6 (P5.5). Before the services are ready this answers `not-ready` like the door handlers
+  // above (rule 2) rather than an empty map: the renderer can tell "main is not up" from "nothing is
+  // known", and asks again. No perf-run block, deliberately: watching changes no config, and the
+  // harness's Views link no doors unless the user's own `doorLinks` do — in which case the lock
+  // state shown is real. DOOR-0 and every other precondition are the manager's.
+  on(IPC.watchDoors, (input, ready) => Promise.resolve(ready.manager.watchDoors(input.watching)))
 
   on(IPC.ensureStream, async (input) => {
     const registry = deps.getRegistry()

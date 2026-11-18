@@ -1,8 +1,12 @@
-// P0.4 UniFi Access developer API spike. Node 24 runs this file directly (type stripping).
+// P0.4 / P5.5 UniFi Access developer API spike. Node 24 runs this file directly (type stripping).
 // Runs against the local mock now (`npm run mock:access`) and against the site console on-site
-// (OS-1, docs/spikes/P0.4-access-mock.md §6).
+// (OS-1, docs/spikes/P0.4-access-mock.md §6). The API it checks is the official reference's,
+// docs/reference/access-endpoints-v4.2.16.md.
 //
-//   npm run spike:access                                     list doors + error probes (read-only)
+//   npm run spike:access                                     read-only: list doors, error probes,
+//                                                            GET lock_rule and emergency status, and
+//                                                            listen on the notifications WebSocket
+//   npm run spike:access -- --listen 10                      listen for 10 s instead of 3
 //   npm run spike:access -- --unlock "Front Door"            also unlock ONE door after you type its name
 //   npm run spike:access -- --unlock "Front Door" --yes      skip the typed confirmation (mock only:
 //                                                            refused unless the target is the mock)
@@ -18,6 +22,13 @@
 //
 // The ONLY write is PUT /doors/{id}/unlock, only for the door --unlock names, only once per run,
 // and only after the door name is typed back (DOOR-3/4). --yes skips that only against the mock.
+// The lock-rule and emergency endpoints are only ever READ (GET): this script never sends
+// PUT /doors/{id}/lock_rule or PUT /doors/settings/emergency, which would change how the site's
+// doors behave.
+//
+// Notifications WebSocket: opened for --listen seconds on a read-only run, and from before the
+// unlock until the relay watch ends with --unlock, to record which events an unlock produces.
+// Only event names and field names are printed or saved, never a value.
 //
 // Mock vs console: the target is `mock` only if the GET /doors response carries the mock-only
 // header `x-view-protect-mock: 1` (sourceFromHeaders); anything else is `console`, whatever the
@@ -30,15 +41,21 @@ import { existsSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { createInterface } from 'node:readline/promises'
 import { fileURLToPath } from 'node:url'
-import { fetch } from 'undici'
+import { WebSocket, fetch } from 'undici'
 import type { Agent } from 'undici'
 import type { z } from 'zod'
 import {
+  ACCESS_LOCK_RULE_TYPES,
+  ACCESS_NOTIFICATIONS_PATH,
   ACCESS_SUCCESS_CODE,
   AccessDoorListResponseSchema,
   AccessDoorResponseSchema,
   AccessDoorSchema,
+  AccessEmergencyStatusResponseSchema,
+  AccessEmergencyStatusSchema,
   AccessErrorEnvelopeSchema,
+  AccessLockRuleResponseSchema,
+  AccessLockRuleSchema,
   AccessUnlockResponseSchema,
 } from '../../src/main/access/types.ts'
 import type { AccessDoor } from '../../src/main/access/types.ts'
@@ -46,15 +63,17 @@ import {
   accessPinFileName,
   confirmationMatches,
   describeIssues,
+  describeNotification,
   extraKeys,
   findDoorByName,
+  notificationsUrl,
   resolveAccessBaseUrl,
   shapeNotes,
   sourceFromHeaders,
   unlockConfirmation,
   urlPort,
 } from './lib/access.ts'
-import type { FixtureSource, HeaderReader } from './lib/access.ts'
+import type { FixtureSource, HeaderReader, NotificationShape } from './lib/access.ts'
 import { createSanitizer } from './lib/sanitize.ts'
 import { createPinnedAgent, fetchLeafCert, normalizeFingerprint } from './lib/tls.ts'
 
@@ -68,9 +87,21 @@ const MISSING_DOOR_ID = '00000000-0000-4000-8000-000000000000'
 const BAD_TOKEN = 'view-protect-spike-invalid-token'
 const ENVELOPE_KEYS = ['code', 'msg', 'data']
 const DOOR_KEYS = Object.keys(AccessDoorSchema.shape)
+const LOCK_RULE_KEYS = Object.keys(AccessLockRuleSchema.shape)
+const EMERGENCY_KEYS = Object.keys(AccessEmergencyStatusSchema.shape)
+const DOCUMENTED_RULE_TYPES: readonly string[] = ACCESS_LOCK_RULE_TYPES
+const WS_OPEN_TIMEOUT_MS = 10_000
+/** How long the socket stays open after the relay watch, to catch a late (relock?) event. */
+const WS_TAIL_MS = 2000
 
 const USAGE =
-  'Usage: node scripts/spikes/access-spike.ts [--unlock <door name> [--yes] [--watch <seconds>]]'
+  'Usage: node scripts/spikes/access-spike.ts [--listen <seconds>] ' +
+  '[--unlock <door name> [--yes] [--watch <seconds>]]\n' +
+  '  Read-only unless --unlock is given. Never changes lock rules or the emergency status.\n' +
+  '  --listen  seconds to listen on the notifications WebSocket on a read-only run (default 3, 0 = skip)\n' +
+  '  --unlock  unlock ONE door after its name is typed back; the WebSocket stays open meanwhile\n' +
+  '  --watch   seconds to re-read the relay after the unlock (default 8)\n' +
+  '  --yes     skip the typed confirmation (refused unless the target is the mock)'
 
 // ---------------------------------------------------------------------------------------------
 // Setup
@@ -79,10 +110,11 @@ interface Args {
   unlock: string | undefined
   yes: boolean
   watchSec: number
+  listenSec: number
 }
 
 function parseArgs(argv: string[]): Args {
-  const args: Args = { unlock: undefined, yes: false, watchSec: 8 }
+  const args: Args = { unlock: undefined, yes: false, watchSec: 8, listenSec: 3 }
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i]
     if (a === '--help' || a === '-h') {
@@ -98,6 +130,11 @@ function parseArgs(argv: string[]): Args {
       if (!Number.isFinite(n) || n < 0 || n > 120)
         throw new Error(`--watch needs 0..120 seconds\n${USAGE}`)
       args.watchSec = n
+    } else if (a === '--listen') {
+      const n = Number(argv[++i])
+      if (!Number.isFinite(n) || n < 0 || n > 120)
+        throw new Error(`--listen needs 0..120 seconds\n${USAGE}`)
+      args.listenSec = n
     } else throw new Error(`Unknown argument "${String(a)}"\n${USAGE}`)
   }
   if (args.yes && args.unlock === undefined)
@@ -170,7 +207,13 @@ const notesSeen: { check: string; notes: string[] }[] = []
 const checksRun: string[] = []
 
 /** Validates `data` against `schema`, records issues and undocumented keys, prints one line. */
-function validate<T>(check: string, schema: z.ZodType<T>, data: unknown): T | undefined {
+function validate<T>(
+  check: string,
+  schema: z.ZodType<T>,
+  data: unknown,
+  /** Documented keys of an object `data` payload that is not a door (lock rule, emergency). */
+  dataKeys?: { label: string; known: readonly string[] },
+): T | undefined {
   checksRun.push(check)
   const notes = shapeNotes(data)
   if (notes.length > 0) notesSeen.push({ check, notes })
@@ -181,12 +224,14 @@ function validate<T>(check: string, schema: z.ZodType<T>, data: unknown): T | un
   for (const d of doors)
     if (isRecord(d) && 'door_lock_relay_status' in d)
       for (const k of extraKeys(d, DOOR_KEYS)) extras.push(`door.${k}`)
+  if (dataKeys !== undefined && r.success)
+    for (const k of extraKeys(payload, dataKeys.known)) extras.push(`${dataKeys.label}.${k}`)
   const extraList = [...new Set(extras)]
   const issues = r.success ? [] : describeIssues(r.error)
   if (issues.length > 0 || extraList.length > 0)
     mismatches.push({ check, issues, extraKeys: extraList })
   say(
-    `    shape (${check}): ${r.success ? 'matches community shape' : 'MISMATCH'}` +
+    `    shape (${check}): ${r.success ? 'matches the documented shape' : 'MISMATCH'}` +
       (extraList.length > 0 ? `; undocumented keys: ${extraList.join(', ')}` : ''),
   )
   for (const i of issues) say(`      - ${i}`)
@@ -338,30 +383,105 @@ async function main(): Promise<void> {
     missingDoor: { status: missing.status, code: codeOf(missing) },
   }
 
-  // --- unlock (only with --unlock, only after confirmation)
-  if (args.unlock !== undefined) {
-    const parsed = rawDoors.map((d) => AccessDoorSchema.safeParse(d))
-    const doors: Pick<AccessDoor, 'id' | 'name' | 'is_bind_hub'>[] = rawDoors.map((d, i) => {
-      const p = parsed[i]
-      return p?.success === true
-        ? p.data
-        : {
-            id: String(d.id),
-            name: String(d.name),
-            is_bind_hub: d.is_bind_hub === true || d.is_bind_hub === 'true',
-          }
+  const parsed = rawDoors.map((d) => AccessDoorSchema.safeParse(d))
+  const doors: Pick<AccessDoor, 'id' | 'name' | 'is_bind_hub'>[] = rawDoors.map((d, i) => {
+    const p = parsed[i]
+    return p?.success === true
+      ? p.data
+      : {
+          id: String(d.id),
+          name: String(d.name),
+          is_bind_hub: d.is_bind_hub === true || d.is_bind_hub === 'true',
+        }
+  })
+  // The door --unlock names (resolved before anything else is asked of it), else the first door.
+  const unlockDoor = args.unlock === undefined ? undefined : findDoorByName(doors, args.unlock)
+  const chosen = unlockDoor ?? doors[0]
+
+  // --- lock rule and emergency status (GET only; the PUTs are never sent)
+  say('\n== Lock rule and emergency status (read-only)')
+  if (chosen === undefined) say('  no doors: skipping GET /doors/{id}/lock_rule')
+  else {
+    const rule = await api('GET', `/doors/${encodeURIComponent(chosen.id)}/lock_rule`)
+    if (isSuccess(rule))
+      validate('GET /doors/{id}/lock_rule', AccessLockRuleResponseSchema, rule.json, {
+        label: 'lock_rule',
+        known: LOCK_RULE_KEYS,
+      })
+    else {
+      validate('GET /doors/{id}/lock_rule (error)', AccessErrorEnvelopeSchema, rule.json)
+      say('  note: not available (needs Access 1.24.6 or later and the view:space scope)')
+    }
+    const ruleData = isRecord(rule.json) && isRecord(rule.json.data) ? rule.json.data : {}
+    say(
+      `  ${sanitizer.mapId(chosen.id, 'door')} rule: type=${JSON.stringify(ruleData.type)} ` +
+        `ended_time=${JSON.stringify(ruleData.ended_time)}`,
+    )
+    if (isSuccess(rule) && !DOCUMENTED_RULE_TYPES.includes(String(ruleData.type)))
+      say(
+        '  note: this type is not one of the documented values ' +
+          `(${DOCUMENTED_RULE_TYPES.join(', ')}); if the door has no rule, this is what "no rule" looks like`,
+      )
+    summary.lockRule = {
+      door: sanitizer.mapId(chosen.id, 'door'),
+      status: rule.status,
+      code: codeOf(rule),
+      type: ruleData.type,
+      endedTime: ruleData.ended_time,
+    }
+    await writeFixture('lock-rule.json', {
+      request: { method: 'GET', path: '/doors/{id}/lock_rule', id: chosen.id },
+      res: rule,
     })
-    const door = findDoorByName(doors, args.unlock)
+  }
+  const emergency = await api('GET', '/doors/settings/emergency')
+  if (isSuccess(emergency))
+    validate('GET /doors/settings/emergency', AccessEmergencyStatusResponseSchema, emergency.json, {
+      label: 'emergency',
+      known: EMERGENCY_KEYS,
+    })
+  else {
+    validate('GET /doors/settings/emergency (error)', AccessErrorEnvelopeSchema, emergency.json)
+    say('  note: not available (needs Access 1.24.6 or later and the view:space scope)')
+  }
+  summary.emergency = {
+    status: emergency.status,
+    code: codeOf(emergency),
+    data: isRecord(emergency.json) ? emergency.json.data : undefined,
+  }
+  await writeFixture('emergency.json', {
+    request: { method: 'GET', path: '/doors/settings/emergency' },
+    res: emergency,
+  })
+
+  // --- notifications WebSocket (listen only)
+  const listening = args.unlock !== undefined || args.listenSec > 0
+  const socket = listening ? await openNotifications(unlockDoor?.id) : undefined
+  try {
+    await unlockOrListen(unlockDoor, socket)
+  } finally {
+    if (socket !== undefined) summary.notifications = await socket.finish()
+  }
+}
+
+/** The unlock (only with --unlock, only after confirmation), or the read-only listen. */
+async function unlockOrListen(
+  door: Pick<AccessDoor, 'id' | 'name' | 'is_bind_hub'> | undefined,
+  socket: NotificationListener | undefined,
+): Promise<void> {
+  if (door !== undefined) {
     const fakeId = sanitizer.mapId(door.id, 'door')
     say(`\n== PUT /doors/{id}/unlock: ${fakeId} "${door.name}"`)
     if (!door.is_bind_hub)
       say('  note: is_bind_hub is false; the console should refuse this unlock')
     await confirm(door.name)
+    socket?.mark('unlock sent')
     const unlock = await api('PUT', `/doors/${encodeURIComponent(door.id)}/unlock`)
     if (isSuccess(unlock))
       validate('PUT /doors/{id}/unlock', AccessUnlockResponseSchema, unlock.json)
     else validate('PUT /doors/{id}/unlock (error)', AccessErrorEnvelopeSchema, unlock.json)
     const relay = await watchRelay(door.id, isSuccess(unlock) ? args.watchSec : 0)
+    if (socket?.isOpen() === true) await new Promise((r) => setTimeout(r, WS_TAIL_MS))
     await writeFixture('unlock.json', {
       request: { method: 'PUT', path: '/doors/{id}/unlock', id: door.id, body: null },
       res: unlock,
@@ -370,7 +490,107 @@ async function main(): Promise<void> {
     summary.unlock = { door: fakeId, status: unlock.status, code: codeOf(unlock), relay }
     if (!isSuccess(unlock)) throw apiError('Unlock', unlock)
   } else {
+    if (socket?.isOpen() === true) {
+      say(`  listening for ${String(args.listenSec)} s`)
+      await new Promise((r) => setTimeout(r, args.listenSec * 1000))
+    }
     say('\n(no --unlock: read-only run, nothing was unlocked)')
+  }
+}
+
+interface NotificationListener {
+  isOpen(): boolean
+  /** Records a moment (e.g. the unlock) that later events are timed against. */
+  mark(label: string): void
+  /** Closes the socket, prints the tally and returns the summary entry. */
+  finish(): Promise<Record<string, unknown>>
+}
+
+/**
+ * Opens the notifications WebSocket with the pinned agent and the Bearer token and records each
+ * frame's event name and field names (never values). Listen-only: nothing is ever sent. A socket
+ * that does not open is reported, not fatal: older Access versions and tokens without the
+ * `view:device` scope have none.
+ */
+async function openNotifications(expectDoorId: string | undefined): Promise<NotificationListener> {
+  if (agent === undefined) throw new Error('TLS agent not ready')
+  say('\n== Notifications WebSocket (listen only)')
+  const started = Date.now()
+  const events: (NotificationShape & { tMs: number })[] = []
+  const marks: { tMs: number; label: string }[] = []
+  let state: 'connecting' | 'open' | 'failed' | 'closed' = 'connecting'
+  let closeInfo: { tMs: number; code: number; wasClean: boolean } | undefined
+  const ws = new WebSocket(notificationsUrl(baseUrl), {
+    dispatcher: agent,
+    headers: { Authorization: `Bearer ${token}` },
+  })
+  ws.addEventListener('message', (ev) => {
+    const shape =
+      typeof ev.data === 'string'
+        ? describeNotification(ev.data, expectDoorId)
+        : { event: '(binary frame)', keys: [], dataKeys: [], schemaOk: false }
+    const entry = { tMs: Date.now() - started, ...shape }
+    events.push(entry)
+    say(
+      `    ws t+${String(entry.tMs)} ms: event=${entry.event} keys=[${entry.keys.join(', ')}] ` +
+        `data keys=[${entry.dataKeys.join(', ')}]` +
+        (entry.schemaOk ? '' : ' (does not match the app schema)') +
+        (entry.doorIdMatches === undefined
+          ? ''
+          : ` data.unique_id is the unlocked door: ${String(entry.doorIdMatches)}`),
+    )
+  })
+  ws.addEventListener('close', (ev) => {
+    closeInfo = { tMs: Date.now() - started, code: ev.code, wasClean: ev.wasClean }
+    if (state === 'open') state = 'closed'
+  })
+  const opened = await new Promise<boolean>((resolve) => {
+    const timer = setTimeout(() => {
+      resolve(false)
+    }, WS_OPEN_TIMEOUT_MS)
+    ws.addEventListener('open', () => {
+      clearTimeout(timer)
+      resolve(true)
+    })
+    ws.addEventListener('error', () => {
+      clearTimeout(timer)
+      resolve(false)
+    })
+  })
+  state = opened ? 'open' : 'failed'
+  const openMs = Date.now() - started
+  say(
+    opened
+      ? `  GET ${ACCESS_NOTIFICATIONS_PATH} (upgrade) -> open in ${String(openMs)} ms`
+      : `  GET ${ACCESS_NOTIFICATIONS_PATH} (upgrade) -> did NOT open (needs Access 1.20.11 or ` +
+          'later and the view:device scope; a 401 means the token was rejected)',
+  )
+  return {
+    isOpen: () => state === 'open',
+    mark(label) {
+      marks.push({ tMs: Date.now() - started, label })
+    },
+    async finish() {
+      const closedByServer = state === 'closed'
+      if (ws.readyState === ws.OPEN || ws.readyState === ws.CONNECTING) {
+        const done = new Promise<void>((resolve) => {
+          ws.addEventListener('close', () => {
+            resolve()
+          })
+          setTimeout(resolve, 2000)
+        })
+        ws.close(1000)
+        await done
+      }
+      const names = [...new Set(events.map((e) => e.event))]
+      if (opened)
+        say(
+          `  websocket: ${String(events.length)} frames` +
+            (names.length > 0 ? ` (${names.join(', ')})` : '') +
+            (closedByServer ? `; the server closed it (code ${String(closeInfo?.code)})` : ''),
+        )
+      return { opened, openMs, closedByServer, close: closeInfo, marks, events }
+    },
   }
 }
 
@@ -519,7 +739,7 @@ main()
   .then(async () => {
     say('\n== Shape check summary')
     if (mismatches.length === 0)
-      say(`  all ${String(checksRun.length)} checks match the community shapes`)
+      say(`  all ${String(checksRun.length)} checks match the documented shapes`)
     for (const m of mismatches) {
       say(`  ${m.check}:`)
       for (const i of m.issues) say(`    - ${i}`)

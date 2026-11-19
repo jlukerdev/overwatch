@@ -23,6 +23,7 @@
 //   curl -k -X POST -H "Authorization: Bearer $T" "$B/__mock/doors/<door id>/unlock?push=1"   ... and pushes remote_unlock
 //   curl -k -X POST -H "Authorization: Bearer $T" "$B/__mock/doors/<door id>/lock"            relock now, end any lock rule
 //   curl -k -X POST -H "Authorization: Bearer $T" "$B/__mock/doors/<door id>/position?status=open"   or status=close
+//   curl -k -X POST -H "Authorization: Bearer $T" "$B/__mock/doors/<door id>/schedule?minutes=30"    the door's unlock schedule starts: unlocked, lock rule "schedule" for 30 min (default 60)
 //   curl -k -X POST -H "Authorization: Bearer $T" "$B/__mock/notifications/drop"              cut every WebSocket client off
 //
 // Token: VP_ACCESS_TOKEN (environment, else .env.local) if set, never printed. Otherwise a random
@@ -55,6 +56,7 @@ const USAGE =
   '  /__mock/doors/<id>/unlock[?push=1]   unlock at the door; silent unless push=1\n' +
   '  /__mock/doors/<id>/lock              relock now and end any lock rule\n' +
   '  /__mock/doors/<id>/position?status=open|close\n' +
+  '  /__mock/doors/<id>/schedule[?minutes=N]   start an unlock schedule (lock rule "schedule")\n' +
   '  /__mock/notifications/drop           cut every WebSocket client off'
 
 interface Args {

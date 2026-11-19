@@ -191,6 +191,21 @@ export interface DoorLockRule {
   readonly endedTime: number | null
 }
 
+/**
+ * Options of the two reads the Doors screen repeats on a timer, {@link AccessClient.lockRule} and
+ * {@link AccessClient.emergencyStatus} (P5.6).
+ */
+export interface DetailsReadOptions {
+  /**
+   * For the Doors screen's details rounds: **no log line at all** for this request, success or
+   * failure. A round is one request per door plus one, every `detailsSec`, all day; and on a
+   * console older than Access 1.24.6 every one of them fails the same way for ever. The caller
+   * (`doorDetailsMonitor.ts`) logs when reading starts and stops working instead. The error is
+   * still thrown exactly as without this flag.
+   */
+  readonly quiet?: boolean
+}
+
 /** Options of {@link AccessClient.doors}. */
 export interface DoorsOptions {
   /**
@@ -226,8 +241,11 @@ export interface AccessClient {
    * state at all (§11.1), so a caller that wants to show the relay reads it with `door(id)`.
    */
   unlock(id: string, options?: UnlockOptions): Promise<void>
-  /** `GET /doors/{id}/lock_rule` (§7.11, Access 1.24.6+, scope `view:space`). Read-only. */
-  lockRule(id: string): Promise<DoorLockRule>
+  /**
+   * `GET /doors/{id}/lock_rule` (§7.11, Access 1.24.6+, scope `view:space`). Read-only. Called by
+   * the Doors screen's details rounds (P5.6, `doorDetailsMonitor.ts`).
+   */
+  lockRule(id: string, options?: DetailsReadOptions): Promise<DoorLockRule>
   /**
    * `PUT /doors/{id}/lock_rule` (§7.10, Access 1.24.6+, scope `edit:space`) — **changes a
    * physical door's lock state**: `keep_unlock` and `custom` hold it unlocked, `keep_lock` holds
@@ -238,15 +256,18 @@ export interface AccessClient {
    * Same rule as {@link AccessClient.unlock} (DOOR-3/4, CLAUDE.md "door unlock must always need
    * explicit user interaction"): **never** call this from a timer, an automatic trigger, an event
    * handler, a reconnect or any kind of retry — only as the direct result of a user action. A
-   * failure is reported, never repeated. Nothing in the app calls it yet; it exists so the client
-   * covers the documented door API.
+   * failure is reported, never repeated. Its one caller is the connection manager's `doorAction`
+   * (P5.6): a Doors screen action the user confirmed in a dialog, sent once.
    */
   setLockRule(
     id: string,
     rule: { readonly type: AccessLockRuleSetType; readonly intervalMinutes?: number },
   ): Promise<void>
-  /** `GET /doors/settings/emergency` (§7.13, Access 1.24.6+, scope `view:space`). Read-only. */
-  emergencyStatus(): Promise<{ lockdown: boolean; evacuation: boolean }>
+  /**
+   * `GET /doors/settings/emergency` (§7.13, Access 1.24.6+, scope `view:space`). Read-only. Called
+   * by the Doors screen's details rounds (P5.6, `doorDetailsMonitor.ts`).
+   */
+  emergencyStatus(options?: DetailsReadOptions): Promise<{ lockdown: boolean; evacuation: boolean }>
   /**
    * `PUT /doors/settings/emergency` (§7.12, Access 1.24.6+, scope `edit:space`) — **changes the
    * lock state of every door at once**: `evacuation: true` keeps all doors unlocked, `lockdown:
@@ -255,7 +276,8 @@ export interface AccessClient {
    * Same rule as {@link AccessClient.unlock}, with more at stake (DOOR-3/4, CLAUDE.md): **never**
    * call this from a timer, an automatic trigger, an event handler, a reconnect or any kind of
    * retry — only as the direct result of a user action. A failure is reported, never repeated.
-   * Nothing in the app calls it yet; it exists so the client covers the documented door API.
+   * Its one caller is the connection manager's `setDoorEmergency` (P5.6): the Doors screen's
+   * lockdown / evacuation control, confirmed in a dialog that says it applies to every door.
    */
   setEmergencyStatus(status: {
     readonly lockdown: boolean
@@ -532,12 +554,17 @@ export function createAccessClient(options: AccessClientOptions): AccessClient {
     body?: string,
     /** `DoorsOptions.quiet`: the success line is not logged. Every failure still is. */
     quiet = false,
+    /** `DetailsReadOptions.quiet`: nothing is logged for this request, failures included. */
+    silent = false,
   ): Promise<AccessRawResponse> {
     const what = `${method} ${path}`
+    // Every line of this request goes through `say`, so no failure branch below can forget the
+    // flag.
+    const say = silent ? (): void => undefined : log
 
     // DOOR-0, before anything else: not a request that fails, a request that never happens.
     if (!options.enabled()) {
-      log(`${what} -> not sent (UniFi Access is disabled, DOOR-0)`)
+      say(`${what} -> not sent (UniFi Access is disabled, DOOR-0)`)
       throw new AccessApiError(
         `UniFi Access is turned off, so ${what} was not sent. Turn on "Enable UniFi Access" in ` +
           'Settings first (DOOR-0).',
@@ -548,7 +575,7 @@ export function createAccessClient(options: AccessClientOptions): AccessClient {
     // request on it — and with a message that says where to paste the token (DOOR-1).
     const token = options.token()?.trim() ?? ''
     if (token === '') {
-      log(`${what} -> not sent (no Access API token saved)`)
+      say(`${what} -> not sent (no Access API token saved)`)
       throw new AccessApiError(
         `${what} was not sent: no Access API token is saved.${ACCESS_AUTH_ADVICE}`,
         { kind: 'auth', endpoint: where },
@@ -564,7 +591,7 @@ export function createAccessClient(options: AccessClientOptions): AccessClient {
       dispatcher = options.dispatcher()
     } catch (err) {
       const wrapped = accessErrorFromThrown({ err, what, endpoint: where })
-      log(`${what} -> ${wrapped.kind} (not sent)`)
+      say(`${what} -> ${wrapped.kind} (not sent)`)
       throw wrapped
     }
 
@@ -581,14 +608,14 @@ export function createAccessClient(options: AccessClientOptions): AccessClient {
       ...(body === undefined ? {} : { body }),
     }).catch((err: unknown) => {
       const wrapped = accessErrorFromThrown({ err, what, endpoint: where })
-      log(`${what} -> ${wrapped.kind} (no response)`)
+      say(`${what} -> ${wrapped.kind} (no response)`)
       throw wrapped
     })
 
     const status = res.status
     const text = await res.text().catch((err: unknown) => {
       const wrapped = accessErrorFromThrown({ err, what, endpoint: where })
-      log(`${what} -> ${String(status)} ${wrapped.kind} (body not readable)`)
+      say(`${what} -> ${String(status)} ${wrapped.kind} (body not readable)`)
       throw wrapped
     })
     let json: unknown = null
@@ -608,7 +635,7 @@ export function createAccessClient(options: AccessClientOptions): AccessClient {
     if (asError.success) {
       const { code, msg } = asError.data
       const kind = accessErrorKind(status, code)
-      log(`${what} -> ${String(status)} ${code}`)
+      say(`${what} -> ${String(status)} ${code}`)
       throw new AccessApiError(
         responseErrorMessage({ what, status, code, msg: msg ?? null, kind }),
         { kind, status, code, endpoint: where },
@@ -619,7 +646,7 @@ export function createAccessClient(options: AccessClientOptions): AccessClient {
       // the wrong type. The code is still named when one can be read, so the message is specific.
       const code = looseCode(json)
       const kind = accessErrorKind(status, code)
-      log(`${what} -> ${String(status)} ${code ?? '(no code)'}`)
+      say(`${what} -> ${String(status)} ${code ?? '(no code)'}`)
       throw new AccessApiError(responseErrorMessage({ what, status, code, msg: null, kind }), {
         kind,
         status,
@@ -628,7 +655,7 @@ export function createAccessClient(options: AccessClientOptions): AccessClient {
       })
     }
 
-    if (!quiet) log(`${what} -> ${String(status)} ${looseCode(json) ?? '(no code)'}`)
+    if (!quiet) say(`${what} -> ${String(status)} ${looseCode(json) ?? '(no code)'}`)
     return { what, status, json }
   }
 
@@ -778,8 +805,9 @@ export function createAccessClient(options: AccessClientOptions): AccessClient {
       }
     },
 
-    async lockRule(id: string): Promise<DoorLockRule> {
-      const raw = await call('GET', doorPath(id, '/lock_rule'))
+    async lockRule(id: string, readOptions?: DetailsReadOptions): Promise<DoorLockRule> {
+      const silent = readOptions?.quiet === true
+      const raw = await call('GET', doorPath(id, '/lock_rule'), undefined, silent, silent)
       const rule = parseBody(raw, AccessLockRuleResponseSchema).data
       return { type: rule.type, endedTime: rule.ended_time ?? null }
     },
@@ -807,8 +835,11 @@ export function createAccessClient(options: AccessClientOptions): AccessClient {
       )
     },
 
-    async emergencyStatus(): Promise<{ lockdown: boolean; evacuation: boolean }> {
-      const raw = await call('GET', EMERGENCY_PATH)
+    async emergencyStatus(
+      readOptions?: DetailsReadOptions,
+    ): Promise<{ lockdown: boolean; evacuation: boolean }> {
+      const silent = readOptions?.quiet === true
+      const raw = await call('GET', EMERGENCY_PATH, undefined, silent, silent)
       const status = parseBody(raw, AccessEmergencyStatusResponseSchema).data
       return { lockdown: status.lockdown, evacuation: status.evacuation }
     },

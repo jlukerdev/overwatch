@@ -227,6 +227,71 @@ export const UiConfigSchema = z
 export type UiConfig = z.infer<typeof UiConfigSchema>
 
 /**
+ * DOOR-6 (P5.6): how often main reads the Access door API, in whole **seconds**, with the range
+ * each may be set to. The first three were P5.5's hard-coded intervals and keep those values as
+ * their defaults; `detailsSec` is new with the Doors screen.
+ *
+ *  - `withSocketSec`: the baseline `GET /doors` poll while the notifications socket is open (and
+ *    once it has been down for more than a minute).
+ *  - `withoutSocketSec`: the tighter baseline for the first minute the socket is not open.
+ *  - `unlockedSec`: the poll while a watched door reads `unlock`, and just after a trigger.
+ *  - `detailsSec`: how often the Doors screen's lock rules and emergency status are re-read
+ *    (`GET /doors/{id}/lock_rule` per door plus `GET /doors/settings/emergency`).
+ *
+ * Exported so the renderer can show the range and pre-validate a field; **main validates**
+ * (`SetAccessPollingInputSchema` in ./ipc). The floors are what keeps a setting from turning the
+ * app into a request flood against a console whose rate limit is undocumented (SPEC §5.2); the
+ * ceilings keep a door's state from going stale for longer than a person would wait.
+ */
+export const ACCESS_POLLING_BOUNDS = {
+  withSocketSec: { min: 2, max: 60, default: 5 },
+  withoutSocketSec: { min: 1, max: 30, default: 2 },
+  unlockedSec: { min: 1, max: 10, default: 1 },
+  detailsSec: { min: 10, max: 600, default: 30 },
+} as const
+export type AccessPollingField = keyof typeof ACCESS_POLLING_BOUNDS
+export const ACCESS_POLLING_FIELDS = Object.keys(ACCESS_POLLING_BOUNDS) as AccessPollingField[]
+
+/** P5.5's values, as a fresh object per call. */
+export function defaultAccessPolling(): Record<AccessPollingField, number> {
+  return {
+    withSocketSec: ACCESS_POLLING_BOUNDS.withSocketSec.default,
+    withoutSocketSec: ACCESS_POLLING_BOUNDS.withoutSocketSec.default,
+    unlockedSec: ACCESS_POLLING_BOUNDS.unlockedSec.default,
+    detailsSec: ACCESS_POLLING_BOUNDS.detailsSec.default,
+  }
+}
+
+/**
+ * One persisted interval. **Lenient on purpose** (rule 1 at the top of this file): a missing field
+ * is the default, and so is one that is out of range or not a whole number — a hand-edited
+ * `"unlockedSec": 0` must cost the user that one setting, not every View (a rejected config is
+ * moved aside and replaced by defaults, VIEW-6). Falling back to the default rather than clamping,
+ * so a typo (`500` for `5`) lands on a value somebody chose, not on the edge of the range. The
+ * strict check, which refuses instead, is the IPC one (`SetAccessPollingInputSchema`).
+ */
+function persistedPollingSec(field: AccessPollingField) {
+  const bounds = ACCESS_POLLING_BOUNDS[field]
+  return z.int().min(bounds.min).max(bounds.max).default(bounds.default).catch(bounds.default)
+}
+
+/**
+ * The persisted polling block. Defaulted as a whole (`prefault`), so a config file written before
+ * P5.6 loads with P5.5's intervals and needs no `schemaVersion` bump or migration (like
+ * `View.showNames`); a block that is not an object at all falls back to the defaults too.
+ */
+export const AccessPollingSchema = z
+  .object({
+    withSocketSec: persistedPollingSec('withSocketSec'),
+    withoutSocketSec: persistedPollingSec('withoutSocketSec'),
+    unlockedSec: persistedPollingSec('unlockedSec'),
+    detailsSec: persistedPollingSec('detailsSec'),
+  })
+  .prefault({})
+  .catch(() => defaultAccessPolling())
+export type AccessPolling = z.infer<typeof AccessPollingSchema>
+
+/**
  * Everything the app persists apart from `schemaVersion`, which is a storage detail
  * (src/main/config/schema.ts adds it). This is the shape that crosses IPC to the renderer (P1.5).
  *
@@ -241,6 +306,8 @@ export const SettingsSchema = z.object({
   lastViewId: z.string().min(1).nullable().default(null),
   streams: StreamsConfigSchema,
   ui: UiConfigSchema,
+  /** DOOR-6 (P5.6): the Access read intervals. Used only while Access is on (DOOR-0). */
+  accessPolling: AccessPollingSchema,
 })
 export type Settings = z.infer<typeof SettingsSchema>
 
@@ -386,3 +453,35 @@ export type DoorLockState = z.infer<typeof DoorLockStateSchema>
  */
 export const DoorStatesSchema = z.record(z.string().min(1), DoorLockStateSchema)
 export type DoorStates = z.infer<typeof DoorStatesSchema>
+
+// -------------------------------------------------------------------------------------------------
+// The Doors screen (P5.6)
+
+/**
+ * What is controlling one door right now, from `GET /doors/{id}/lock_rule` (reference §7.11).
+ *
+ * `type` is documented as `schedule` (the door is inside an unlock schedule), `keep_lock`,
+ * `keep_unlock`, `custom` or `lock_early`, and is a **plain string** here by the leniency rule
+ * above: what a door with no rule answers is undocumented, so `''` means "the console reported no
+ * rule" and an unlisted value must be shown as it is rather than fail the whole screen. `endedTime`
+ * is when the rule ends, in Unix **seconds**, or `null` when the console sent none (the mock sends
+ * `0` with no rule, which the renderer should treat as "no end time" together with `type: ''`).
+ *
+ * The official document gives **no schedule name and no hours** for an unlock schedule (checked
+ * against the PDF, 2026-11-18): only the type and the end time exist to cross IPC.
+ */
+export const DoorRuleSchema = z.object({
+  type: z.string(),
+  endedTime: z.number().nullable(),
+})
+export type DoorRule = z.infer<typeof DoorRuleSchema>
+
+/**
+ * The emergency status of **all** doors (reference §7.12/§7.13): `lockdown` keeps every door
+ * locked, `evacuation` keeps every door unlocked. Both `false` is the normal state.
+ */
+export const DoorEmergencySchema = z.object({
+  lockdown: z.boolean(),
+  evacuation: z.boolean(),
+})
+export type DoorEmergency = z.infer<typeof DoorEmergencySchema>

@@ -24,8 +24,10 @@ import {
   type CameraEvent,
   type CameraStateChange,
   type ConnectionStatus,
-  type Door,
+  type DoorActionResult,
+  type DoorEmergencyResult,
   type DoorStates,
+  type DoorsScreenState,
   type IpcResult,
   type PinCheck,
   type RtspsAvailability,
@@ -130,10 +132,17 @@ const impl: ViewProtectApi = {
   setStreams: (input): Promise<IpcResult<AppState>> => call(IPC.setStreams, input),
   cameraStreamQualities: (input): Promise<IpcResult<RtspsAvailability>> =>
     call(IPC.cameraStreamQualities, input),
-  listDoors: (): Promise<IpcResult<Door[]>> => call(IPC.listDoors, undefined),
   setDoorLinks: (input): Promise<IpcResult<AppState>> => call(IPC.setDoorLinks, input),
   unlockDoor: (input): Promise<IpcResult<UnlockResult>> => call(IPC.unlockDoor, input),
   watchDoors: (input): Promise<IpcResult<DoorStates>> => call(IPC.watchDoors, input),
+  watchDoorsScreen: (input): Promise<IpcResult<DoorsScreenState>> =>
+    call(IPC.watchDoorsScreen, input),
+  // DOOR-3/4: the bridge adds nothing to these two. Each call is one request from the Doors screen
+  // after its confirm dialog; nothing here repeats, queues or times one.
+  doorAction: (input): Promise<IpcResult<DoorActionResult>> => call(IPC.doorAction, input),
+  setDoorEmergency: (input): Promise<IpcResult<DoorEmergencyResult>> =>
+    call(IPC.setDoorEmergency, input),
+  setAccessPolling: (input): Promise<IpcResult<AppState>> => call(IPC.setAccessPolling, input),
 
   onConnection: (listener: (status: ConnectionStatus) => void): Unsubscribe =>
     subscribe(IPC_EVENTS.connection, listener),
@@ -151,6 +160,9 @@ const impl: ViewProtectApi = {
   // DOOR-6: validated like the rest, so a malformed map never colours an unlock button.
   onDoorStates: (listener: (states: DoorStates) => void): Unsubscribe =>
     subscribe(IPC_EVENTS.doorStates, listener),
+  // P5.6: validated like the rest, so a malformed state never draws a door as locked or unlocked.
+  onDoorsScreen: (listener: (state: DoorsScreenState) => void): Unsubscribe =>
+    subscribe(IPC_EVENTS.doorsScreen, listener),
 }
 
 contextBridge.exposeInMainWorld(BRIDGE_KEY, Object.freeze(impl))

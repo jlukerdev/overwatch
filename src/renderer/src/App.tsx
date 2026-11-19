@@ -12,6 +12,12 @@
 // unsaved changes asks first (VIEW-3): the nav buttons consult `confirmLeave`, and a `beforeunload`
 // listener (`blockUnload`) holds a window close or reload (main asks the user, src/main/index.ts).
 //
+// **Doors** (P5.6) is the fourth screen, between Cameras and Live in the nav. Its button and the
+// screen itself exist only while the **saved** Access switch is on (DOOR-0): with Access off there
+// is no button, no screen and so no Access call. If the switch goes off while Doors is the chosen
+// screen, the app moves to Settings (where the switch is); unmounting the screen is what tells
+// main to stop reading (`watchDoorsScreen(false)`, features/doors/useDoorsScreenWatch.ts).
+//
 // The connection indicator lives in the header, outside the switch: CON-5 asks for it to be visible
 // at all times, not only on the Settings screen. Each badge is also a way into Settings.
 //
@@ -23,6 +29,7 @@
 // Live shows the endpoints that are not connected itself (CON-5).
 import { useEffect, useState, type JSX } from 'react'
 import { CameraList } from './features/cameras/CameraList'
+import { DoorsScreen } from './features/doors/DoorsScreen'
 import { LiveScreen } from './features/grid/LiveScreen'
 import { SettingsPage } from './features/settings/SettingsPage'
 import { ConnectionBadge } from './features/status/ConnectionBadge'
@@ -32,7 +39,7 @@ import { navClass } from './navClass'
 import { useAppStore } from './state/appStore'
 import { blockUnload, confirmLeave } from './state/unsavedGuard'
 import { ConfirmHost, confirmDialog } from './ui/ConfirmDialog'
-import { AlertIcon, CameraIcon, GearIcon, GridIcon, RefreshIcon } from './ui/icons'
+import { AlertIcon, CameraIcon, DoorIcon, GearIcon, GridIcon, RefreshIcon } from './ui/icons'
 import { ToastHost } from './ui/Toast'
 
 export function App(): JSX.Element {
@@ -40,6 +47,8 @@ export function App(): JSX.Element {
   const loadError = useAppStore((s) => s.loadError)
   const load = useAppStore((s) => s.load)
   const subscribe = useAppStore((s) => s.subscribe)
+  // DOOR-0: the saved switch, not Settings' unsaved checkbox.
+  const accessEnabled = useAppStore((s) => s.settings?.console.accessEnabled ?? false)
 
   const [screen, setScreen] = useState<Screen | null>(null)
   // The id of the View the editor is on, or `null` when not editing (see the header).
@@ -73,8 +82,12 @@ export function App(): JSX.Element {
     return unsubscribe
   }, [load, subscribe])
 
+  // DOOR-0: Doors cannot stay the chosen screen once Access is saved as off (header). Adjusted
+  // during render, so the Doors screen is not drawn even once more.
+  if (screen === 'doors' && !accessEnabled && phase === 'ready') setScreen('settings')
+
   // Settings until the load says otherwise (see the effect above).
-  const current = screen ?? 'settings'
+  const current = screen === 'doors' && !accessEnabled ? 'settings' : (screen ?? 'settings')
   const focusMode = focusModeApplies(focusRequested, current === 'grid', editingViewId !== null)
 
   /** Switches screens, unless that would drop unsaved editor changes the user wants to keep. */
@@ -145,6 +158,19 @@ export function App(): JSX.Element {
               <CameraIcon />
               Cameras
             </button>
+            {accessEnabled ? (
+              <button
+                type="button"
+                className={navClass(current === 'doors')}
+                aria-current={current === 'doors' ? 'page' : undefined}
+                onClick={() => {
+                  go('doors')
+                }}
+              >
+                <DoorIcon />
+                Doors
+              </button>
+            ) : null}
             <button
               type="button"
               className={navClass(current === 'grid')}
@@ -179,6 +205,12 @@ export function App(): JSX.Element {
       <main className={current === 'grid' ? 'app__body app__body--fill' : 'app__body'}>
         {current === 'cameras' ? (
           <CameraList
+            onOpenSettings={() => {
+              go('settings')
+            }}
+          />
+        ) : current === 'doors' ? (
+          <DoorsScreen
             onOpenSettings={() => {
               go('settings')
             }}

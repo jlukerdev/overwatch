@@ -92,6 +92,8 @@ describe('defaultConfig', () => {
       streams: { defaultGridQuality: 'low', defaultFillQuality: 'high' },
       // CELL-4.
       ui: { overlayAutoHideSec: 3 },
+      // DOOR-6 (P5.6): P5.5's hard-coded intervals, plus the new details read.
+      accessPolling: { withSocketSec: 5, withoutSocketSec: 2, unlockedSec: 1, detailsSec: 30 },
     })
   })
 
@@ -231,6 +233,94 @@ describe('ConfigSchema', () => {
       ConfigSchema.safeParse({ schemaVersion: 2, streams: { defaultFillQuality: 'package' } })
         .success,
     ).toBe(false)
+  })
+
+  describe('accessPolling (DOOR-6, P5.6)', () => {
+    const DEFAULTS = { withSocketSec: 5, withoutSocketSec: 2, unlockedSec: 1, detailsSec: 30 }
+
+    it("loads a file written before P5.6 with P5.5's intervals, and needs no schemaVersion bump", () => {
+      // No migration step was added for it: the block is defaulted, like `View.showNames`.
+      expect(CONFIG_SCHEMA_VERSION).toBe(2)
+      expect(ConfigSchema.parse({ schemaVersion: 2 }).accessPolling).toEqual(DEFAULTS)
+      expect(ConfigSchema.parse({ schemaVersion: 2, accessPolling: {} }).accessPolling).toEqual(
+        DEFAULTS,
+      )
+    })
+
+    it('keeps saved values and defaults only the missing ones', () => {
+      expect(
+        ConfigSchema.parse({ schemaVersion: 2, accessPolling: { detailsSec: 120 } }).accessPolling,
+      ).toEqual({ ...DEFAULTS, detailsSec: 120 })
+      const all = { withSocketSec: 60, withoutSocketSec: 30, unlockedSec: 10, detailsSec: 600 }
+      expect(ConfigSchema.parse({ schemaVersion: 2, accessPolling: all }).accessPolling).toEqual(
+        all,
+      )
+      const low = { withSocketSec: 2, withoutSocketSec: 1, unlockedSec: 1, detailsSec: 10 }
+      expect(ConfigSchema.parse({ schemaVersion: 2, accessPolling: low }).accessPolling).toEqual(
+        low,
+      )
+    })
+
+    it('never rejects the config over a hand-edited interval: the default replaces it (VIEW-6)', () => {
+      // A rejected config is moved aside and replaced by defaults, which costs every View. One bad
+      // number must cost that one setting only, and never reach the monitor as written.
+      for (const [field, bad] of [
+        ['unlockedSec', 0],
+        ['unlockedSec', -1],
+        ['unlockedSec', 11],
+        ['withSocketSec', 1],
+        ['withSocketSec', 100000],
+        ['withoutSocketSec', 0.5],
+        ['detailsSec', 9],
+        ['detailsSec', 601],
+        ['detailsSec', '30'],
+        ['detailsSec', null],
+        ['withSocketSec', Number.NaN],
+      ] as const) {
+        const parsed = ConfigSchema.safeParse({
+          schemaVersion: 2,
+          accessPolling: {
+            withSocketSec: 10,
+            withoutSocketSec: 3,
+            unlockedSec: 2,
+            detailsSec: 60,
+            [field]: bad,
+          },
+        })
+        expect(parsed.success, `${field}=${String(bad)}`).toBe(true)
+        if (!parsed.success) continue
+        // The bad field is its default; the good ones beside it are kept.
+        expect(parsed.data.accessPolling).toEqual({
+          withSocketSec: 10,
+          withoutSocketSec: 3,
+          unlockedSec: 2,
+          detailsSec: 60,
+          [field]: DEFAULTS[field],
+        })
+      }
+    })
+
+    it('falls back to the defaults for a block that is not an object at all', () => {
+      for (const bad of [5, 'fast', null, [1, 2, 3], true]) {
+        const parsed = ConfigSchema.safeParse({ schemaVersion: 2, accessPolling: bad })
+        expect(parsed.success, JSON.stringify(bad)).toBe(true)
+        if (parsed.success) expect(parsed.data.accessPolling).toEqual(DEFAULTS)
+      }
+    })
+
+    it('hands out a fresh defaults object each time', () => {
+      const first = ConfigSchema.parse({ schemaVersion: 2, accessPolling: 'nope' }).accessPolling
+      first.detailsSec = 999
+      expect(
+        ConfigSchema.parse({ schemaVersion: 2, accessPolling: 'nope' }).accessPolling.detailsSec,
+      ).toBe(30)
+    })
+
+    it('strips an unknown interval rather than rejecting it', () => {
+      expect(
+        ConfigSchema.parse({ schemaVersion: 2, accessPolling: { burstSec: 1 } }).accessPolling,
+      ).toEqual(DEFAULTS)
+    })
   })
 
   it('keeps overlayAutoHideSec positive (CELL-4)', () => {

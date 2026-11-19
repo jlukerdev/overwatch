@@ -177,6 +177,12 @@ function setup(options: SetupOptions = {}) {
     doors: vi.fn(() => Promise.resolve([])),
     // DOOR-3: resolves = the console accepted the unlock.
     unlock: vi.fn<(id: string) => Promise<void>>(() => Promise.resolve()),
+    // P5.6: the Doors screen's reads and PUTs, covered in connectionManagerDoorsScreen.test.ts.
+    // Present here so every test in this file can assert that none of them was called.
+    lockRule: vi.fn(() => Promise.resolve({ type: '', endedTime: null })),
+    setLockRule: vi.fn(() => Promise.resolve()),
+    emergencyStatus: vi.fn(() => Promise.resolve({ lockdown: false, evacuation: false })),
+    setEmergencyStatus: vi.fn(() => Promise.resolve()),
   }
   const pins = {
     pinnedFingerprint: vi.fn((host: string, port: number) =>
@@ -640,7 +646,10 @@ describe('testConnection (CON-4)', () => {
   })
 })
 
-describe('doors (DOOR-1, P5.3)', () => {
+// The one `GET /doors` behind Test connection's Access half (`readDoors`). Until P5.6 the one-shot
+// door list (`vp:doors/list`, removed by user decision 2026-11-18) shared it and these ran through
+// that call; the status rules are the same.
+describe("Test connection's door read (CON-4, DOOR-0)", () => {
   const door = {
     id: 'door-1',
     name: 'Front Door',
@@ -655,8 +664,8 @@ describe('doors (DOOR-1, P5.3)', () => {
   it('makes no Access call at all while Access is off, and says disabled (DOOR-0)', async () => {
     const access = vi.fn(() => h.access)
     h.services.access = access
-    const result = await h.manager.doors()
-    expect(result).toMatchObject({ ok: false, error: { kind: 'disabled' } })
+    const result = await h.manager.testConnection()
+    expect(result.access).toEqual({ state: 'disabled' })
     // Not even the client is resolved, let alone asked.
     expect(access).not.toHaveBeenCalled()
     expect(h.access.doors).not.toHaveBeenCalled()
@@ -666,7 +675,8 @@ describe('doors (DOOR-1, P5.3)', () => {
   it('answers the doors and marks Access connected, as the probe does', async () => {
     const enabled = setup({ accessEnabled: true })
     enabled.access.doors.mockResolvedValueOnce([door] as never)
-    await expect(enabled.manager.doors()).resolves.toEqual({ ok: true, value: [door] })
+    const result = await enabled.manager.testConnection()
+    expect(result.access).toEqual({ state: 'ok', doorCount: 1 })
     expect(enabled.access.doors).toHaveBeenCalledTimes(1)
     expect(enabled.manager.status().access).toMatchObject({ phase: 'connected', error: null })
     // The indicator learns of it at once, without waiting for an unrelated push.
@@ -683,19 +693,19 @@ describe('doors (DOOR-1, P5.3)', () => {
         status: 401,
       }),
     )
-    const result = await enabled.manager.doors()
-    expect(result).toMatchObject({
-      ok: false,
+    const result = await enabled.manager.testConnection()
+    expect(result.access).toMatchObject({
+      state: 'error',
       error: { kind: 'auth', endpoint: '192.0.2.10:12445' },
     })
     const status = enabled.manager.status().access
     expect(status.phase).toBe('error')
-    expect(!result.ok && result.error).toEqual(status.error)
+    expect(result.access.state === 'error' && result.access.error).toEqual(status.error)
     const pushed = enabled.payloads(IPC_EVENTS.connection.channel).at(-1)
     expect(pushed).toMatchObject({ access: { phase: 'error' } })
   })
 
-  // Each failure family, mapped to the kind the door-link card gives its hint for.
+  // Each failure family, mapped to the kind Settings gives its hint for.
   const cases: { why: string; kind: string; err: () => Promise<unknown> }[] = [
     {
       why: 'an unpinned Access endpoint',
@@ -729,8 +739,8 @@ describe('doors (DOOR-1, P5.3)', () => {
     it(`maps ${why} to ${kind}`, async () => {
       const enabled = setup({ accessEnabled: true })
       enabled.access.doors.mockRejectedValueOnce(await err())
-      const result = await enabled.manager.doors()
-      expect(result).toMatchObject({ ok: false, error: { kind } })
+      const result = await enabled.manager.testConnection()
+      expect(result.access).toMatchObject({ state: 'error', error: { kind } })
     })
   }
 
@@ -740,8 +750,8 @@ describe('doors (DOOR-1, P5.3)', () => {
     enabled.services.access = () => {
       throw new ConsoleEndpointError('No console address is set yet.')
     }
-    const result = await enabled.manager.doors()
-    expect(result).toMatchObject({ ok: false, error: { kind: 'not-configured' } })
+    const result = await enabled.manager.testConnection()
+    expect(result.access).toMatchObject({ state: 'error', error: { kind: 'not-configured' } })
     expect(enabled.manager.status().access.error).toMatchObject({ kind: 'not-configured' })
   })
 
@@ -757,16 +767,18 @@ describe('doors (DOOR-1, P5.3)', () => {
           }
         }),
     )
-    const pending = enabled.manager.doors()
+    const pending = enabled.manager.testConnection()
+    // Let the Protect half finish so the Access read is the one in flight.
+    await flush()
     await enabled.manager.applyConsoleChange({ ...enabled.console, host: '192.0.2.20' })
     fail()
     // The caller still hears how its read went…
-    expect(await pending).toMatchObject({ ok: false, error: { kind: 'auth' } })
+    expect((await pending).access).toMatchObject({ state: 'error', error: { kind: 'auth' } })
     // …but the new console's indicator does not inherit the old one's failure.
     expect(enabled.manager.status().access).toMatchObject({ phase: 'idle', error: null })
   })
 
-  it('drops a stale success the same way, and so does Test connection', async () => {
+  it('drops a stale success the same way', async () => {
     const enabled = setup({ accessEnabled: true })
     let answer = (): void => undefined
     enabled.access.doors.mockImplementation(
@@ -1491,6 +1503,7 @@ describe('unlockDoor (DOOR-3/4/5, P5.4)', () => {
     expect(u.access.unlock).toHaveBeenCalledWith(FRONT_DOOR_ID)
     expect(u.attempts).toEqual([
       {
+        action: 'unlock',
         cameraRef: 'cam-bell',
         cameraName: 'Front Doorbell',
         doorId: FRONT_DOOR_ID,
@@ -1638,6 +1651,7 @@ describe('unlockDoor (DOOR-3/4/5, P5.4)', () => {
     expect(u.access.unlock).toHaveBeenCalledTimes(1)
     expect(u.attempts).toEqual([
       {
+        action: 'unlock',
         cameraRef: 'cam-bell',
         cameraName: 'Front Doorbell',
         doorId: FRONT_DOOR_ID,
@@ -2344,11 +2358,8 @@ describe('the door-state monitor (DOOR-6, P5.5)', () => {
       expect(w.access.doors).toHaveBeenCalledTimes(1)
     })
 
-    it('starts again when the door list or Test connection gets an answer', async () => {
-      for (const ask of [
-        (w: ReturnType<typeof watchSetup>) => w.manager.doors(),
-        (w: ReturnType<typeof watchSetup>) => w.manager.testConnection(),
-      ]) {
+    it('starts again when Test connection gets an answer', async () => {
+      for (const ask of [(w: ReturnType<typeof watchSetup>) => w.manager.testConnection()]) {
         const w = watchSetup()
         w.access.doors.mockRejectedValueOnce(auth())
         w.manager.watchDoors(true)

@@ -459,9 +459,9 @@ function Banner({
   children: string
 }): JSX.Element {
   return (
-    <div className={`cameras__banner cameras__banner--${kind}`} role="status">
+    <div className={`banner banner--${kind}`} role="status">
       <AlertIcon />
-      <span className="cameras__bannerText">{children}</span>
+      <span className="banner__text">{children}</span>
       <button type="button" className="button button--sm" onClick={onOpenSettings}>
         <GearIcon />
         Open settings

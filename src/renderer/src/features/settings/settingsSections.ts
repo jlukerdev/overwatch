@@ -14,21 +14,19 @@ export interface SettingsSection {
 export const KEYSTORE_SECTION: SettingsSection = { id: 'settings-keystore', label: 'Keystore' }
 export const CONSOLE_SECTION: SettingsSection = { id: 'settings-console', label: 'Console' }
 export const STREAMS_SECTION: SettingsSection = { id: 'settings-streams', label: 'Streams' }
-export const DOORS_SECTION: SettingsSection = { id: 'settings-doors', label: 'Door links' }
 
 /**
  * The sections in page order: the keystore warning only while there is no keystore (CON-2), then
- * Console and Streams, then Door links last and only while Access is **saved** as on (DOOR-0).
+ * Console and Streams. (The door links were a third group until P5.6 moved them to the Doors
+ * screen.)
  */
 export function settingsSections(options: {
   readonly keystoreAvailable: boolean
-  readonly accessEnabled: boolean
 }): SettingsSection[] {
   return [
     ...(options.keystoreAvailable ? [] : [KEYSTORE_SECTION]),
     CONSOLE_SECTION,
     STREAMS_SECTION,
-    ...(options.accessEnabled ? [DOORS_SECTION] : []),
   ]
 }
 

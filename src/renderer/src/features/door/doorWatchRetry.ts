@@ -12,6 +12,10 @@
 // the one `watchDoors(false)`, which is never retried: the store has already emptied its map, and
 // the next session's start is what matters.
 //
+// The Doors screen's watch (P5.6, features/doors/useDoorsScreenWatch.ts) is the same kind of
+// session — a start that must be retried, a stop that must not — and uses this module as it is,
+// handing in the store's `watchDoorsScreen` as `watchDoors`.
+//
 // This only asks main to read door state. It can never send an unlock (DOOR-4).
 
 /** The wait before the first retry of a failed start. */

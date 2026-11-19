@@ -1,7 +1,7 @@
 // A Settings group's heading (P5.3 cleanup): the section sidebar's focus target. Its id is
 // `sectionTitleId(section)`; tabIndex -1 lets the sidebar move the focus to it without putting it
-// in the tab order. Its own module so both SettingsPage and DoorLinksCard can use it without
-// importing each other.
+// in the tab order. Its own module so a card in its own file can use it without importing
+// SettingsPage.
 import type { JSX, ReactNode } from 'react'
 import { sectionTitleId, type SettingsSection } from './settingsSections'
 

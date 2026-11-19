@@ -1,0 +1,318 @@
+/*
+ * The Doors screen (P5.6; DoorsScreen.tsx). Only what is specific to it: the tokens and the
+ * primitives (.card, .button, .row, .badge, .banner, .field__*, .emptyState, .status, .spinner)
+ * come from src/renderer/src/styles.css. Every font-size is one of the type tokens.
+ */
+
+.doors {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  /* Fills the body, so an empty state is centred in the screen and not under the header. */
+  box-sizing: border-box;
+  min-height: 100%;
+  padding: 1rem 1.25rem 1.5rem;
+}
+
+.doors__header {
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  min-height: var(--control-height);
+}
+
+.doors__title {
+  margin: 0;
+  font-size: var(--font-lg);
+  font-weight: 600;
+}
+
+/* Lockdown, Evacuation and Refresh at the right edge; they wrap under the title when narrow. */
+.doors__actions {
+  flex-wrap: wrap;
+  margin-left: auto;
+}
+
+/* The shared empty state, taking whatever height the header and the Polling card leave. */
+.doors__empty {
+  flex: 1;
+  height: auto;
+}
+
+/* The same message with door cards under it (linked doors keep their cards): only its own height. */
+.doors__problem {
+  height: auto;
+  min-height: 0;
+}
+
+/*
+ * One card per door, flowing across the width and wrapping (user decision 2026-11-18).
+ * `min(19rem, 100%)` lets a card shrink to the screen at narrow widths: one column, no overflow.
+ */
+.doors__grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(19rem, 100%), 1fr));
+  /* Every card of a row is as tall as the tallest (user decision 2026-11-19). */
+  align-items: stretch;
+  gap: 1rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.doorCard {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  min-width: 0;
+}
+
+/* The door's name with its lock state at the top right. */
+.doorCard__head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+/*
+ * The door's name. Room for two lines is always kept (and a longer name is cut there, with the
+ * whole name in `title`), so the controls line up across the cards of a row (user decision
+ * 2026-11-19).
+ */
+.doorCard__title {
+  display: -webkit-box;
+  min-width: 0;
+  min-height: 2.6em;
+  margin: 0;
+  overflow: hidden;
+  font-size: var(--font-md);
+  font-weight: 600;
+  line-height: 1.3;
+  overflow-wrap: anywhere;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+/*
+ * The lock state (user decision 2026-11-19): a padlock and nothing else — amber (the warning
+ * colour) while locked, green while unlocked, as the cell's unlock button
+ * (features/door/door.css) — or the muted word "Unknown", never coloured.
+ */
+.doorCard__state {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  min-height: 1.3em;
+  color: var(--muted);
+  font-size: var(--font-sm);
+}
+
+.doorCard__state .icon {
+  width: 1.5625rem;
+  height: 1.5625rem;
+}
+
+.doorCard__state[data-lock='locked'] {
+  color: var(--warn);
+}
+
+.doorCard__state[data-lock='unlocked'] {
+  color: var(--ok);
+}
+
+/* The rule control, set a little apart from Unlock / Lock above it. */
+.doorCard__rule {
+  margin-top: 0.4rem;
+}
+
+/* What is controlling the door, under the rule control. */
+.doorCard__line {
+  margin: 0;
+  color: var(--muted);
+  font-size: var(--font-sm);
+}
+
+.doorCard__actions {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.doorCard__buttons {
+  flex-wrap: wrap;
+}
+
+/* A dropdown with its button: the rule control, and Add camera. */
+.doorCard__add {
+  min-width: 0;
+}
+
+/* The select takes the room its button leaves, never more than the card. */
+.doorCard__select {
+  flex: 1;
+  min-width: 0;
+}
+
+.doorCard__minutes {
+  margin-bottom: 0;
+}
+
+.doorCard__minutesInput {
+  align-self: flex-start;
+  width: 7rem;
+}
+
+/* The cameras linked to the door, under a rule across the card. */
+.doorCard__cameras {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  padding-top: 0.6rem;
+  border-top: 1px solid var(--border);
+}
+
+.doorCard__section {
+  margin: 0;
+  color: var(--muted);
+  font-size: var(--font-sm);
+  font-weight: 600;
+}
+
+.doorCard__cameraList {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+/* One linked camera: a blue-tinted chip with its name and the ✕ that unlinks it. */
+.doorCard__camera {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  min-width: 0;
+  max-width: 100%;
+  padding: 0.1rem 0.15rem 0.1rem 0.55rem;
+  border: 1px solid color-mix(in srgb, var(--accent) 45%, var(--border));
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent) 14%, var(--bg-sunken));
+  color: var(--accent-hover);
+  font-size: var(--font-sm);
+}
+
+.doorCard__cameraName {
+  min-width: 0;
+  color: var(--fg);
+  overflow-wrap: anywhere;
+}
+
+.doorCard__camera .button {
+  border-radius: 999px;
+}
+
+/*
+ * The Polling card is collapsible and pinned to the bottom of the screen (user decision
+ * 2026-11-19): `margin-top: auto` puts it at the bottom of a short screen and `position: sticky`
+ * keeps it there while the cards scroll under it, so opening it grows upwards. Its body scrolls by
+ * itself when the window is too short for it.
+ */
+.doors__polling {
+  position: sticky;
+  z-index: 1;
+  bottom: 0;
+  /*
+   * Flush with the bottom and the sides of the screen (user decision 2026-11-19): the negative
+   * margins take back `.doors`' padding, and only the top edge is drawn.
+   */
+  margin: auto -1.25rem -1.5rem;
+  padding: 0;
+  border-width: 1px 0 0;
+  border-radius: 0;
+  box-shadow: 0 -8px 16px var(--bg);
+}
+
+.doors__pollingHeading {
+  margin: 0;
+  font-size: var(--font-md);
+}
+
+/* The whole bar is the button. */
+.doors__pollingToggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  min-height: var(--control-height);
+  padding: 0.5rem 1.25rem;
+  border: 0;
+  background: none;
+  color: var(--fg);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.doors__pollingToggle:hover {
+  background: var(--hover-tint);
+}
+
+.doors__pollingToggle:active {
+  background: var(--active-tint);
+}
+
+.doors__pollingToggle:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.doors__pollingBody {
+  max-height: min(60vh, 28rem);
+  padding: 0.25rem 1.25rem 1rem;
+  overflow: auto;
+}
+
+/*
+ * Inside it: a column of rows, each a label, its seconds input and one line of help to the
+ * right (user decision 2026-11-19). The three lock-state intervals share one group and its title.
+ */
+.doors__pollingGroup {
+  min-width: 0;
+  margin: 0 0 0.75rem;
+  padding: 0;
+  border: 0;
+}
+
+.doors__pollingLegend {
+  margin-bottom: 0.4rem;
+  padding: 0;
+  font-weight: 600;
+}
+
+.doors__pollingRow {
+  display: grid;
+  grid-template-columns: minmax(0, 15rem) 5rem minmax(0, 1fr);
+  align-items: center;
+  gap: 0.25rem 0.75rem;
+  margin-bottom: 0.4rem;
+}
+
+/* Too narrow for three columns: the help goes under the input. */
+@media (width <= 40rem) {
+  .doors__pollingRow {
+    grid-template-columns: minmax(0, 1fr) 5rem;
+  }
+
+  .doors__pollingRow > :last-child {
+    grid-column: 1 / -1;
+  }
+}
+
+.doors__pollingInput {
+  width: 5rem;
+}
+
+.doors__pollingActions {
+  flex-wrap: wrap;
+}

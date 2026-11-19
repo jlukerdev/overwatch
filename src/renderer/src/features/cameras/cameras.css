@@ -47,44 +47,6 @@
   height: auto;
 }
 
-/*
- * What is reported above the grid — missing setup (warn) on a console that has already listed its
- * cameras, or a failed request (error): a line above the cards, never instead of them. One shape,
- * an alert icon in the kind's colour, and the text in the normal colour so it stays readable.
- */
-.cameras__banner {
-  display: flex;
-  align-items: center;
-  gap: 0.6rem;
-  padding: 0.5rem 0.6rem 0.5rem 0.75rem;
-  border: 1px solid var(--border);
-  border-left-width: 3px;
-  border-radius: var(--radius);
-  background: var(--bg-raised);
-}
-
-.cameras__banner--warn {
-  border-left-color: var(--warn);
-}
-
-.cameras__banner--warn > .icon {
-  color: var(--warn);
-}
-
-.cameras__banner--error {
-  border-left-color: var(--error);
-}
-
-.cameras__banner--error > .icon {
-  color: var(--error);
-}
-
-.cameras__bannerText {
-  flex: 1;
-  min-width: 0;
-  font-size: var(--font-sm);
-}
-
 .cameras__grid {
   display: grid;
   gap: 1rem;

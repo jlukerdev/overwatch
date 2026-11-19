@@ -1,6 +1,10 @@
 // Append-only unlock audit log (DOOR-5, P5.4): one JSON line per unlock attempt at
 // `<userData>/logs/unlock.log`.
 //
+// Since P5.6 the same file also records the Doors screen's actions — unlock, lock, the temporary
+// lock rules, and lockdown / evacuation of every door — because each of them changes a physical
+// door just as an unlock does. The file keeps its name; `action` says which it was.
+//
 // **Every attempt, not only the ones that reached the console.** A press refused before anything
 // was sent — Access switched off (DOOR-0), a camera with no door link, no token saved, a
 // certificate not accepted — is still a person trying to open a door from this app, and is exactly
@@ -30,7 +34,7 @@
 // against a temp dir in plain Node and `src/main/index.ts` passes `app.getPath('userData')`.
 import * as nodeFs from 'node:fs/promises'
 import { join } from 'node:path'
-import type { IpcErrorKind } from '@shared/ipc'
+import type { DoorAction, DoorActionSent, IpcErrorKind } from '@shared/ipc'
 
 /** Rotate once the file is over this size (1 MiB). */
 export const DEFAULT_UNLOCK_LOG_MAX_BYTES = 1024 * 1024
@@ -43,13 +47,43 @@ export const UNLOCK_LOG_ROTATED_FILE = 'unlock.log.1'
  * rejected, or at the refusal). `time` is not here: the log stamps it, so every line uses the same
  * clock and format.
  */
+/**
+ * What a line is about (P5.6):
+ *  - what was **sent** to the console (`DoorActionSent`): `unlock` — the only value the cell's
+ *    unlock control ever produces, and what every line written before P5.6 meant — or the lock
+ *    rule's type (`lock_now`, `reset`, `keep_lock`, `keep_unlock`, `custom`);
+ *  - for an attempt refused before anything was sent, what was **asked** (`DoorAction`), which
+ *    adds `lock` (which would have gone out as `lock_now`);
+ *  - `emergency`: lockdown / evacuation of every door (`lockdown` and `evacuation` say which).
+ */
+export type UnlockLogAction = DoorAction | DoorActionSent | 'emergency'
+
 export interface UnlockAttempt {
-  /** What the renderer sent: `<cameraId>` or `<cameraId>:package`. */
-  readonly cameraRef: string
-  /** From main's Protect inventory, falling back to the camera id. */
-  readonly cameraName: string
-  /** The linked Access door, or `null` when the camera has no link (nothing was sent). */
+  readonly action: UnlockLogAction
+  /**
+   * What the renderer sent from a cell: `<cameraId>` or `<cameraId>:package`. `null` for an action
+   * from the Doors screen, which names a door and no camera.
+   */
+  readonly cameraRef: string | null
+  /** From main's Protect inventory, falling back to the camera id. `null` with `cameraRef`. */
+  readonly cameraName: string | null
+  /**
+   * The Access door: the camera's linked one (`null` when the camera has no link, so nothing was
+   * sent), or the id the Doors screen named, **as received** — also when main refused it as a door
+   * it has not read from the console. `null` for `emergency`, which is every door.
+   */
   readonly doorId: string | null
+  /**
+   * The door's name from the list main read, for a Doors screen action on a door main knows.
+   * `null` (the default) for the cell path, which makes no extra read for it (P5.4), for a door id
+   * main does not know, and for `emergency`.
+   */
+  readonly doorName?: string | null
+  /** The `custom` rule's duration in minutes; `null` (the default) for everything else. */
+  readonly minutes?: number | null
+  /** The flags an `emergency` line asked for; `null` (the default) for everything else. */
+  readonly lockdown?: boolean | null
+  readonly evacuation?: boolean | null
   /**
    * `unknown`: the PUT may have reached the console but no answer came back, so the door may have
    * opened (user decision 2026-11-18; `UnlockResult.outcome`).
@@ -61,7 +95,13 @@ export interface UnlockAttempt {
   readonly message: string | null
 }
 
-/** One line of `unlock.log`, in this key order. */
+/**
+ * One line of `unlock.log`. The keys are always all present and always in this order:
+ * `time, action, cameraRef, cameraName, doorId, doorName, minutes, lockdown, evacuation, result,
+ * errorKind, message`. The keys a pre-P5.6 line had (`time, cameraRef, cameraName, doorId, result,
+ * errorKind, message`) keep their meaning and their order relative to each other; such a line has
+ * no `action` and is an `unlock` from a cell.
+ */
 export interface UnlockLogEntry extends UnlockAttempt {
   /** ISO 8601, UTC (`2026-11-18T09:15:02.123Z`). */
   readonly time: string
@@ -103,9 +143,14 @@ export function formatUnlockLogLine(entry: UnlockLogEntry): string {
   // to carry (a stray extra field) can reach the file, and the key order never depends on it.
   const line = {
     time: entry.time,
+    action: entry.action,
     cameraRef: entry.cameraRef,
     cameraName: entry.cameraName,
     doorId: entry.doorId,
+    doorName: entry.doorName ?? null,
+    minutes: entry.minutes ?? null,
+    lockdown: entry.lockdown ?? null,
+    evacuation: entry.evacuation ?? null,
     result: entry.result,
     errorKind: entry.errorKind,
     message: entry.message,

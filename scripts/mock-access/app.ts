@@ -16,7 +16,9 @@
 // the relay state: the reference documents no such event, so a client must read the lock state
 // with `GET /doors`. The mock invents no undocumented event.
 //
-// Routes under `/__mock/` are mock-only controls (not part of the Access API).
+// Routes under `/__mock/` are mock-only controls (not part of the Access API): unlock, lock or
+// move a door "at the door", put a door inside an unlock schedule (P5.6), and drop the WebSocket
+// clients. The list with examples is in server.ts.
 // Node runs this file directly: erasable syntax only.
 import { timingSafeEqual } from 'node:crypto'
 import type { z } from 'zod'
@@ -108,6 +110,11 @@ export const MOCK_FAILURE_CODE = 'CODE_SYSTEM_ERROR'
 
 /** Prefix of the mock-only control routes. Outside the API prefix on purpose. */
 export const MOCK_ADMIN_PATH = '/__mock'
+
+/** `POST /__mock/doors/{id}/schedule` without `?minutes=`: the schedule runs for an hour. */
+export const DEFAULT_SCHEDULE_MINUTES = 60
+/** The longest schedule the mock-only route starts: a day. */
+export const MAX_SCHEDULE_MINUTES = 1440
 
 /** Full path of the notifications WebSocket. */
 export const NOTIFICATIONS_PATH = `${ACCESS_API_PATH}${ACCESS_NOTIFICATIONS_PATH}`
@@ -311,7 +318,7 @@ export function createAccessMock(options: AccessMockOptions): AccessMock {
       for (const h of [...dropHandlers]) closed += h()
       return ok({ closed })
     }
-    const m = /^\/doors\/([^/]+)\/(unlock|lock|position)$/.exec(path)
+    const m = /^\/doors\/([^/]+)\/(unlock|lock|position|schedule)$/.exec(path)
     if (m?.[1] === undefined) return notFound()
     if (method !== 'POST') return badMethod()
     const id = decodeId(m[1])
@@ -326,6 +333,16 @@ export function createAccessMock(options: AccessMockOptions): AccessMock {
       if (query.get('push') === '1') pushRemoteUnlock(id)
     } else if (m[2] === 'lock') {
       store.lock(id)
+    } else if (m[2] === 'schedule') {
+      // P5.6: "the door's unlock schedule has just started". The API cannot create a schedule, so
+      // this is how the mock gets a door whose lock rule reads `schedule` (and that `lock_early`
+      // has something to end). `?minutes=N` is how long it still runs: 1 to 1440, default 60.
+      const raw = query.get('minutes')
+      const minutes = raw === null ? DEFAULT_SCHEDULE_MINUTES : Number(raw)
+      if (!Number.isInteger(minutes) || minutes < 1 || minutes > MAX_SCHEDULE_MINUTES) {
+        return fail(400, 'CODE_PARAMS_INVALID', 'minutes must be a whole number from 1 to 1440')
+      }
+      store.startSchedule(id, minutes)
     } else {
       const status = query.get('status')
       if (status !== 'open' && status !== 'close') {

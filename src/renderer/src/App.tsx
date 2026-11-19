@@ -21,6 +21,11 @@
 // The connection indicator lives in the header, outside the switch: CON-5 asks for it to be visible
 // at all times, not only on the Settings screen. Each badge is also a way into Settings.
 //
+// **Settings** (P5.8) is not a nav tab: it holds only the console connection, and is opened by the
+// gear button at the header's very end, after the badges. That button goes through the same `go`,
+// so the unsaved-editor guard applies, and it is marked `aria-current` and drawn active like a nav
+// button while Settings shows. A first run with no console still opens on Settings (`initialScreen`).
+//
 // **Focus mode** (UX polish 2026-11-17; features/viewSwitcher/focusMode.ts). The Live screen can ask
 // for the whole window: the header is then not drawn (and Live hides its switcher). The request is
 // state here because the header is; it applies only while Live is showing and the editor is closed
@@ -182,27 +187,34 @@ export function App(): JSX.Element {
               <GridIcon />
               Live
             </button>
-            <button
-              type="button"
-              className={navClass(current === 'settings')}
-              aria-current={current === 'settings' ? 'page' : undefined}
-              onClick={() => {
-                go('settings')
-              }}
-            >
-              <GearIcon />
-              Settings
-            </button>
           </nav>
           <ConnectionBadge
             onOpenSettings={() => {
               go('settings')
             }}
           />
+          {/* Settings is not a nav tab (P5.8): an icon-only button at the header's very end. */}
+          <button
+            type="button"
+            className={`${navClass(current === 'settings')} app__navButton--icon`}
+            aria-label="Settings"
+            title="Settings"
+            aria-current={current === 'settings' ? 'page' : undefined}
+            onClick={() => {
+              go('settings')
+            }}
+          >
+            <GearIcon />
+          </button>
         </header>
       )}
       {/* The grid fills the body and must never scroll (VIEW-5); the other screens may. */}
-      <main className={current === 'grid' ? 'app__body app__body--fill' : 'app__body'}>
+      {/* Keyed by screen, so each screen opens scrolled to the top rather than where the last one
+          was left (Settings scrolls with the body since P5.8). */}
+      <main
+        key={current}
+        className={current === 'grid' ? 'app__body app__body--fill' : 'app__body'}
+      >
         {current === 'cameras' ? (
           <CameraList
             onOpenSettings={() => {

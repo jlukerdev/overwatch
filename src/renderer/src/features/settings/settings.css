@@ -11,70 +11,26 @@
  */
 
 /*
- * The screen fills `.app__body` exactly: a section sidebar on the left (its rows are the shared
- * `.sideItem`, like the Live screen's View switcher) and the groups' own scroll container on the
- * right. The container is what scrolls, so the sidebar stays put and the scroll-spy in
- * SettingsPage has a definite root (user request 2026-11-17).
+ * One left-aligned column of readable width (P5.8): the keystore warning when there is no
+ * keystore, the Console group's controls straight on the screen (no card around them, user
+ * feedback 2026-11-19), and the app version at the foot. It scrolls with `.app__body`, as the
+ * other screens do; with a single group there is no section sidebar.
  */
 .settings {
   display: flex;
-  height: 100%;
-  min-height: 0;
+  flex-direction: column;
+  gap: 1.25rem;
+  width: 100%;
+  max-width: 64rem;
+  padding: var(--screen-pad-top) var(--screen-pad-x) var(--screen-pad-bottom);
 }
 
 .settings--loading {
   padding: 1rem;
 }
 
-.settings__nav {
-  display: flex;
-  flex-direction: column;
-  flex-shrink: 0;
-  gap: 0.25rem;
-  width: 12rem;
-  padding: 0.5rem;
-  border-right: 1px solid var(--border);
-  background: var(--bg-raised);
-  overflow-y: auto;
-}
-
-/* The look (hover, focus ring, the current row's accent bar) is `.sideItem`'s; this is the size. */
-.settings__navItem {
-  width: 100%;
-  min-width: 0;
-  padding: 0.4rem 0.6rem;
-}
-
-/* The app version, quiet, at the foot of the sidebar. */
-.settings__version {
-  margin: auto 0 0;
-  padding: 0.75rem 0.6rem 0.25rem;
-  color: var(--muted);
-  font-size: var(--font-xs);
-  font-variant-numeric: tabular-nums;
-  user-select: text;
-}
-
-.settings__content {
-  display: flex;
-  flex: 1;
-  flex-direction: column;
-  gap: 1.25rem;
-  min-width: 0;
-  min-height: 0;
-  padding: 1.25rem;
-  overflow-y: auto;
-}
-
-/* Every group keeps its width readable on a wide window. */
-.settings__content > * {
-  width: 100%;
-  max-width: 64rem;
-  scroll-margin-top: 1.25rem;
-}
-
 /* Room inside a group: the shared card's 1rem is tight for a form this long. */
-.settings__content > .card {
+.settings > .card {
   padding: 1.25rem;
 }
 
@@ -84,35 +40,13 @@
   font-size: var(--font-lg);
 }
 
-/* A group heading is a focus target for the sidebar, not something to tab to. */
-.settings__groupTitle:focus {
-  outline: none;
-}
-
-/* Narrow windows: the sidebar becomes a strip of links above the content, wrapping, never scrolling sideways. */
-@media (max-width: 40rem) {
-  .settings {
-    flex-direction: column;
-  }
-
-  .settings__nav {
-    flex-direction: row;
-    flex-wrap: wrap;
-    width: auto;
-    border-right: 0;
-    border-bottom: 1px solid var(--border);
-    overflow: visible;
-  }
-
-  .settings__navItem {
-    width: auto;
-  }
-
-  /* In the strip the version goes to the right end of the last row. */
-  .settings__version {
-    margin: 0 0 0 auto;
-    padding: 0.4rem 0.6rem;
-  }
+/* The app version, quiet, at the foot of the column. */
+.settings__version {
+  margin: 0;
+  color: var(--muted);
+  font-size: var(--font-xs);
+  font-variant-numeric: tabular-nums;
+  user-select: text;
 }
 
 /* --- The Console group: address and credentials, then Certificate, then Connection ------------ */

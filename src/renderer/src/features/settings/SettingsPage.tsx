@@ -22,28 +22,19 @@
 // (features/doors/), each door's cameras on the door's own card. The form's unsaved Access checkbox
 // reveals the token and API-root fields, but nothing that would make an Access call (DOOR-0).
 //
-// Layout (user request 2026-11-17): a section sidebar on the left and the groups in their own
-// scroll container on the right — the keystore warning (only without a keystore), **Console**
-// (address and credentials, then Certificate, then Connection). The sidebar highlights the group in view (measured against the scroll container, decided
-// by ./settingsSections.ts) and scrolls to a group on click; its rows are the shared `.sideItem`,
-// and the app version sits quietly at its foot. Help text is one short line at
-// most; what a requirement mandates (CON-2's keystore notice, CON-3's compare-the-fingerprint prompt,
-// DOOR-0's "the token and links are kept") is kept, only shorter.
-import { useCallback, useEffect, useRef, useState, type JSX, type ReactNode } from 'react'
-import { GroupTitle } from './GroupTitle'
+// Layout (P5.8): one left-aligned column of readable width, the Console controls straight on the screen with no card (user feedback 2026-11-19), scrolling with the app body like the other
+// screens — the keystore warning (only without a keystore), then **Console** (address and
+// credentials, then Certificate, then Connection), and the app version quietly at the foot. With one
+// group there is no section sidebar (the P5.3 cleanup's sidebar went in P5.8), and the screen is
+// opened from the gear button at the header's end rather than a nav tab (App.tsx). Help text is one
+// short line at most; what a requirement mandates (CON-2's keystore notice, CON-3's
+// compare-the-fingerprint prompt, DOOR-0's "the token and links are kept") is kept, only shorter.
+import { useState, type JSX, type ReactNode } from 'react'
 import type { AccessProbe, IpcError, IpcSecretKey, ProtectProbe, Settings } from '@shared/ipc'
 import { useAppStore } from '../../state/appStore'
 import { CheckIcon, PlugIcon, PulseIcon, TrashIcon } from '../../ui/icons'
 import { CertificateCard } from './CertificateCard'
 import { StatusLine, type StatusKind } from '../../ui/StatusLine'
-import {
-  activeSection,
-  CONSOLE_SECTION,
-  KEYSTORE_SECTION,
-  sectionTitleId,
-  settingsSections,
-  type SettingsSection,
-} from './settingsSections'
 import {
   consoleDraftFrom,
   consoleInputFrom,
@@ -70,152 +61,21 @@ export function SettingsPage(): JSX.Element {
   }
 
   return (
-    <SettingsLayout sections={settingsSections({ keystoreAvailable })}>
+    <div className="settings">
       {keystoreAvailable ? null : <KeystoreWarning />}
       <ConsoleCard settings={settings} keystoreAvailable={keystoreAvailable}>
         <CertificateSection accessEnabled={settings.console.accessEnabled} />
         <ConnectionCard accessEnabled={settings.console.accessEnabled} />
       </ConsoleCard>
-    </SettingsLayout>
-  )
-}
-
-// -------------------------------------------------------------------------------------------------
-// The section sidebar and the scroll container
-
-/** Smooth unless the user asked the OS for less motion. */
-function scrollBehavior(): ScrollBehavior {
-  return window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth'
-}
-
-/** How long a sidebar click keeps its section current if `scrollend` never fires. */
-const SCROLL_LOCK_FALLBACK_MS = 1000
-
-/**
- * The sidebar plus the groups' own scroll container. The container — not `.app__body` — is what
- * scrolls (`.settings` fills the body exactly), so the sidebar stays put without `position:
- * sticky`.
- *
- * Which link is current is `activeSection`'s decision (./settingsSections.ts), fed from a
- * rAF-throttled measure of each group's top against the container: on scroll, on a window resize,
- * and when a group changes size (a ResizeObserver — a certificate panel opening grows the page
- * without a scroll). A sidebar click locks its section as current until that programmatic scroll settles
- * (`scrollend`, with a timeout fallback), so a short last group cannot take the highlight mid-way.
- */
-function SettingsLayout({
-  sections,
-  children,
-}: {
-  sections: readonly SettingsSection[]
-  children: ReactNode
-}): JSX.Element {
-  const content = useRef<HTMLDivElement>(null)
-  const frame = useRef<number | null>(null)
-  const lock = useRef<{ id: string; release: () => void } | null>(null)
-  const [active, setActive] = useState<string | null>(sections[0]?.id ?? null)
-  const version = useAppStore((s) => s.version)
-  // The list's identity changes every render; its ids are what the callbacks depend on.
-  const ids = sections.map((section) => section.id).join(' ')
-
-  const measure = useCallback((): void => {
-    frame.current = null
-    const root = content.current
-    if (root === null) return
-    const rootTop = root.getBoundingClientRect().top
-    const order = ids.split(' ').map((id) => ({ id }))
-    const tops = new Map<string, number>()
-    for (const { id } of order) {
-      const element = document.getElementById(id)
-      if (element !== null) tops.set(id, element.getBoundingClientRect().top - rootTop)
-    }
-    const metrics = {
-      scrollTop: root.scrollTop,
-      scrollHeight: root.scrollHeight,
-      clientHeight: root.clientHeight,
-    }
-    setActive(activeSection(order, tops, metrics, lock.current?.id ?? null))
-  }, [ids])
-
-  const schedule = useCallback((): void => {
-    frame.current ??= requestAnimationFrame(measure)
-  }, [measure])
-
-  useEffect(() => {
-    const root = content.current
-    if (root === null) return
-    schedule()
-    root.addEventListener('scroll', schedule, { passive: true })
-    window.addEventListener('resize', schedule)
-    const resizes = new ResizeObserver(schedule)
-    for (const id of ids.split(' ')) {
-      const element = document.getElementById(id)
-      if (element !== null) resizes.observe(element)
-    }
-    return () => {
-      root.removeEventListener('scroll', schedule)
-      window.removeEventListener('resize', schedule)
-      resizes.disconnect()
-      if (frame.current !== null) cancelAnimationFrame(frame.current)
-      frame.current = null
-    }
-  }, [ids, schedule])
-
-  // A lock still pending at unmount must not fire into a gone component.
-  useEffect(
-    () => () => {
-      lock.current?.release()
-    },
-    [],
-  )
-
-  const go = (section: SettingsSection): void => {
-    const root = content.current
-    const target = document.getElementById(section.id)
-    if (root === null || target === null) return
-    lock.current?.release()
-    let timer = 0
-    const release = (): void => {
-      if (lock.current?.release !== release) return
-      lock.current = null
-      window.clearTimeout(timer)
-      root.removeEventListener('scrollend', release)
-      schedule()
-    }
-    lock.current = { id: section.id, release }
-    root.addEventListener('scrollend', release)
-    timer = window.setTimeout(release, SCROLL_LOCK_FALLBACK_MS)
-    setActive(section.id)
-    // The section, not its heading, so the card's top border and padding stay in view
-    // (`scroll-margin-top` on the groups). The heading takes the focus (tabIndex -1), so the
-    // keyboard continues from that group.
-    target.scrollIntoView({ behavior: scrollBehavior(), block: 'start' })
-    document.getElementById(sectionTitleId(section))?.focus({ preventScroll: true })
-  }
-
-  return (
-    <div className="settings">
-      <nav className="settings__nav" aria-label="Settings sections">
-        {sections.map((section) => (
-          <button
-            key={section.id}
-            type="button"
-            className="sideItem settings__navItem"
-            aria-current={active === section.id ? 'true' : undefined}
-            onClick={() => {
-              go(section)
-            }}
-          >
-            {section.label}
-          </button>
-        ))}
-        {/* Empty until the first state lands; the header no longer carries it. */}
-        {version === '' ? null : <p className="settings__version">View Protect v{version}</p>}
-      </nav>
-      <div className="settings__content" ref={content}>
-        {children}
-      </div>
+      <AppVersion />
     </div>
   )
+}
+
+/** The app version, quiet, at the foot of the column; nothing until the first state lands. */
+function AppVersion(): JSX.Element | null {
+  const version = useAppStore((s) => s.version)
+  return version === '' ? null : <p className="settings__version">View Protect v{version}</p>
 }
 
 /**
@@ -226,11 +86,12 @@ function KeystoreWarning(): JSX.Element {
   return (
     <section
       className="card settings__keystore"
-      id={KEYSTORE_SECTION.id}
-      aria-labelledby={sectionTitleId(KEYSTORE_SECTION)}
+      aria-labelledby="settings-keystore-title"
       role="alert"
     >
-      <GroupTitle section={KEYSTORE_SECTION}>Secure storage is not available</GroupTitle>
+      <h2 className="card__title settings__groupTitle" id="settings-keystore-title">
+        Secure storage is not available
+      </h2>
       <p className="settings__mismatchText">
         Keys and tokens can&rsquo;t be saved without Keychain or DPAPI, so you&rsquo;ll be asked for
         them each time the app opens; they are never stored as plain text.
@@ -293,12 +154,10 @@ function ConsoleCard({
   const dirty = isConsoleDirty(draft, settings)
 
   return (
-    <section
-      className="card"
-      id={CONSOLE_SECTION.id}
-      aria-labelledby={sectionTitleId(CONSOLE_SECTION)}
-    >
-      <GroupTitle section={CONSOLE_SECTION}>Console</GroupTitle>
+    <section aria-labelledby="settings-console-title">
+      <h2 className="card__title settings__groupTitle" id="settings-console-title">
+        UniFi Console
+      </h2>
       <h3 className="settings__subhead">Address and credentials</h3>
       <p className="card__hint">
         Saving only stores these details; press Connect below to connect.

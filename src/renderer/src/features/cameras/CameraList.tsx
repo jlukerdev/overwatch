@@ -35,6 +35,9 @@
 // centred `.emptyState` (styles.css), the setup one with a checklist of what is done and what is
 // missing (../../state/setupChecklist.ts). There is no Settings button in the header: the app nav has one,
 // and every state that needs Settings offers "Open settings" itself.
+//
+// At the bottom of every state but "Checking the console…", the screen's own Settings bar
+// (./StreamsSettings, P5.7): QUAL-1's app-wide grid and fill quality, closed by default.
 import { useCallback, useEffect, useMemo, useState, type JSX } from 'react'
 import type { ConnectionPhase, EndpointStatus, IpcError, IpcResult } from '@shared/ipc'
 import { useAppStore } from '../../state/appStore'
@@ -72,6 +75,7 @@ import { cameraCountLabel } from './cameraListText'
 import { SetupChecklist } from '../../ui/SetupChecklist'
 import { CameraCard } from './CameraCard'
 import { CameraThumbnail } from './CameraThumbnail'
+import { StreamsSettings } from './StreamsSettings'
 import './cameras.css'
 
 export interface CameraListProps {
@@ -84,6 +88,7 @@ export function CameraList({ onOpenSettings }: CameraListProps): JSX.Element {
   const connection = useAppStore((s) => s.connection)
   const connect = useAppStore((s) => s.connect)
   const refreshCameras = useAppStore((s) => s.refreshCameras)
+  const streams = useAppStore((s) => s.settings?.streams)
 
   const thumbnails = useThumbnails((s) => s.thumbnails)
   /**
@@ -290,6 +295,10 @@ export function CameraList({ onOpenSettings }: CameraListProps): JSX.Element {
           })}
         </ul>
       )}
+
+      {/* QUAL-1's app-wide defaults (P5.7), in every state of the screen: the shared Settings bar,
+          pinned to the bottom, as the Doors screen's polling. */}
+      {streams === undefined ? null : <StreamsSettings streams={streams} />}
     </section>
   )
 }

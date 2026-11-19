@@ -17,7 +17,7 @@
   /* Fills the body, so an empty state is centred in the screen and not under the header. */
   box-sizing: border-box;
   min-height: 100%;
-  padding: 1rem 1.25rem 1.5rem;
+  padding: var(--screen-pad-top) var(--screen-pad-x) var(--screen-pad-bottom);
 }
 
 .cameras__header {
@@ -276,4 +276,27 @@
 .cameras__progressLabel {
   font-size: var(--font-sm);
   font-variant-numeric: tabular-nums;
+}
+
+/*
+ * QUAL-1's two selects in the Settings bar (./StreamsSettings.tsx; the bar itself is the shared
+ * `.settingsBar`): side by side, one column when there is no room for two.
+ */
+.cameras__streamsGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0 1rem;
+  max-width: 32rem;
+}
+
+@media (width <= 40rem) {
+  .cameras__streamsGrid {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* As wide as their longest option, not the whole column. */
+.cameras__streamsSelect {
+  align-self: flex-start;
+  min-width: 10rem;
 }

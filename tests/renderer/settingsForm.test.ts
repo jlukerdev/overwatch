@@ -9,7 +9,6 @@ import { SettingsSchema, type Settings } from '@shared/models'
 import type { CertInfo, EndpointStatus, SecretsStored } from '@shared/ipc'
 import { describe, expect, it } from 'vitest'
 import {
-  streamsInputFrom,
   consoleDraftFrom,
   consoleInputFrom,
   consoleSignature,
@@ -316,29 +315,5 @@ describe('describeEndpointStatus', () => {
 
   it('adds the version once a probe has reported one (CON-4)', () => {
     expect(describeEndpointStatus(status({ version: '6.4.21' }))).toContain('version 6.4.21')
-  })
-})
-
-describe('streamsInputFrom (QUAL-1)', () => {
-  const streams = { defaultGridQuality: 'low', defaultFillQuality: 'high' } as const
-
-  it('changes the one field and sends the other exactly as stored', () => {
-    expect(streamsInputFrom(streams, 'defaultGridQuality', 'medium')).toEqual({
-      defaultGridQuality: 'medium',
-      defaultFillQuality: 'high',
-    })
-    expect(streamsInputFrom(streams, 'defaultFillQuality', 'low')).toEqual({
-      defaultGridQuality: 'low',
-      defaultFillQuality: 'low',
-    })
-  })
-
-  it('sends nothing for the value already stored', () => {
-    expect(streamsInputFrom(streams, 'defaultGridQuality', 'low')).toBeNull()
-  })
-
-  it('sends nothing for a value that is not a quality, the package channel included', () => {
-    expect(streamsInputFrom(streams, 'defaultGridQuality', 'package')).toBeNull()
-    expect(streamsInputFrom(streams, 'defaultFillQuality', '')).toBeNull()
   })
 })

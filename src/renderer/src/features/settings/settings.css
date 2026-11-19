@@ -147,20 +147,6 @@
   font-weight: 600;
 }
 
-/* QUAL-1's two pickers side by side; one column when there is no room for two. */
-.settings__streamsGrid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 0 1rem;
-  max-width: 32rem;
-}
-
-@media (max-width: 40rem) {
-  .settings__streamsGrid {
-    grid-template-columns: 1fr;
-  }
-}
-
 /* A card's heading row: title, state, and the action pushed to the right edge. */
 .settings__cardHead {
   margin-bottom: 0.25rem;
@@ -294,10 +280,4 @@
 
 .settings__keystore .card__title {
   color: var(--error);
-}
-
-/* QUAL-1's two selects: as wide as their longest option, not the whole card. */
-.settings__select {
-  align-self: flex-start;
-  min-width: 10rem;
 }

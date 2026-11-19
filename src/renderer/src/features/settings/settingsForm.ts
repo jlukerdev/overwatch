@@ -17,15 +17,7 @@
 //     learns *whether* one exists (`SecretsStored`). That is also why they take no part in
 //     `isConsoleDirty`: each secret has its own Save button and its own `setSecret` call, so the
 //     console Save button must not light up because a password box has characters in it.
-import type {
-  CertInfo,
-  EndpointStatus,
-  ConsoleInput,
-  SecretsStored,
-  SetStreamsInput,
-  Settings,
-} from '@shared/ipc'
-import { isQuality } from '@shared/quality'
+import type { CertInfo, EndpointStatus, ConsoleInput, SecretsStored, Settings } from '@shared/ipc'
 
 /** The fields the form can report an error against. */
 export const CONSOLE_FIELDS = ['host', 'accessBaseUrl', 'protectApiKey', 'accessToken'] as const
@@ -222,33 +214,4 @@ export function describeEndpointStatus(status: EndpointStatus): string {
   ]
   if (status.version !== null) parts.push(`version ${status.version}`)
   return parts.join(' · ')
-}
-
-// -------------------------------------------------------------------------------------------------
-// QUAL-1: the Streams card
-
-/** Which of the two QUAL-1 defaults a select edits. */
-export type StreamsField = keyof SetStreamsInput
-
-/**
- * The `setStreams` payload after one select changed: the other default exactly as it is stored, so
- * the call can never reset it. `streams` must be what is stored *now*, read at the moment of the
- * change rather than the value a select last rendered with: the Streams card passes the store's
- * latest `settings.streams`, and lets only one save run at a time, so two quick changes cannot have
- * the second one write back the first one's old value. `null` for a value that is not a `Quality`
- * (a select only offers the qualities, features/quality/QualityOptions, so that is a bug, not user
- * input) or for no change at all — a select fires `change` only on a different value, but there is
- * no reason to write the same one.
- */
-export function streamsInputFrom(
-  streams: SetStreamsInput,
-  field: StreamsField,
-  value: string,
-): SetStreamsInput | null {
-  if (!isQuality(value) || streams[field] === value) return null
-  return {
-    defaultGridQuality: streams.defaultGridQuality,
-    defaultFillQuality: streams.defaultFillQuality,
-    [field]: value,
-  }
 }

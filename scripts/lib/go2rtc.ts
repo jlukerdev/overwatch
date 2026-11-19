@@ -188,6 +188,28 @@ export function formatMarker(marker: InstallMarker): string {
   return `${JSON.stringify(marker, null, 2)}\n`
 }
 
+export type MarkerParse = { ok: true; marker: InstallMarker } | { ok: false; reason: string }
+
+/** Parses go2rtc.json text (undefined when the file is missing) into an InstallMarker. */
+export function parseMarker(markerText: string | undefined): MarkerParse {
+  if (markerText === undefined) return { ok: false, reason: `no ${MARKER_FILE} marker` }
+  let marker: unknown
+  try {
+    marker = JSON.parse(markerText)
+  } catch {
+    return { ok: false, reason: `${MARKER_FILE} is not valid JSON` }
+  }
+  if (
+    !isRecord(marker) ||
+    typeof marker.version !== 'string' ||
+    typeof marker.binarySha256 !== 'string' ||
+    !SHA256_RE.test(marker.binarySha256)
+  ) {
+    return { ok: false, reason: `${MARKER_FILE} is malformed` }
+  }
+  return { ok: true, marker: { version: marker.version, binarySha256: marker.binarySha256 } }
+}
+
 /**
  * Decides whether an installed target is current. `markerText` is the go2rtc.json contents
  * (undefined if missing); `actualBinarySha` is the SHA-256 of the installed binary right now
@@ -199,21 +221,9 @@ export function shouldSkip(
   manifestVersion: string,
   actualBinarySha: string | undefined,
 ): SkipDecision {
-  if (markerText === undefined) return { skip: false, reason: `no ${MARKER_FILE} marker` }
-  let marker: unknown
-  try {
-    marker = JSON.parse(markerText)
-  } catch {
-    return { skip: false, reason: `${MARKER_FILE} is not valid JSON` }
-  }
-  if (
-    !isRecord(marker) ||
-    typeof marker.version !== 'string' ||
-    typeof marker.binarySha256 !== 'string' ||
-    !SHA256_RE.test(marker.binarySha256)
-  ) {
-    return { skip: false, reason: `${MARKER_FILE} is malformed` }
-  }
+  const parsed = parseMarker(markerText)
+  if (!parsed.ok) return { skip: false, reason: parsed.reason }
+  const { marker } = parsed
   if (marker.version !== manifestVersion) {
     return {
       skip: false,

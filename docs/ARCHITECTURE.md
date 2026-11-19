@@ -13,7 +13,7 @@
 | Validation | **zod** | Config schema plus IPC payload validation |
 | API types | **openapi-typescript** from the vendored official contract (`docs/reference/`) | Types match the console's API version exactly |
 | Secrets | Electron **safeStorage** | Keychain / DPAPI with no native module |
-| Packaging | **electron-builder** → DMG (mac arm64), NSIS (win x64) | Can add electron-updater later for MVP auto-update |
+| Packaging | **electron-builder** → DMG (mac arm64 and x64, ad-hoc signed), NSIS (win x64) | Can add electron-updater later for MVP auto-update |
 | Tests | **Vitest** (unit), **Playwright for Electron** (smoke) | |
 
 ### Alternatives considered

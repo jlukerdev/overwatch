@@ -5,9 +5,9 @@ Notes for moving OverWatch (View Protect) to its own public GitHub repo and buil
 ## What the repo already provides
 
 - **Build:** `npm run dist` fetches go2rtc for all targets (SHA-256 verified against `scripts/go2rtc.manifest.json`), builds, and runs electron-builder.
-  - macOS: `OverWatch-<version>-arm64.dmg`
+  - macOS: `OverWatch-<version>-arm64.dmg` and `OverWatch-<version>-x64.dmg` (Intel)
   - Windows: `OverWatch-<version>-x64.exe` (NSIS)
-  - Both are unsigned.
+  - None are signed with a certificate. The macOS apps are ad-hoc signed.
 - **Checks:** `npm run lint`, `npm run format:check`, `npm run typecheck` (run inside `npm run build`), `npm test` (Vitest).
 - **Node:** 24, from `.nvmrc`. The scripts run `.ts` files directly, so the Node version matters.
 - **Version:** `package.json` is `1.0.0`. electron-builder takes the installer version from it.
@@ -33,12 +33,11 @@ Notes for moving OverWatch (View Protect) to its own public GitHub repo and buil
 
 ### `.github/workflows/release.yml` (pushes to `main`, and/or `v*` tags)
 
-- Matrix of `macos-latest` (arm64) and `windows-latest`.
+- One `macos-latest` (arm64) job can build all three installers with `npm run dist:all` (the NSIS toolset runs natively there). Or use a matrix of `macos-latest` (`dist:mac`) and `windows-latest` (`dist:win`).
 - Each job: `npm ci`, then `npm run dist -- --mac` or `npm run dist -- --win`, with `--publish never`. `predist` fetches go2rtc.
 - Upload installers as artifacts.
 - A final Ubuntu job with `permissions: contents: write` creates the Release (`gh release create` or `softprops/action-gh-release`) and attaches both installers.
-- Build each OS on its own runner: the go2rtc binaries and NSIS packaging are per-platform.
-- Only an arm64 DMG is configured. An Intel Mac build would need a config change in `electron-builder.yml`.
+- The `afterPack` go2rtc check runs on either layout, so a wrong or stale binary fails the job.
 
 ### `.github/dependabot.yml`
 

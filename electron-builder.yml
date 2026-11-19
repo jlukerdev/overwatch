@@ -1,5 +1,6 @@
-# Packaging config (P0.1). P6.1 named it for OverWatch and added the icons; P6.4 finishes it
-# (unsigned DMG + NSIS, go2rtc checks, first-run Gatekeeper/SmartScreen notes).
+# Packaging config (P0.1). P6.1 named it for OverWatch and added the icons; P6.4 finished it:
+# ad-hoc signed DMGs for arm64 and x64, an unsigned NSIS installer for x64, and the afterPack
+# go2rtc check. All three build on an Apple silicon Mac (`npm run dist:all`, docs/DEVELOPMENT.md).
 # "View Protect" stays the internal and repo name; OverWatch is what the user sees (SPEC BRAND-1).
 # The userData folder stays "View Protect" (src/main/branding.ts), so changing productName or
 # appId does not move anyone's Views or settings.
@@ -11,12 +12,22 @@ directories:
 files:
   - out/**/*
   - package.json
+# Fails the build unless each target's packaged go2rtc is the manifest's pinned version, matches
+# its go2rtc.json marker and is built for the target's OS and CPU (P6.4).
+afterPack: ./scripts/after-pack.ts
 # go2rtc sidecar binaries fetched by `npm run fetch:go2rtc` (P0.2) live in
-# resources/bin/<node platform>-<arch> (darwin-arm64, win32-x64). They are copied per
+# resources/bin/<node platform>-<arch> (darwin-arm64, darwin-x64, win32-x64). They are copied per
 # target below: the platform part is literal because electron-builder's `${os}` macro
 # gives mac/win and its `${platform}` macro gives the *build host's* process.platform,
 # which is wrong when cross-building. `${arch}` is the target arch.
 mac:
+  # Ad-hoc signed ("-"), not Developer ID signed: Apple silicon refuses to run an app whose bundle
+  # carries no valid signature at all, and electron-builder skips signing entirely when it finds no
+  # certificate. Ad-hoc signing seals the bundle so Gatekeeper offers "Open Anyway" (README) instead
+  # of reporting the app as damaged. Hardened runtime is off because, with an ad-hoc signature, its
+  # library validation rejects Electron's frameworks. Real signing + notarization is a later task.
+  identity: '-'
+  hardenedRuntime: false
   # The bundle icon (Dock, Finder, About panel). Made from resources/icons/icon.svg.
   icon: resources/icons/icon.icns
   artifactName: OverWatch-${version}-${arch}.${ext}
@@ -27,7 +38,7 @@ mac:
         - '**/*'
   target:
     - target: dmg
-      arch: [arm64]
+      arch: [arm64, x64]
 win:
   # The .exe, installer and shortcut icon.
   icon: resources/icons/icon.ico
@@ -49,3 +60,7 @@ nsis:
   uninstallDisplayName: OverWatch
   oneClick: false
   allowToChangeInstallationDirectory: true
+toolsets:
+  # The default NSIS toolset's macOS makensis is x86_64 only, so building the Windows installer on
+  # an Apple silicon Mac needs Rosetta. The 1.2.1 bundle (makensis 3.12) runs natively.
+  nsis: '1.2.1'

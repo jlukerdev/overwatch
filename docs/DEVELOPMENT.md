@@ -28,7 +28,8 @@ view-protect/
 | `npm run dev` | Run the app with hot reload |
 | `npm run build` | Typecheck and build to `out/` |
 | `npm run lint` · `npm run format:check` · `npm test` | Checks that must pass before a PR |
-| `npm run dist` | Fetch every go2rtc target, build, and package with electron-builder |
+| `npm run dist` | Fetch every go2rtc target, build, and package the installers for this OS (see [Installers](#installers)) |
+| `npm run dist:mac` · `npm run dist:win` · `npm run dist:all` | The same for macOS only (arm64 + x64 DMGs), Windows only (x64 NSIS), or all three |
 | `npm run perf` | Perf harness (results in `docs/perf-results.md`) |
 | `npm run gen:icons` | Regenerate the app icons from `resources/icons/icon.svg` |
 | `npm run gen:protect-types` | Regenerate the Protect API types |
@@ -48,6 +49,22 @@ Options (after `--`):
 On Windows, if the binary is in use, quit OverWatch (and any go2rtc) first.
 
 **Updating go2rtc:** in the manifest, change `version` and replace each `sha256`. Cross-check the hashes with `gh api repos/AlexxIT/go2rtc/releases/tags/<version> --jq '.assets[] | {name, digest}'`. Then run `npm run fetch:go2rtc -- --all --force`.
+
+## Installers
+
+`npm run dist` builds the installers into `dist/` with electron-builder (`electron-builder.yml`):
+
+| File | For |
+|---|---|
+| `OverWatch-<version>-arm64.dmg` | macOS, Apple silicon |
+| `OverWatch-<version>-x64.dmg` | macOS, Intel |
+| `OverWatch-<version>-x64.exe` | Windows x64 (NSIS; asks per-user or all users, folder can be changed) |
+
+- **Where to build.** A Mac builds all three (`npm run dist:all`): the DMGs need macOS, and the NSIS installer builds natively on Apple silicon through the `toolsets.nsis: '1.2.1'` bundle, so neither Wine nor Rosetta is needed. A Windows PC builds only the `.exe` (`npm run dist:win`).
+- **go2rtc.** `predist` fetches every go2rtc target, and each package copies only its own `resources/bin/<platform>-<arch>/`. After packing and before signing, `scripts/after-pack.ts` (`afterPack` in `electron-builder.yml`) fails the build if the packaged go2rtc is missing, differs from the pinned version or hash, or is built for the wrong OS or CPU. macOS ad-hoc signing then re-signs the binary, so in a signed app it no longer hashes to its `go2rtc.json`; that is expected. Run builds through `npm run dist*`: the hook path is resolved against the current directory.
+- **Signing.** None yet. The macOS apps are ad-hoc signed (`identity: '-'`, hardened runtime off) so Apple silicon will run them and Gatekeeper offers *Open Anyway*; without any signature macOS reports the app as damaged. The Windows files are unsigned. The first-launch steps for users are in the README.
+- **Check a build.** `codesign --verify --deep --strict dist/mac-arm64/OverWatch.app` should print nothing. To launch a packaged build from a terminal started by VS Code or Claude Code, unset `ELECTRON_RUN_AS_NODE` first (`env -u ELECTRON_RUN_AS_NODE dist/mac-arm64/OverWatch.app/Contents/MacOS/OverWatch --user-data-dir=<empty dir>`), or it starts as plain Node and says "bad option".
+- **Upgrade check (G6).** Install the new build over an older one: Views and settings are kept, because the `userData` folder name never changes (`src/main/branding.ts`).
 
 ## Protect API types
 

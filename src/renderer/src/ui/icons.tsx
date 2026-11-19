@@ -166,9 +166,9 @@ export function RefreshIcon(props: IconProps): JSX.Element {
 export function GearIcon(props: IconProps): JSX.Element {
   return (
     <Svg {...props}>
+      {/* Six broad teeth on one outline (user feedback 2026-11-19: the eight thin spokes read as a sun). */}
+      <path d="M6.21 3.33L6.48 1.42H9.52L9.79 3.33A5 5 0 0 1 11.15 4.11L12.94 3.4L14.46 6.03L12.94 7.22A5 5 0 0 1 12.94 8.78L14.46 9.97L12.94 12.6L11.15 11.89A5 5 0 0 1 9.79 12.67L9.52 14.58H6.48L6.21 12.67A5 5 0 0 1 4.85 11.89L3.06 12.6L1.54 9.97L3.06 8.78A5 5 0 0 1 3.06 7.22L1.54 6.03L3.06 3.4L4.85 4.11A5 5 0 0 1 6.21 3.33Z" />
       <circle cx="8" cy="8" r="2" />
-      <path d="M8 1.5v1.75M8 12.75v1.75M1.5 8h1.75M12.75 8h1.75M3.4 3.4l1.25 1.25M11.35 11.35l1.25 1.25M3.4 12.6l1.25-1.25M11.35 4.65l1.25-1.25" />
-      <circle cx="8" cy="8" r="4.25" />
     </Svg>
   )
 }

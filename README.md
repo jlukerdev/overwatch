@@ -25,16 +25,29 @@ OverWatch talks straight to your UniFi console over your local network, using Ub
 - A Protect **Integration API key**, created in Protect under *Integrations*
 - For doors: **UniFi Access** and an Access API token. The Access API it is built against is **v4.2.16**. Access 1.9.1 or later is required, and some features need newer: lock rules and emergency status need 1.24.6, and door-state push needs 1.20.11.
 
-Installers are currently built only for Apple silicon Macs and Windows x64 (see below). The other combinations above are supported by the platform but need their own build.
+Installers are built for Apple silicon Macs, Intel Macs and Windows x64 (see below). Windows on ARM needs its own build.
 
 ## Install
 
-Download the installer for your platform from the releases: `OverWatch-<version>-arm64.dmg` for macOS, `OverWatch-<version>-x64.exe` for Windows.
+Download the installer for your computer from the releases:
+
+| Computer | Installer |
+|---|---|
+| Mac with Apple silicon (M1 or later) | `OverWatch-<version>-arm64.dmg` |
+| Mac with an Intel processor | `OverWatch-<version>-x64.dmg` |
+| Windows x64 | `OverWatch-<version>-x64.exe` |
+
+Not sure which Mac you have? Choose *Apple menu → About This Mac*: it lists a **Chip** (Apple silicon) or a **Processor** (Intel).
+
+- **macOS:** open the `.dmg` and drag OverWatch into Applications.
+- **Windows:** run the `.exe` and follow the steps. It asks whether to install for you only or for everyone on the computer (that needs an administrator), and lets you choose the folder. Either way your Views and settings are kept per user.
 
 The builds aren't code-signed yet, so the first launch needs one extra step:
 
-- **macOS:** open the app once, then go to *System Settings → Privacy & Security* and choose **Open Anyway**.
-- **Windows:** when SmartScreen appears, choose **More info → Run anyway**.
+- **macOS:** open OverWatch from Applications. macOS says it can't verify the app; choose **Done** (not *Move to Trash*). Then go to *System Settings → Privacy & Security*, scroll down to the message about OverWatch, choose **Open Anyway** and confirm with your password. You only do this once per version.
+- **Windows:** when *Windows protected your PC* appears, choose **More info**, then **Run anyway**. Some antivirus software also asks once.
+
+After installing a new version on a Mac, macOS may ask once whether OverWatch can use its keychain item ("OverWatch Safe Storage"). Choose **Always Allow**: that is where your API key is kept.
 
 Installing a newer version over an older one keeps your Views and settings.
 
@@ -70,7 +83,7 @@ You need Node 24 or later.
 npm install
 npm run fetch:go2rtc   # download go2rtc for this machine
 npm run dev            # run the app
-npm run dist           # build the installers into dist/
+npm run dist           # build the installers into dist/ (see docs/DEVELOPMENT.md)
 ```
 
 To work on the code, see [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md). The design docs are [docs/SPEC.md](docs/SPEC.md) (requirements), [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) (architecture) and [docs/DEV_PLAN.md](docs/DEV_PLAN.md) (plan). Inside the code the project is called *View Protect*.

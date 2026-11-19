@@ -705,7 +705,9 @@ function applyBranding(): void {
       }),
     ),
   )
-  appIcon = resolveAppIcon()
+  // A packaged macOS app uses the bundle's .icns everywhere, so the PNG is not shipped there
+  // (electron-builder.yml copies it for Windows only) and looking for it would only log a warning.
+  appIcon = isMac && app.isPackaged ? undefined : resolveAppIcon()
   const icon = appIcon
   app.setAboutPanelOptions({
     applicationName: APP_NAME,

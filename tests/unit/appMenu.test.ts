@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { buildAppMenuTemplate } from '../../src/main/appMenu'
 import {
   APP_NAME,
+  DEV_USER_DATA_DIR_NAME,
   USER_DATA_DIR_NAME,
   appIconPath,
   userDataOverride,
@@ -109,15 +110,26 @@ describe('buildAppMenuTemplate View menu', () => {
 })
 
 describe('userDataOverride', () => {
-  it('keeps the pre-rename "View Protect" folder', () => {
+  it('keeps the pre-rename "View Protect" folder when packaged', () => {
     expect(USER_DATA_DIR_NAME).toBe('View Protect')
-    expect(userDataOverride({ appData: '/appdata', hasUserDataDirSwitch: false })).toBe(
-      join('/appdata', 'View Protect'),
-    )
+    expect(
+      userDataOverride({ appData: '/appdata', hasUserDataDirSwitch: false, isPackaged: true }),
+    ).toBe(join('/appdata', 'View Protect'))
   })
 
-  it('leaves an explicit --user-data-dir alone', () => {
-    expect(userDataOverride({ appData: '/appdata', hasUserDataDirSwitch: true })).toBeNull()
+  it('uses its own "View Protect Dev" folder when unpackaged', () => {
+    expect(DEV_USER_DATA_DIR_NAME).toBe('View Protect Dev')
+    expect(
+      userDataOverride({ appData: '/appdata', hasUserDataDirSwitch: false, isPackaged: false }),
+    ).toBe(join('/appdata', 'View Protect Dev'))
+  })
+
+  it('leaves an explicit --user-data-dir alone, packaged or not', () => {
+    for (const isPackaged of [true, false]) {
+      expect(
+        userDataOverride({ appData: '/appdata', hasUserDataDirSwitch: true, isPackaged }),
+      ).toBeNull()
+    }
   })
 })
 

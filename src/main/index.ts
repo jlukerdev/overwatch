@@ -1,7 +1,7 @@
 // App entry: window creation, single-instance lock, lifecycle, and the one place where the
 // main-process services are assembled from their parts (config, secrets, TLS pins, the shared
 // Protect request throttle and the two API clients).
-import { existsSync, mkdirSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync } from 'node:fs'
 import { basename, join } from 'node:path'
 import {
   app,
@@ -12,6 +12,7 @@ import {
   powerMonitor,
   powerSaveBlocker,
   safeStorage,
+  screen,
   session,
   shell,
 } from 'electron'
@@ -35,6 +36,7 @@ import { isAppUrl } from './navigation'
 import { createRateLimiter, type RateLimiter } from './net/rateLimiter'
 import { startPerfRun } from './perf/perfMode'
 import { parsePerfEnv, withPerfGridQuality, withPerfView } from './perf/perfStats'
+import { writeFileAtomicSync } from './fs/atomic'
 import { createPower, type Power } from './power'
 import { createProtectClient, type ProtectClient } from './protect/client'
 import {
@@ -52,6 +54,14 @@ import {
 import { createStreamRegistry, type StreamRegistry } from './streams/registry'
 import { createConfigPinStore, createPinPersistence } from './tls/configPinStore'
 import { createPinRegistry, type PinRegistry } from './tls/pinning'
+import {
+  DEFAULT_WINDOW_SIZE,
+  fitBoundsToDisplays,
+  readSavedWindowBounds,
+  trackWindowState,
+  WINDOW_STATE_FILE,
+  type Rect,
+} from './windowState'
 
 // With ELECTRON_RUN_AS_NODE set, the Electron binary runs as a plain Node interpreter: `app` and
 // `BrowserWindow` are undefined and every line below fails with a confusing TypeError. VS Code
@@ -71,16 +81,21 @@ if (process.env.ELECTRON_RUN_AS_NODE !== undefined && process.env.ELECTRON_RUN_A
 // say OverWatch from the first line on.
 app.setName(APP_NAME)
 // The rename must not move the user's data. Electron's default `userData` is `<appData>/<productName>`,
-// which is now `<appData>/OverWatch`; pointing it back at `<appData>/View Protect` keeps the Views,
-// settings, accepted certificate pins, `secrets.bin` and — on Windows — the DPAPI-protected key in
-// Chromium's `Local State` that decrypts it (the G6 "data kept" check). `sessionData` (Chromium's
-// caches, Local State) follows `userData` because it is set before `ready`. A `--user-data-dir`
-// on the command line wins, so the blank-profile checks still get a blank profile (CLAUDE.md).
+// which is now `<appData>/OverWatch`; pointing the packaged app back at `<appData>/View Protect` keeps
+// the Views, settings, accepted certificate pins, `secrets.bin` and — on Windows — the DPAPI-protected
+// key in Chromium's `Local State` that decrypts it (the G6 "data kept" check). An unpackaged run (dev,
+// `npx electron out/main/index.js`, the perf harness) uses `<appData>/View Protect Dev` instead (P7.1),
+// so it neither shares Views and settings with an installed OverWatch nor collides with its
+// single-instance lock (which lives in `userData`); that folder starts empty. `sessionData`
+// (Chromium's caches, Local State) follows `userData` because it is set before `ready`. A
+// `--user-data-dir` on the command line wins in both cases, so the blank-profile checks still get a
+// blank profile (CLAUDE.md).
 // What does change on macOS is the keychain entry `safeStorage` uses, "<name> Safe Storage": the
 // stored API key and token become unreadable once and are re-entered in Settings (SPEC BRAND-5).
 const userDataDir = userDataOverride({
   appData: app.getPath('appData'),
   hasUserDataDirSwitch: app.commandLine.hasSwitch('user-data-dir'),
+  isPackaged: app.isPackaged,
 })
 if (userDataDir !== null) app.setPath('userData', userDataDir)
 
@@ -121,6 +136,8 @@ if (appLog !== null) {
       `Electron ${process.versions.electron}, Chrome ${process.versions.chrome}, ` +
       (app.isPackaged ? 'packaged' : 'unpackaged'),
   )
+  // Which data folder this run uses (P7.1): dev and the installed app no longer share one.
+  console.info(`[app] data folder: ${app.getPath('userData')}`)
 }
 // Monitor only: Electron's own handling of an uncaught exception is unchanged.
 process.on('uncaughtExceptionMonitor', (err, origin) => {
@@ -726,11 +743,36 @@ function applyBranding(): void {
   if (isMac && !app.isPackaged && icon !== undefined) app.dock?.setIcon(icon)
 }
 
+/** P7.1: `<userData>/window-state.json`, the window's last normal size and place. */
+function windowStatePath(): string {
+  return join(app.getPath('userData'), WINDOW_STATE_FILE)
+}
+
+const logWindowState = (line: string): void => {
+  console.info(`[window-state] ${line}`)
+}
+
+/**
+ * P7.1: the bounds to give the window — the last session's, if they still fit on a connected
+ * display (src/main/windowState.ts) — or null for the default size, which Electron centres. A perf
+ * run always gets the default: its summary records the window size, and runs must compare.
+ */
+function restoredWindowBounds(): Rect | null {
+  if (perfConfig !== null) return null
+  const saved = readSavedWindowBounds(() => readFileSync(windowStatePath(), 'utf8'), logWindowState)
+  if (saved === null) return null
+  const fitted = fitBoundsToDisplays(saved, screen.getAllDisplays())
+  if (fitted === null) {
+    logWindowState('the saved place is not on a connected display; using the default size')
+  }
+  return fitted
+}
+
 function createWindow(): void {
   const icon = process.platform === 'darwin' ? undefined : appIcon
   const win = new BrowserWindow({
-    width: 1280,
-    height: 800,
+    // P7.1: always the default here; restored bounds are applied with `setBounds` below.
+    ...DEFAULT_WINDOW_SIZE,
     minWidth: 640,
     minHeight: 400,
     show: false,
@@ -748,6 +790,25 @@ function createWindow(): void {
     },
   })
   mainWindow = win
+  // P7.1: the last session's size and place, applied after construction and before the window is
+  // shown (`show: false`): constructor bounds can be scaled by the primary display's factor on
+  // Windows with mixed DPI, `setBounds` is not. Then save the normal bounds as the window moves and
+  // resizes, and once more on close — not during a perf run, which must not change the next launch.
+  // The tracker is told what was restored, so the `move` / `resize` from `setBounds` (if it arrives
+  // after this) writes nothing unless the window ended up somewhere else.
+  const restored = restoredWindowBounds()
+  if (restored !== null) win.setBounds(restored)
+  if (perfConfig === null) {
+    const path = windowStatePath()
+    trackWindowState({
+      window: win,
+      write: (text) => {
+        writeFileAtomicSync(path, text)
+      },
+      log: logWindowState,
+      restored,
+    })
+  }
 
   win.once('ready-to-show', () => {
     win.show()

@@ -27,11 +27,19 @@
 //    `fieldset`, so its caption is read with the controls inside it. It holds the custom-aspect
 //    mode, so it is the one the editor remounts on a reset.
 //
+// Each group folds away on its own (P7.1, user request 2026-11-19), so the palette under the tab
+// gets the room. The group's caption is an `h3` holding a full-width `.disclosure` button
+// (styles.css; `aria-expanded`, and `aria-controls` while open), the same shape as ui/SettingsBar; the controls follow in a `fieldset` named by
+// that button, rendered only while the group is open, so nothing folded stays in the tab order.
+// Which groups are open is the editor's state (`OpenGroups`, ./editorTabs), not this component's,
+// so a reset's remount does not unfold them.
+//
 // Layout changes report how many camera cells they dropped, so the editor can say so.
-import { useId, useState, type JSX } from 'react'
+import { useId, useState, type JSX, type ReactNode } from 'react'
 import { FitSchema, MAX_GRID_DIMENSION, MAX_GRID_GAP, type View } from '@shared/models'
 import { LAYOUT_PRESETS, resizeGrid } from '@shared/viewLayout'
 import { useAppStore } from '../../state/appStore'
+import { ChevronDownIcon } from '../../ui/icons'
 import {
   inheritOptionLabel,
   parseQualityOption,
@@ -46,6 +54,7 @@ import {
   matchingPresetId,
   MAX_ASPECT_TERM,
 } from './editorModel'
+import type { OpenGroups, ViewSettingsGroup } from './editorTabs'
 import { resizeDropsCameras } from './viewEditorHelpers'
 
 const CUSTOM = 'custom'
@@ -142,10 +151,57 @@ export interface EditorViewSettingsProps {
   readonly draft: View
   /** A setting that leaves the cells alone (aspect, gap, fit, names, the two qualities). */
   readonly onEdit: (next: View) => void
+  /** Which of the two groups are open (the editor's state, header comment). */
+  readonly openGroups: OpenGroups
+  /** Fold or unfold one group. */
+  readonly onToggleGroup: (group: ViewSettingsGroup) => void
+}
+
+interface SettingsGroupProps {
+  /** The caption: the button's text and the fieldset's name. */
+  readonly title: string
+  readonly open: boolean
+  readonly onToggle: () => void
+  /** The controls, rendered only while open. */
+  readonly children: ReactNode
+}
+
+/** One foldable group of the View tab: its caption button, then its fieldset (header comment). */
+function SettingsGroup({ title, open, onToggle, children }: SettingsGroupProps): JSX.Element {
+  const toggleId = useId()
+  const bodyId = useId()
+  return (
+    <div className="viewEditor__section">
+      <h3 className="viewEditor__panelTitle">
+        <button
+          type="button"
+          id={toggleId}
+          className="disclosure viewEditor__sectionToggle"
+          aria-expanded={open}
+          // Only while the body is there to point at: folded, it is unmounted.
+          aria-controls={open ? bodyId : undefined}
+          onClick={onToggle}
+        >
+          {title}
+          <ChevronDownIcon className="disclosure__chevron" />
+        </button>
+      </h3>
+      {open ? (
+        <fieldset id={bodyId} className="viewEditor__sectionBody" aria-labelledby={toggleId}>
+          {children}
+        </fieldset>
+      ) : null}
+    </div>
+  )
 }
 
 /** The side panel's View tab: the Display and Quality groups (header comment). */
-export function EditorViewSettings({ draft, onEdit }: EditorViewSettingsProps): JSX.Element {
+export function EditorViewSettings({
+  draft,
+  onEdit,
+  openGroups,
+  onToggleGroup,
+}: EditorViewSettingsProps): JSX.Element {
   const aspectId = useId()
   const gapId = useId()
   const showNamesId = useId()
@@ -157,8 +213,13 @@ export function EditorViewSettings({ draft, onEdit }: EditorViewSettingsProps): 
 
   return (
     <div className="viewEditor__viewSettings">
-      <fieldset className="viewEditor__section">
-        <legend className="viewEditor__panelTitle">Display</legend>
+      <SettingsGroup
+        title="Display"
+        open={openGroups.display}
+        onToggle={() => {
+          onToggleGroup('display')
+        }}
+      >
         <div className="viewEditor__setting">
           <label className="field__label" htmlFor={aspectId}>
             Aspect
@@ -271,10 +332,15 @@ export function EditorViewSettings({ draft, onEdit }: EditorViewSettingsProps): 
           />
           <label htmlFor={showNamesId}>Show camera names</label>
         </div>
-      </fieldset>
+      </SettingsGroup>
 
-      <fieldset className="viewEditor__section">
-        <legend className="viewEditor__panelTitle">Quality</legend>
+      <SettingsGroup
+        title="Quality"
+        open={openGroups.quality}
+        onToggle={() => {
+          onToggleGroup('quality')
+        }}
+      >
         <label className="viewEditor__setting">
           <span className="field__label">Grid quality</span>
           <select
@@ -304,7 +370,7 @@ export function EditorViewSettings({ draft, onEdit }: EditorViewSettingsProps): 
             />
           </select>
         </label>
-      </fieldset>
+      </SettingsGroup>
     </div>
   )
 }

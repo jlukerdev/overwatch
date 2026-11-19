@@ -5,7 +5,7 @@
 // attach a player element, close a socket, drop an element). Nothing in this module touches the DOM,
 // the bridge or a timer, which is why all of it is tested — the project has no jsdom and no
 // testing-library (vitest.config.mts, CLAUDE.md), so a lifecycle rule that lived in a `useEffect`
-// would be a rule no test could reach, and this is a lifecycle with six ways to go wrong:
+// would be a rule no test could reach, and this is a lifecycle with seven ways to go wrong:
 //
 //  1. **The seamless swap (QUAL-6, same mechanism as FILL-2).** There are two layers, `current` and
 //     `incoming`. `current` is what the viewer sees; `incoming` is attached, hidden and muted. The
@@ -47,6 +47,10 @@
 //     (never go2rtc's own text, which can name the source URL: CON-2, NFR-9) while it retries — but
 //     only for a layer that never played: a visible layer that errors after playing is an ordinary
 //     lost socket (rule 3), not a stream that could not start.
+//  7. **Waking up is news, not a failure (NFR-7, P6.2).** A `recover` — the machine woke from sleep
+//     or its network changed — forgets the backoff and retries at once instead of waiting out up to
+//     15 s, but only for a player that is waiting to retry: a healthy one is left to its own stall
+//     detector, and a frozen frame from before the sleep is dropped rather than kept (`onRecover`).
 import type { Camera, IpcError, IpcResult } from '@shared/ipc'
 import type { StreamQuality } from '@shared/quality'
 import { isHandleCurrent, type StreamHandle, type StreamRuntime } from '@shared/streams'
@@ -174,6 +178,14 @@ export interface PendingEnsure {
   readonly requestId: number
   /** The quality that call asked for, which may already be out of date when it answers. */
   readonly quality: StreamQuality
+  /**
+   * The backoff it was scheduled with. Above 0 it may still be **waiting** rather than in flight,
+   * which is the one kind of pending call a `recover` (rule 7) replaces with an immediate one; a call
+   * issued at 0 is already out and is left to answer. (The machine cannot see the timer fire, so a
+   * delayed call that has already gone out is replaced too — harmless: `ensureStream` is idempotent
+   * and the old reply is ignored by its `requestId`.)
+   */
+  readonly delayMs: number
 }
 
 export interface PlayerState {
@@ -242,6 +254,12 @@ export type PlayerEvent =
   | { readonly type: 'streamError'; readonly id: number }
   /** No first frame within `FIRST_FRAME_TIMEOUT_MS` of visible time since attach (`paintWindowStep`). */
   | { readonly type: 'firstFrameTimeout'; readonly id: number }
+  /**
+   * NFR-7 (P6.2): `IPC_EVENTS.recover` — the machine woke from sleep or its network changed. Forget
+   * the backoff and retry now if a retry is being waited out (rule 7). A hint: missing it only means
+   * the backoff runs out on its own.
+   */
+  | { readonly type: 'recover' }
   /** Unmount. Everything closes; nothing is scheduled again. */
   | { readonly type: 'stop' }
 
@@ -329,6 +347,8 @@ export function playerStep(state: PlayerState, event: PlayerEvent): PlayerStep {
       return onFirstFrameTimeout(state, event.id)
     case 'codecUnsupported':
       return onCodecUnsupported(state, event.id, event.mime)
+    case 'recover':
+      return onRecover(state)
     case 'stop':
       return onStop(state)
   }
@@ -638,6 +658,44 @@ function onCodecUnsupported(state: PlayerState, id: number, mime: string): Playe
   return maybeEnsure(next, commands)
 }
 
+/**
+ * Rule 7 (NFR-7, P6.2): woke from sleep, or the network changed. Whatever failed before this failed
+ * against a network that is gone now, so the backoff it built up is forgotten and a retry that is
+ * being waited out — up to 15 s of it — goes out at once.
+ *
+ *  - **Nothing for a player that has nothing to retry.** Camera not online (CAM-3) or gateway down
+ *    (rule 4): those wait for their own push, and `teardown` already left `failures` at 0. A codec
+ *    verdict (rule 5) is kept — sleeping does not change a camera's encoder — so a cell with no
+ *    decodable target stays on "Codec not supported".
+ *  - **A healthy player is left alone.** A live `current` is not reconnected: if its socket died in
+ *    the sleep, the close event or the stall detector (`playerTiming.STALL_GRACE_MS`; its first
+ *    sample after a wake is already past the grace) says so within seconds. A layer that is
+ *    connecting (`incoming`, or a call issued at 0 ms and still out) is left to finish, too.
+ *  - **A frozen `current` is dropped, not kept.** Rule 3 bounds a still frame by
+ *    {@link MAX_STALE_FRAME_FAILURES}; zeroing `failures` would quietly restart that count and keep
+ *    a picture from before the sleep — minutes or hours old — on screen as if it were live for
+ *    another four attempts. So the stale frame goes now, and the placeholder says what is happening
+ *    until the replacement's first frame. (After a network change without sleep the frame may be
+ *    only a second old, so this can cost a brief "Connecting…" — the honest trade.)
+ *  - `lastError` and `streamFailed` stay: they are still the most recent news until the retry
+ *    answers.
+ */
+function onRecover(state: PlayerState): PlayerStep {
+  if (state.camera !== 'online' || state.runtime?.state === 'down') return settled(state)
+  let next: PlayerState = { ...state, failures: 0 }
+  const commands: PlayerCommand[] = []
+  if (next.current?.stale === true) {
+    commands.push({ type: 'detach', id: next.current.id })
+    next = { ...next, current: null }
+  }
+  // A retry waiting out a backoff: replaced by one that goes now (see `PendingEnsure.delayMs`).
+  if (next.pending !== null && next.pending.delayMs > 0) {
+    commands.push({ type: 'cancelEnsure' })
+    next = { ...next, pending: null }
+  }
+  return maybeEnsure(next, commands)
+}
+
 function onStop(state: PlayerState): PlayerStep {
   const { state: closed, commands } = teardown({ ...state, stopped: true })
   return { state: { ...closed, placeholder: null }, commands }
@@ -653,16 +711,11 @@ function maybeEnsure(before: PlayerState, input: PlayerCommand[]): PlayerStep {
   const requestId = state.nextId
   // Non-null: `needsEnsure` is false without a target.
   const quality = targetQuality(state) ?? state.quality
-  return settled({ ...state, nextId: requestId + 1, pending: { requestId, quality } }, [
+  // 0 on the first attempt, then backoff — the whole retry policy, in one number (NFR-7).
+  const delayMs = reconnectDelayMs(state.failures)
+  return settled({ ...state, nextId: requestId + 1, pending: { requestId, quality, delayMs } }, [
     ...commands,
-    {
-      type: 'ensure',
-      requestId,
-      cameraId: state.cameraId,
-      quality,
-      // 0 on the first attempt, then backoff — the whole retry policy, in one number (NFR-7).
-      delayMs: reconnectDelayMs(state.failures),
-    },
+    { type: 'ensure', requestId, cameraId: state.cameraId, quality, delayMs },
   ])
 }
 

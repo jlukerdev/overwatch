@@ -16,6 +16,8 @@
 //  - R7 verdicts scoped to the quality that failed, with the fallback to the stream on screen.
 //  - a go2rtc handshake error and a layer that never paints both retry on the backoff.
 //  - the reconnect backoff on a closed socket and the stall detector forcing a reattach.
+//  - NFR-7 (P6.2): a `recover` retries a waiting player now, leaves a healthy one alone and drops a
+//    frozen frame rather than restarting its count.
 //  - teardown: everything closes on unmount and a late reply changes nothing.
 //  - that the only stream information the component ever handles is a `StreamHandle`: the attach
 //    command carries `handle.wsUrl` verbatim, never a URL built from parts.
@@ -843,7 +845,7 @@ describe('R7 verdicts are per quality (carried from P2.3)', () => {
     const highId = attachedId(attaching)
     const withPending: PlayerState = {
       ...attaching.state,
-      pending: { requestId: 9999, quality: 'high' },
+      pending: { requestId: 9999, quality: 'high', delayMs: 0 },
     }
     const refusedAgain = playerStep(withPending, {
       type: 'codecUnsupported',
@@ -1013,6 +1015,144 @@ describe('a layer that never paints (carried from P2.3; NFR-7)', () => {
   })
 })
 
+describe('recover after sleep or a network change (NFR-7, P6.2)', () => {
+  /** Mounted, then `failures` refused `ensureStream`s: a retry is being waited out on the backoff. */
+  function backingOff(failures: number): PlayerStep {
+    let step = next(start('low'), { type: 'sync', quality: 'low', camera: 'online' })
+    for (let attempt = 0; attempt < failures; attempt += 1) {
+      step = next(step, {
+        type: 'ensured',
+        requestId: oneEnsure(step).requestId,
+        result: failed('network', 'The console could not be reached.'),
+      })
+    }
+    return step
+  }
+
+  it('forgets the backoff and retries now instead of waiting it out', () => {
+    const waiting = backingOff(6)
+    const scheduled = oneEnsure(waiting)
+    expect(scheduled.delayMs).toBe(reconnectDelayMs(6))
+
+    const recovered = next(waiting, { type: 'recover' })
+    expect(types(recovered)).toEqual(['cancelEnsure', 'ensure'])
+    const now = oneEnsure(recovered)
+    expect(now.delayMs).toBe(0)
+    expect(now.quality).toBe('low')
+    expect(recovered.state.failures).toBe(0)
+    // Still the most recent news until the retry answers.
+    expect(recovered.state.placeholder).toEqual(waiting.state.placeholder)
+
+    // The replaced call's reply, had its timer already fired, changes nothing.
+    const late = next(recovered, {
+      type: 'ensured',
+      requestId: scheduled.requestId,
+      result: { ok: true, value: handle({ quality: 'low' }) },
+    })
+    expect(types(late)).toEqual([])
+
+    // A failure after the wake starts the curve from the beginning again.
+    const refused = next(recovered, {
+      type: 'ensured',
+      requestId: now.requestId,
+      result: failed('network', 'The console could not be reached.'),
+    })
+    expect(oneEnsure(refused).delayMs).toBe(reconnectDelayMs(1))
+  })
+
+  it('leaves a call that is already out alone', () => {
+    const mounted = next(start('low'), { type: 'sync', quality: 'low', camera: 'online' })
+    const recovered = next(mounted, { type: 'recover' })
+    expect(types(recovered)).toEqual([])
+    expect(recovered.state.pending).toEqual(mounted.state.pending)
+  })
+
+  it('leaves a healthy player alone: its stall detector says if the sleep broke it', () => {
+    const playing = live('low')
+    const recovered = next(playing, { type: 'recover' })
+    expect(types(recovered)).toEqual([])
+    expect(recovered.state.current).toEqual(playing.state.current)
+    expect(recovered.state.placeholder).toBeNull()
+  })
+
+  it('leaves a layer that is connecting alone', () => {
+    const mounted = next(start('low'), { type: 'sync', quality: 'low', camera: 'online' })
+    const attaching = answer(mounted)
+    const recovered = next(attaching, { type: 'recover' })
+    expect(types(recovered)).toEqual([])
+    expect(recovered.state.incoming).toEqual(attaching.state.incoming)
+  })
+
+  it('drops a frozen frame instead of restarting its count, and asks now', () => {
+    let step = live('low')
+    const id = visibleLayerId(step.state) ?? 0
+    step = next(step, { type: 'socketClosed', id })
+    step = next(step, {
+      type: 'ensured',
+      requestId: oneEnsure(step).requestId,
+      result: failed('network', 'The console could not be reached.'),
+    })
+    // A still frame on screen, a retry waiting out the backoff.
+    expect(visibleLayerId(step.state)).toBe(id)
+    expect(oneEnsure(step).delayMs).toBeGreaterThan(0)
+
+    const recovered = next(step, { type: 'recover' })
+    // A picture from before the sleep is not live video: it goes, and the cell says why.
+    expect(detachedIds(recovered)).toEqual([id])
+    expect(visibleLayerId(recovered.state)).toBeNull()
+    expect(recovered.state.placeholder).not.toBeNull()
+    expect(oneEnsure(recovered).delayMs).toBe(0)
+    expect(recovered.state.failures).toBe(0)
+  })
+
+  it('drops a frozen frame even while its replacement call is already out', () => {
+    const playing = live('low')
+    const id = visibleLayerId(playing.state) ?? 0
+    const dropped = next(playing, { type: 'socketClosed', id })
+    // The first reconnect after a close goes at the backoff's first step.
+    const firstRetry = oneEnsure(dropped)
+    const recovered = next(dropped, { type: 'recover' })
+    expect(detachedIds(recovered)).toEqual([id])
+    // A retry waiting out a delay is replaced; one issued at 0 would have been left alone.
+    expect(oneEnsure(recovered).requestId).not.toBe(firstRetry.requestId)
+    expect(oneEnsure(recovered).delayMs).toBe(0)
+  })
+
+  it('does nothing while the camera is offline or the gateway is down', () => {
+    const offline = next(live('low'), { type: 'sync', quality: 'low', camera: 'offline' })
+    const offlineRecovered = next(offline, { type: 'recover' })
+    expect(types(offlineRecovered)).toEqual([])
+    expect(offlineRecovered.state.placeholder).toEqual({ kind: 'camera-offline' })
+
+    const down = next(live('low'), { type: 'runtime', runtime: { state: 'down' } })
+    const downRecovered = next(down, { type: 'recover' })
+    expect(types(downRecovered)).toEqual([])
+    expect(downRecovered.state.placeholder).toEqual({ kind: 'gateway-down' })
+  })
+
+  it('keeps every codec verdict: sleeping does not change an encoder (R7)', () => {
+    const mounted = next(start('high'), { type: 'sync', quality: 'high', camera: 'online' })
+    const attaching = answer(mounted)
+    const refused = next(attaching, {
+      type: 'codecUnsupported',
+      id: attachedId(attaching),
+      mime: HEVC,
+    })
+    expect(targetQuality(refused.state)).toBeNull()
+
+    const recovered = next(refused, { type: 'recover' })
+    expect(only(recovered, 'ensure')).toHaveLength(0)
+    expect(recovered.state.codecUnsupported).toEqual(refused.state.codecUnsupported)
+    expect(recovered.state.placeholder?.kind).toBe('codec-unsupported')
+  })
+
+  it('does nothing after it has stopped', () => {
+    const stopped = next(backingOff(3), { type: 'stop' })
+    const recovered = next(stopped, { type: 'recover' })
+    expect(types(recovered)).toEqual([])
+  })
+})
+
 describe('teardown (gate G2: no growth over 30 minutes)', () => {
   it('closes both layers and cancels the scheduled call on unmount', () => {
     const playing = live('low')
@@ -1088,6 +1228,12 @@ describe('the state the component renders from', () => {
         { type: 'sync', quality: 'low', camera: 'online' },
         { type: 'runtime', runtime: { state: 'up', port: PORT, epoch: 1 } },
         { type: 'runtime', runtime: { state: 'up', port: NEW_PORT, epoch: 2 } },
+      ],
+      [
+        { type: 'sync', quality: 'low', camera: 'online' },
+        { type: 'recover' },
+        { type: 'sync', quality: 'high', camera: 'online' },
+        { type: 'recover' },
       ],
     ]
     for (const events of sequences) {

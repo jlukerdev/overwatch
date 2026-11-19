@@ -118,6 +118,7 @@ import {
   flipTransform,
   flipTransformCss,
 } from '../fill/fillTransition'
+import { useViewVisibleReport } from '../power/useViewVisibleReport'
 import { setCellQuality } from '../quality/qualityChoice'
 import { keyEventTarget } from '../viewSwitcher/viewShortcut'
 import { buildViewSlots, schedulerEntries, type GridSlot } from './gridLayout'
@@ -145,6 +146,9 @@ function prefersReducedMotion(): boolean {
 }
 
 export function GridView({ view, cameras, streams }: GridViewProps): JSX.Element {
+  // NFR-8 (P6.2): this component is mounted exactly while a View is drawn, so it is the one place
+  // that tells main to keep the display awake (features/power/viewVisibility.ts).
+  useViewVisibleReport()
   const rootRef = useRef<HTMLDivElement | null>(null)
   // `null` until the first measure.
   const [box, setBox] = useState<BoxSize | null>(null)

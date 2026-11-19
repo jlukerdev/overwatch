@@ -789,6 +789,30 @@ export const SetAccessPollingInputSchema = z.object({
 export type SetAccessPollingInput = z.infer<typeof SetAccessPollingInputSchema>
 
 // -------------------------------------------------------------------------------------------------
+// Power and recovery (P6.2; NFR-7, NFR-8)
+
+/**
+ * NFR-8: whether a View is on screen — the Live screen shows a View and the document is visible
+ * (not minimised, not hidden). Main keeps the display awake (`prevent-display-sleep`) only while
+ * the last value it was told is `true`; a reload or loss of the renderer counts as `false`.
+ */
+export const SetViewVisibleInputSchema = z.object({ visible: z.boolean() })
+export type SetViewVisibleInput = z.infer<typeof SetViewVisibleInputSchema>
+
+/** The answer to `setViewVisible`: whether main is now keeping the display awake. */
+export const PowerStateSchema = z.object({ preventingDisplaySleep: z.boolean() })
+export type PowerState = z.infer<typeof PowerStateSchema>
+
+/**
+ * NFR-7: why main asks everything to reconnect now. `resume` — the machine woke from sleep;
+ * `network` — the machine's network addresses changed (and it has at least one).
+ */
+export const RecoverReasonSchema = z.enum(['resume', 'network'])
+export type RecoverReason = z.infer<typeof RecoverReasonSchema>
+export const RecoverSchema = z.object({ reason: RecoverReasonSchema })
+export type Recover = z.infer<typeof RecoverSchema>
+
+// -------------------------------------------------------------------------------------------------
 // The channel table
 //
 // One entry per channel: the request schema main validates and the value schema the preload
@@ -924,6 +948,11 @@ export const IPC = {
    * Access is off, like `setDoorLinks`.
    */
   setAccessPolling: call('vp:doors/polling', SetAccessPollingInputSchema, AppStateSchema),
+  /**
+   * NFR-8 (P6.2): the renderer says whether a View is on screen. Main holds one
+   * `prevent-display-sleep` blocker while the answer is `true`. Local only, no console call.
+   */
+  setViewVisible: call('vp:power/viewVisible', SetViewVisibleInputSchema, PowerStateSchema),
 } as const
 
 /**
@@ -979,6 +1008,12 @@ export const IPC_EVENTS = {
    * screen sends nothing: the `watchDoorsScreen({ open: false })` answer is the reset.
    */
   doorsScreen: { channel: 'vp:event/doorsScreen', payload: DoorsScreenStateSchema },
+  /**
+   * NFR-7 (P6.2): the machine woke from sleep or its network changed. Main has already cut its own
+   * backoffs short (Protect feeds, Access socket and door reads); each player forgets its backoff
+   * and retries at once. A hint only: nothing breaks if it is missed.
+   */
+  recover: { channel: 'vp:event/recover', payload: RecoverSchema },
 } as const
 
 // What Phase 2 deliberately does **not** add to this contract:
@@ -1049,6 +1084,8 @@ export interface ViewProtectApi {
   setDoorEmergency(input: DoorEmergencyInput): Promise<IpcResult<DoorEmergencyResult>>
   /** DOOR-6 (P5.6): the Access read intervals, persisted and applied at once. */
   setAccessPolling(input: SetAccessPollingInput): Promise<IpcResult<AppState>>
+  /** NFR-8 (P6.2): whether a View is on screen, for the display-sleep blocker. */
+  setViewVisible(input: SetViewVisibleInput): Promise<IpcResult<PowerState>>
 
   onConnection(listener: (status: ConnectionStatus) => void): Unsubscribe
   onCameras(listener: (cameras: Camera[]) => void): Unsubscribe
@@ -1060,6 +1097,8 @@ export interface ViewProtectApi {
   onDoorStates(listener: (states: DoorStates) => void): Unsubscribe
   /** P5.6: the whole Doors screen state, on every change while the screen is open. */
   onDoorsScreen(listener: (state: DoorsScreenState) => void): Unsubscribe
+  /** NFR-7 (P6.2): woke from sleep or the network changed; retry now. */
+  onRecover(listener: (event: Recover) => void): Unsubscribe
 }
 
 // Imported for the signatures above; re-exported so the renderer can take the whole contract plus

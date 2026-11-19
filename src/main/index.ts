@@ -3,14 +3,24 @@
 // Protect request throttle and the two API clients).
 import { existsSync } from 'node:fs'
 import { basename, join } from 'node:path'
-import { app, BrowserWindow, dialog, ipcMain, Menu, safeStorage, session } from 'electron'
-import { IPC_EVENTS } from '@shared/ipc'
+import {
+  app,
+  BrowserWindow,
+  dialog,
+  ipcMain,
+  Menu,
+  powerMonitor,
+  powerSaveBlocker,
+  safeStorage,
+  session,
+} from 'electron'
+import { IPC_EVENTS, type Recover, type RecoverReason } from '@shared/ipc'
 import type { View } from '@shared/models'
 import { STREAM_RUNTIME_DOWN, type StreamRuntime } from '@shared/streams'
 import { buildAppMenuTemplate } from './appMenu'
 import { APP_NAME, appIconPath, userDataOverride } from './branding'
 import { createAccessClient, type AccessClient } from './access/client'
-import type { DoorNotificationHandlers } from './access/doorStateMonitor'
+import type { DoorNotificationHandlers, DoorNotificationsHandle } from './access/doorStateMonitor'
 import { accessNotificationsUrl, createAccessNotifications } from './access/notifications'
 import { createUnlockLog } from './access/unlockLog'
 import { createConfigStore, type ConfigStore } from './config/store'
@@ -22,6 +32,7 @@ import { isAppUrl } from './navigation'
 import { createRateLimiter, type RateLimiter } from './net/rateLimiter'
 import { startPerfRun } from './perf/perfMode'
 import { parsePerfEnv, withPerfGridQuality, withPerfView } from './perf/perfStats'
+import { createPower, type Power } from './power'
 import { createProtectClient, type ProtectClient } from './protect/client'
 import {
   createSecretsStore,
@@ -142,6 +153,54 @@ let disposeIpcHandlers: (() => void) | null = null
  */
 let go2rtc: Go2rtcManager | null = null
 let streams: StreamRegistry | null = null
+
+/**
+ * P6.2: the display-sleep blocker (NFR-8) and the wake / network-change triggers (NFR-7). Built
+ * once the app is ready (`powerMonitor` may not be used before), whether or not the services
+ * started: keeping the display awake does not need a console.
+ */
+let power: Power | null = null
+
+/**
+ * NFR-7: the machine woke or its network changed (`src/main/power.ts`, coalesced there). Everything
+ * that waits out a backoff is told to stop waiting:
+ *
+ *  - the connection manager: both Protect feeds reconnect now (each still takes a rate-limit permit,
+ *    R9) and a running door-state monitor reads at once and reconnects its socket — read-only, never
+ *    a door action (DOOR-3/4);
+ *  - go2rtc, **only if it gave up** (`failed`, after its restart budget ran out — easily done while
+ *    the machine slept). Otherwise nothing: its own 5 s health poll restarts a runtime that died,
+ *    and it serves loopback only, so a network change does not touch it. The renderer's
+ *    `ensureStream` would also restart a `failed` one, but only once a player asks, and every
+ *    player is about to (next point): starting it here saves that round.
+ *  - the renderer (`IPC_EVENTS.recover`): each player forgets its backoff and retries now. A hint
+ *    only; `sendToRenderer` drops it while there is no window.
+ */
+function recoverAll(reason: RecoverReason): void {
+  // Each step guarded on its own: one that throws must not cost the others, least of all the
+  // renderer's push (its players are what the user is looking at).
+  try {
+    connection?.recover(reason)
+  } catch (err: unknown) {
+    console.error(`[connection] recover after ${reason} failed: ${message(err)}`)
+  }
+  try {
+    const sidecar = go2rtc
+    if (sidecar?.state() === 'failed') {
+      void sidecar.start().catch((err: unknown) => {
+        console.error(`[go2rtc] restart after ${reason} failed: ${message(err)}`)
+      })
+    }
+  } catch (err: unknown) {
+    console.error(`[go2rtc] restart after ${reason} failed: ${message(err)}`)
+  }
+  try {
+    const payload: Recover = { reason }
+    sendToRenderer(IPC_EVENTS.recover.channel, payload)
+  } catch (err: unknown) {
+    console.error(`[power] could not tell the renderer to recover: ${message(err)}`)
+  }
+}
 
 /**
  * The event sink the connection manager pushes through. Only the main window and only while it
@@ -432,7 +491,7 @@ function reportConnectionReadiness(config: Config, pins: PinRegistry, credential
 function openDoorNotifications(
   started: Services,
   handlers: DoorNotificationHandlers,
-): { stop(): void } | null {
+): DoorNotificationsHandle | null {
   let endpoint: ReturnType<typeof accessEndpoint>
   try {
     endpoint = accessEndpoint(started.current.console)
@@ -458,6 +517,10 @@ function openDoorNotifications(
   return {
     stop: () => {
       socket.stop()
+    },
+    // NFR-7 (P6.2): a wake or a network change cuts its backoff short (`ConnectionManager.recover`).
+    reconnectNow: () => {
+      socket.reconnectNow()
     },
   }
 }
@@ -624,26 +687,35 @@ function createWindow(): void {
     console.error(`Renderer failed to load ${validatedURL}: ${errorDescription}`, errorCode)
     if (!win.isDestroyed() && !win.isVisible()) win.show()
   })
-  // DOOR-6: the door-state monitor runs only while the renderer's Live screen says it is watching
-  // (`watchDoors`), and a renderer that reloads, crashes or closes never gets to say "stop". So
-  // each of those ends the watch here, and with it the polling and the notifications socket; the
-  // Live screen calls `watchDoors(true)` again when it mounts. A same-document navigation (a hash
-  // or history change) keeps the page, so it is not one of them (it is `did-navigate-in-page`).
-  // P5.6: the same goes for the Doors screen's own flag (`watchDoorsScreen`), which keeps the
-  // monitor running, with a request per door for the lock rules, whether or not Live is watching.
-  // Both are cleared: the renderer mounts whichever screen it lands on and says so again.
-  const stopWatchingDoors = (): void => {
+  // The page is gone: it reloaded, its process crashed, or the window closed. A renderer in any of
+  // those states never gets to say "stop", so everything it had asked for ends here:
+  //
+  //  - DOOR-6: the door-state monitor runs only while the Live screen says it is watching
+  //    (`watchDoors`), and P5.6's Doors screen flag (`watchDoorsScreen`) keeps it running too, with
+  //    a request per door for the lock rules. Both are cleared, and with them the polling and the
+  //    notifications socket; the renderer mounts whichever screen it lands on and says so again.
+  //  - NFR-8 (P6.2): the display-sleep blocker. The new page says `setViewVisible(true)` again
+  //    once it shows a View.
+  //
+  // A same-document navigation (a hash or history change) keeps the page, so it is not one of
+  // these (it is `did-navigate-in-page`).
+  const pageGone = (reason: string): void => {
     if (mainWindow !== win) return
     connection?.watchDoors(false)
     connection?.watchDoorsScreen(false)
+    power?.release(reason)
   }
   // `did-navigate`, not `did-start-navigation`: only a navigation that committed has replaced the
   // page. One that was started and cancelled (a reload the user backed out of at the unsaved-
-  // changes prompt, a download) leaves the Live screen mounted and still watching.
-  win.webContents.on('did-navigate', stopWatchingDoors)
-  win.webContents.on('render-process-gone', stopWatchingDoors)
+  // changes prompt, a download) leaves the Live screen mounted, still watching and still shown.
+  win.webContents.on('did-navigate', () => {
+    pageGone('the page reloaded')
+  })
+  win.webContents.on('render-process-gone', () => {
+    pageGone('the renderer process is gone')
+  })
   win.on('closed', () => {
-    stopWatchingDoors()
+    pageGone('the window closed')
     if (mainWindow === win) mainWindow = null
   })
   // The renderer cancels an unload while the View editor has unsaved changes (VIEW-3,
@@ -769,6 +841,21 @@ if (!app.requestSingleInstanceLock()) {
         // P2.1/P2.2, after the connection manager because the registry reads its cached inventory.
         buildStreaming(started, connection)
       }
+      // P6.2, before the IPC router so `setViewVisible` finds it. Recovery stays wired during a perf
+      // run too: it only cuts backoffs short, and a run that sleeps or loses its network has failed
+      // its measurement either way; the harness's own blocker is untouched.
+      try {
+        power = createPower({
+          blocker: powerSaveBlocker,
+          monitor: powerMonitor,
+          recover: recoverAll,
+          log: (line) => {
+            console.log(`[power] ${line}`)
+          },
+        })
+      } catch (err: unknown) {
+        console.error('[power] Failed to start:', err)
+      }
       // Registered even when startup failed, so a call answers `not-ready` with a kind the UI can
       // branch on instead of arriving as a rejected `invoke` with no handler at all.
       disposeIpcHandlers = registerIpcHandlers(
@@ -777,6 +864,7 @@ if (!app.requestSingleInstanceLock()) {
           getServices,
           getManager: () => connection,
           getRegistry: () => streams,
+          getPower: () => power,
           appVersion: () => app.getVersion(),
           ...(perfConfig === null
             ? {}
@@ -826,6 +914,9 @@ if (!app.requestSingleInstanceLock()) {
   app.on('will-quit', () => {
     disposeIpcHandlers?.()
     disposeIpcHandlers = null
+    // First: no recover may start anything while the rest shuts down, and the blocker goes now.
+    power?.dispose()
+    power = null
     const manager = connection
     connection = null
     const sidecar = go2rtc

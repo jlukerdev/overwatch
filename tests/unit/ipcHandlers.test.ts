@@ -244,6 +244,7 @@ function setup(options: SetupOptions = {}) {
       (input) => Promise.resolve({ ok: true, value: { ...input, outcome: 'done', reason: null } }),
     ),
     accessPollingChanged: vi.fn<() => void>(),
+    recover: vi.fn<(reason: 'resume' | 'network') => void>(),
     accessInputsChanged:
       vi.fn<(reason: string, options?: { readonly trustChanged?: boolean }) => void>(),
     applyConsoleChange: vi.fn((next: Config['console']) => {
@@ -269,11 +270,21 @@ function setup(options: SetupOptions = {}) {
     shutdown: vi.fn(),
   } satisfies StreamRegistry
 
+  /** P6.2: the display-sleep blocker, as a recorder (NFR-8). */
+  let holding = false
+  const power = {
+    setViewVisible: vi.fn((visible: boolean) => {
+      holding = visible
+      return { preventingDisplaySleep: holding }
+    }),
+  }
+
   let ready = true
   const router = createIpcRouter({
     getServices: () => (ready ? services : null),
     getManager: () => (ready ? manager : null),
     getRegistry: () => (ready ? registry : null),
+    getPower: () => (ready ? power : null),
     appVersion: () => '0.1.0',
     readLeaf,
     ...(options.settingsView === undefined ? {} : { settingsView: options.settingsView }),
@@ -294,6 +305,7 @@ function setup(options: SetupOptions = {}) {
     readLeaf,
     manager,
     registry,
+    power,
     get console() {
       return current.console
     },
@@ -444,6 +456,12 @@ describe('request validation (CLAUDE.md)', () => {
       why: 'a flag that is no boolean',
     },
     { channel: IPC.watchDoorsScreen.channel, payload: {}, why: 'no flag' },
+    { channel: IPC.setViewVisible.channel, payload: {}, why: 'no flag' },
+    {
+      channel: IPC.setViewVisible.channel,
+      payload: { visible: 'true' },
+      why: 'a flag that is no boolean',
+    },
     {
       channel: IPC.watchDoorsScreen.channel,
       payload: { open: 1 },
@@ -617,6 +635,8 @@ function payloadFor(channel: string): unknown {
       return { lockdown: false, evacuation: false }
     case IPC.setAccessPolling.channel:
       return { withSocketSec: 5, withoutSocketSec: 2, unlockedSec: 1, detailsSec: 30 }
+    case IPC.setViewVisible.channel:
+      return { visible: true }
     default:
       return undefined
   }
@@ -1761,6 +1781,33 @@ describe('ensureStream (P2.2, QUAL-8)', () => {
       cameraId: 'cam-1',
       quality: 'low',
     })
+    expect(failure(result)).toMatchObject({ kind: 'not-ready', retryable: true })
+  })
+})
+
+describe('setViewVisible (P6.2, NFR-8)', () => {
+  it('passes the flag to the power module and answers what it is now doing', async () => {
+    const on = await h.call(IPC.setViewVisible, { visible: true })
+    expect(on).toEqual({ ok: true, value: { preventingDisplaySleep: true } })
+    const off = await h.call(IPC.setViewVisible, { visible: false })
+    expect(off).toEqual({ ok: true, value: { preventingDisplaySleep: false } })
+    expect(h.power.setViewVisible.mock.calls).toEqual([[true], [false]])
+  })
+
+  it('never reaches the power module with an invalid payload', async () => {
+    const result = await h.call(IPC.setViewVisible, { visible: 1 })
+    expect(failure(result).kind).toBe('invalid-request')
+    expect(h.power.setViewVisible).not.toHaveBeenCalled()
+  })
+
+  it('answers not-ready while the services exist but the power module does not', async () => {
+    const router = createIpcRouter({
+      getServices: () => h.services,
+      getManager: () => h.manager,
+      getRegistry: () => null,
+      appVersion: () => '0.1.0',
+    })
+    const result = await handlerFor(router, IPC.setViewVisible.channel)({ visible: true })
     expect(failure(result)).toMatchObject({ kind: 'not-ready', retryable: true })
   })
 })

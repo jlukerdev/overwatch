@@ -48,6 +48,7 @@ import { useThumbnails } from '../state/thumbnailsStore'
 import { NoPicture } from './NoPicture'
 import { placeholderSnapshot } from './placeholderSnapshot'
 import { createMsePlayer, type MsePlayer } from './MsePlayer'
+import { onRecover } from './recoverBus'
 import {
   cameraAvailability,
   initialPlayerState,
@@ -138,6 +139,13 @@ export function LivePlayer({
     const offRuntime = window.viewProtect.onStreamRuntime((runtime) => {
       controller.dispatch({ type: 'runtime', runtime })
     })
+    // NFR-7 (P6.2): woke from sleep or the network changed. The machine decides what that means —
+    // retry now if a backoff is being waited out, leave a healthy stream to its stall detector, drop
+    // a frozen frame from before the sleep (playerMachine.ts, rule 7). Through ./recoverBus, which
+    // holds one bridge subscription for every player, rather than one IPC listener per cell.
+    const offRecover = onRecover(() => {
+      controller.dispatch({ type: 'recover' })
+    })
     // One timer for this player's layers, for the two failures a socket cannot report because it
     // stays open while nothing decodes: a frozen picture (playerTiming.STALL_GRACE_MS) and a layer
     // that never paints at all (playerTiming.FIRST_FRAME_TIMEOUT_MS).
@@ -148,6 +156,7 @@ export function LivePlayer({
     return () => {
       clearInterval(stallTimer)
       offRuntime()
+      offRecover()
       // Closes both layers' sockets, detaches MSE, revokes the object URLs and drops the elements.
       // A player that leaked a socket per remount would fail G2's 30-minute no-growth half.
       controller.dispose()

@@ -23,6 +23,7 @@ import msePlayerSource from '../../src/renderer/src/player/MsePlayer.ts?raw'
 import playerMachineSource from '../../src/renderer/src/player/playerMachine.ts?raw'
 import mseBufferSource from '../../src/renderer/src/player/mseBuffer.ts?raw'
 import playerTimingSource from '../../src/renderer/src/player/playerTiming.ts?raw'
+import recoverBusSource from '../../src/renderer/src/player/recoverBus.ts?raw'
 
 /** Every file of the player that is ours. `vendor/` is deliberately not in this list. */
 const PLAYER_FILES = {
@@ -31,6 +32,7 @@ const PLAYER_FILES = {
   'playerMachine.ts': playerMachineSource,
   'mseBuffer.ts': mseBufferSource,
   'playerTiming.ts': playerTimingSource,
+  'recoverBus.ts': recoverBusSource,
 } as const
 
 /**
@@ -79,10 +81,20 @@ describe('the player holds no secret and no upstream URL', () => {
     expect(sources.get('LivePlayer.tsx')).toContain('element.start(wsUrl)')
   })
 
-  it('uses only the two bridge members a player needs', () => {
-    const source = sources.get('LivePlayer.tsx') ?? ''
-    const used = [...source.matchAll(/window\.viewProtect\.(\w+)/g)].map((match) => match[1])
-    expect(new Set(used)).toEqual(new Set(['ensureStream', 'onStreamRuntime']))
+  it('uses only the bridge members a player needs', () => {
+    const bridgeMembers = (file: string): Set<string | undefined> =>
+      new Set(
+        [...(sources.get(file) ?? '').matchAll(/window\.viewProtect\.(\w+)/g)].map(
+          (match) => match[1],
+        ),
+      )
+    expect(bridgeMembers('LivePlayer.tsx')).toEqual(new Set(['ensureStream', 'onStreamRuntime']))
+    // P6.2 (NFR-7): the one shared `onRecover` subscription, a bare "retry now" hint carrying only
+    // a reason and no stream data, lives in recoverBus.ts — and nothing else of the bridge does.
+    expect(bridgeMembers('recoverBus.ts')).toEqual(new Set(['onRecover']))
+    for (const file of ['MsePlayer.ts', 'playerMachine.ts', 'mseBuffer.ts', 'playerTiming.ts']) {
+      expect(bridgeMembers(file), file).toEqual(new Set())
+    }
   })
 })
 

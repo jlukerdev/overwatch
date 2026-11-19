@@ -2,7 +2,7 @@
 
 The app's external name is **OverWatch** (P6.1, SPEC BRAND-1…5); "View Protect" is the internal and repo name. Every string the user sees — window title, header, menus, About, dialogs, errors, toasts, the Settings foot "OverWatch v<version>" — says OverWatch, in that casing. Code identifiers (`window.viewProtect`, `ViewProtectApi`, `vp:` channels, `VP_*`), the package name `view-protect` and the `userData` folder name "View Protect" stay as they are: renaming that folder would lose every user's data (`src/main/branding.ts`).
 
-This app is built and maintained by agents. Read `docs/SPEC.md`, `docs/ARCHITECTURE.md` and `docs/DEV_PLAN.md` before changing anything.
+This app is built and maintained by agents. Read `docs/SPEC.md`, `docs/ARCHITECTURE.md` and `docs/DEV_PLAN.md` before changing anything. Developer how-tos (commands, go2rtc, generated types, the Access mock, icons) are in `docs/DEVELOPMENT.md`; `README.md` is user-facing.
 
 ## Ground rules
 - Work one DEV_PLAN task at a time using the workflow below. Don't start a phase until the previous phase's gate has passed. Reference requirement IDs (e.g. `CELL-2`) in commits.

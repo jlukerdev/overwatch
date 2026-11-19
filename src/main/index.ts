@@ -81,16 +81,21 @@ if (process.env.ELECTRON_RUN_AS_NODE !== undefined && process.env.ELECTRON_RUN_A
 // say OverWatch from the first line on.
 app.setName(APP_NAME)
 // The rename must not move the user's data. Electron's default `userData` is `<appData>/<productName>`,
-// which is now `<appData>/OverWatch`; pointing it back at `<appData>/View Protect` keeps the Views,
-// settings, accepted certificate pins, `secrets.bin` and — on Windows — the DPAPI-protected key in
-// Chromium's `Local State` that decrypts it (the G6 "data kept" check). `sessionData` (Chromium's
-// caches, Local State) follows `userData` because it is set before `ready`. A `--user-data-dir`
-// on the command line wins, so the blank-profile checks still get a blank profile (CLAUDE.md).
+// which is now `<appData>/OverWatch`; pointing the packaged app back at `<appData>/View Protect` keeps
+// the Views, settings, accepted certificate pins, `secrets.bin` and — on Windows — the DPAPI-protected
+// key in Chromium's `Local State` that decrypts it (the G6 "data kept" check). An unpackaged run (dev,
+// `npx electron out/main/index.js`, the perf harness) uses `<appData>/View Protect Dev` instead (P7.1),
+// so it neither shares Views and settings with an installed OverWatch nor collides with its
+// single-instance lock (which lives in `userData`); that folder starts empty. `sessionData`
+// (Chromium's caches, Local State) follows `userData` because it is set before `ready`. A
+// `--user-data-dir` on the command line wins in both cases, so the blank-profile checks still get a
+// blank profile (CLAUDE.md).
 // What does change on macOS is the keychain entry `safeStorage` uses, "<name> Safe Storage": the
 // stored API key and token become unreadable once and are re-entered in Settings (SPEC BRAND-5).
 const userDataDir = userDataOverride({
   appData: app.getPath('appData'),
   hasUserDataDirSwitch: app.commandLine.hasSwitch('user-data-dir'),
+  isPackaged: app.isPackaged,
 })
 if (userDataDir !== null) app.setPath('userData', userDataDir)
 
@@ -131,6 +136,8 @@ if (appLog !== null) {
       `Electron ${process.versions.electron}, Chrome ${process.versions.chrome}, ` +
       (app.isPackaged ? 'packaged' : 'unpackaged'),
   )
+  // Which data folder this run uses (P7.1): dev and the installed app no longer share one.
+  console.info(`[app] data folder: ${app.getPath('userData')}`)
 }
 // Monitor only: Electron's own handling of an uncaught exception is unchanged.
 process.on('uncaughtExceptionMonitor', (err, origin) => {

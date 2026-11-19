@@ -37,6 +37,17 @@ view-protect/
 
 To check the UI on a clean profile: `npm run build`, then `npx electron out/main/index.js --user-data-dir=<empty dir>`.
 
+### Dev data folder
+
+Unpackaged runs (`npm run dev`, `npx electron out/main/index.js`, `npm run perf`) keep their data in `View Protect Dev`, not the installed app's `View Protect`, so the two never share Views or settings and can run at the same time. The startup log line `[app] data folder: …` shows which one is in use. A `--user-data-dir` still overrides both.
+
+The dev folder starts empty. To start from the installed app's Views and settings, run dev once (it creates the folder), quit it, and copy `config.json` across:
+
+- macOS: `~/Library/Application Support/View Protect/config.json` to `~/Library/Application Support/View Protect Dev/`
+- Windows: `%APPDATA%\View Protect\config.json` to `%APPDATA%\View Protect Dev\`
+
+Copy only `config.json`, not `secrets.bin`, and enter the API key (and Access token, if you use one) again in dev Settings. On Windows `secrets.bin` can only be decrypted with the key in its own folder's `Local State`.
+
 ## go2rtc
 
 `npm run fetch:go2rtc` downloads the pinned go2rtc release for this machine into `resources/bin/<platform>-<arch>/`. It needs the system `tar` (built into macOS and Windows 10+), and it verifies the zip's SHA-256 against `scripts/go2rtc.manifest.json`. It skips a target that is already installed and unchanged.

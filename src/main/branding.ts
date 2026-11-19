@@ -17,15 +17,27 @@ export const APP_NAME = 'OverWatch'
 export const USER_DATA_DIR_NAME = 'View Protect'
 
 /**
- * Where `userData` must point, or `null` to leave it alone. A `--user-data-dir=<dir>` on the command
- * line wins (Chromium already set `userData` from it): the blank-profile checks in CLAUDE.md rely on
- * it, and overriding it would silently run them against the real profile.
+ * The `userData` folder's name for unpackaged runs (`npm run dev`, `npx electron out/main/index.js`,
+ * the perf harness), so they never share Views, settings or the single-instance lock with an
+ * installed OverWatch (P7.1). It starts empty: nothing is copied from `USER_DATA_DIR_NAME`
+ * (docs/DEVELOPMENT.md says how to seed it by hand).
+ */
+export const DEV_USER_DATA_DIR_NAME = 'View Protect Dev'
+
+/**
+ * Where `userData` must point, or `null` to leave it alone. Packaged: `<appData>/View Protect`, the
+ * pre-rename folder (BRAND-5). Unpackaged: `<appData>/View Protect Dev` (P7.1). A
+ * `--user-data-dir=<dir>` on the command line wins in both cases (Chromium already set `userData`
+ * from it): the blank-profile checks in CLAUDE.md rely on it, and overriding it would silently run
+ * them against a real profile.
  */
 export function userDataOverride(input: {
   readonly appData: string
   readonly hasUserDataDirSwitch: boolean
+  readonly isPackaged: boolean
 }): string | null {
-  return input.hasUserDataDirSwitch ? null : join(input.appData, USER_DATA_DIR_NAME)
+  if (input.hasUserDataDirSwitch) return null
+  return join(input.appData, input.isPackaged ? USER_DATA_DIR_NAME : DEV_USER_DATA_DIR_NAME)
 }
 
 /**

@@ -3,9 +3,11 @@
 //
 // Starts the **built** app (`npm run build` first) with VP_PERF_* set, so main enters perf mode
 // (src/main/perf/): it connects, shows an in-memory View at that quality, samples for `--duration`
-// seconds after `--warmup`, writes its results and quits. The app uses the normal userData (the API
-// key is in the OS keystore, the certificate pin in config.json) and never writes config in perf
-// mode: the quality override lives only in memory.
+// seconds after `--warmup`, writes its results and quits. Being unpackaged, the app uses the dev
+// userData, `<appData>/View Protect Dev` (P7.1), not the installed app's `View Protect`: set up the
+// console, API key and certificate there first (`npm run dev`, or see "Dev data folder" in
+// docs/DEVELOPMENT.md). It never writes config in perf mode: the quality override lives only in
+// memory.
 //
 // Results go to a new directory under scripts/perf/output/ (gitignored): samples.jsonl,
 // summary.json and summary.md. summary.md holds the row to paste into docs/perf-results.md.

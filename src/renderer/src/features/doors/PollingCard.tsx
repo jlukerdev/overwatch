@@ -2,6 +2,10 @@
 // whole-second fields in a column, grouped (./pollingForm.ts `POLLING_GROUPS`), each with its range
 // and one line of help to its right, a Save button and "Reset to defaults".
 //
+// **Collapsible** (user decision 2026-11-19): closed by default, a bar pinned to the bottom of the
+// Doors screen; opening it grows the card upwards over the door cards. What was typed is kept
+// while it is closed, for as long as the screen stays open.
+//
 // This one *is* a form, unlike the rest of the screen: nothing is saved as you type (a half-typed
 // `1` of `15` would be an interval main starts using at once), field validation takes the
 // place of the field's help as `.field__error`, and Save's outcome is a `StatusLine`, not a toast. "Reset to defaults"
@@ -11,7 +15,7 @@ import { useState, type JSX } from 'react'
 import type { IpcError } from '@shared/ipc'
 import { ACCESS_POLLING_FIELDS, type AccessPolling } from '@shared/models'
 import { useAppStore } from '../../state/appStore'
-import { SaveIcon, UndoIcon } from '../../ui/icons'
+import { ChevronDownIcon, ChevronUpIcon, SaveIcon, UndoIcon } from '../../ui/icons'
 import { StatusLine } from '../../ui/StatusLine'
 import {
   defaultPollingDraft,
@@ -31,6 +35,7 @@ type Outcome = { readonly ok: true } | { readonly ok: false; readonly error: Ipc
 export function PollingCard({ polling }: { polling: AccessPolling }): JSX.Element {
   const setAccessPolling = useAppStore((s) => s.setAccessPolling)
   const [draft, setDraft] = useState<PollingDraft>(() => pollingDraftFrom(polling))
+  const [open, setOpen] = useState(false)
   const [saving, setSaving] = useState(false)
   const [outcome, setOutcome] = useState<Outcome | null>(null)
 
@@ -65,83 +70,99 @@ export function PollingCard({ polling }: { polling: AccessPolling }): JSX.Elemen
 
   return (
     <section className="card doors__polling" aria-labelledby="doors-polling-title">
-      <h3 className="card__title" id="doors-polling-title">
-        Polling
+      <h3 className="doors__pollingHeading" id="doors-polling-title">
+        <button
+          type="button"
+          className="doors__pollingToggle"
+          aria-expanded={open}
+          aria-controls="doors-polling-body"
+          onClick={() => {
+            setOpen(!open)
+          }}
+        >
+          Polling
+          {/* Closed, it opens upwards. */}
+          {open ? <ChevronDownIcon /> : <ChevronUpIcon />}
+        </button>
       </h3>
-      <p className="card__hint">Seconds between the app's checks of the console.</p>
-      <form
-        noValidate
-        onSubmit={(event) => {
-          event.preventDefault()
-          void save()
-        }}
-      >
-        {POLLING_GROUPS.map((group) => (
-          <fieldset key={group.title} className="doors__pollingGroup">
-            <legend className="doors__pollingLegend">{group.title}</legend>
-            {group.fields.map((field) => {
-              const id = `doors-polling-${field}`
-              const error = pollingFieldError(field, draft[field])
-              return (
-                <div key={field} className="doors__pollingRow">
-                  <label className="field__label" htmlFor={id}>
-                    {POLLING_LABELS[field]}
-                  </label>
-                  <input
-                    id={id}
-                    className="field__input doors__pollingInput"
-                    type="number"
-                    inputMode="numeric"
-                    step={1}
-                    value={draft[field]}
-                    aria-invalid={error === null ? undefined : true}
-                    aria-describedby={`${id}-hint`}
-                    onChange={(event) => {
-                      setDraft({ ...draft, [field]: event.target.value })
-                      // The line is about the last save, not about what is being typed now.
-                      setOutcome(null)
-                    }}
-                  />
-                  <span
-                    id={`${id}-hint`}
-                    className={error === null ? 'field__hint' : 'field__error'}
-                  >
-                    {error ?? `${pollingRangeText(field)} ${POLLING_HELP[field]}`}
-                  </span>
-                </div>
-              )
-            })}
-          </fieldset>
-        ))}
-        <div className="row doors__pollingActions">
-          <button type="submit" className="button button--primary" disabled={!canSave}>
-            <SaveIcon />
-            {saving ? 'Saving…' : 'Save'}
-          </button>
-          <button
-            type="button"
-            className="button"
-            disabled={atDefaults || saving}
-            title={atDefaults ? 'The fields already hold the defaults.' : undefined}
-            onClick={() => {
-              setDraft(defaults)
-              setOutcome(null)
+      {open ? (
+        <div id="doors-polling-body" className="doors__pollingBody">
+          <p className="card__hint">Seconds between the app's checks of the console.</p>
+          <form
+            noValidate
+            onSubmit={(event) => {
+              event.preventDefault()
+              void save()
             }}
           >
-            <UndoIcon />
-            Reset to defaults
-          </button>
-          {outcome === null ? null : outcome.ok ? (
-            <StatusLine kind="ok" role="status">
-              Saved. The new intervals are in use.
-            </StatusLine>
-          ) : (
-            <StatusLine kind="error" role="alert">
-              {outcome.error.message}
-            </StatusLine>
-          )}
+            {POLLING_GROUPS.map((group) => (
+              <fieldset key={group.title} className="doors__pollingGroup">
+                <legend className="doors__pollingLegend">{group.title}</legend>
+                {group.fields.map((field) => {
+                  const id = `doors-polling-${field}`
+                  const error = pollingFieldError(field, draft[field])
+                  return (
+                    <div key={field} className="doors__pollingRow">
+                      <label className="field__label" htmlFor={id}>
+                        {POLLING_LABELS[field]}
+                      </label>
+                      <input
+                        id={id}
+                        className="field__input doors__pollingInput"
+                        type="number"
+                        inputMode="numeric"
+                        step={1}
+                        value={draft[field]}
+                        aria-invalid={error === null ? undefined : true}
+                        aria-describedby={`${id}-hint`}
+                        onChange={(event) => {
+                          setDraft({ ...draft, [field]: event.target.value })
+                          // The line is about the last save, not about what is being typed now.
+                          setOutcome(null)
+                        }}
+                      />
+                      <span
+                        id={`${id}-hint`}
+                        className={error === null ? 'field__hint' : 'field__error'}
+                      >
+                        {error ?? `${pollingRangeText(field)} ${POLLING_HELP[field]}`}
+                      </span>
+                    </div>
+                  )
+                })}
+              </fieldset>
+            ))}
+            <div className="row doors__pollingActions">
+              <button type="submit" className="button button--primary" disabled={!canSave}>
+                <SaveIcon />
+                {saving ? 'Saving…' : 'Save'}
+              </button>
+              <button
+                type="button"
+                className="button"
+                disabled={atDefaults || saving}
+                title={atDefaults ? 'The fields already hold the defaults.' : undefined}
+                onClick={() => {
+                  setDraft(defaults)
+                  setOutcome(null)
+                }}
+              >
+                <UndoIcon />
+                Reset to defaults
+              </button>
+              {outcome === null ? null : outcome.ok ? (
+                <StatusLine kind="ok" role="status">
+                  Saved. The new intervals are in use.
+                </StatusLine>
+              ) : (
+                <StatusLine kind="error" role="alert">
+                  {outcome.error.message}
+                </StatusLine>
+              )}
+            </div>
+          </form>
         </div>
-      </form>
+      ) : null}
     </section>
   )
 }

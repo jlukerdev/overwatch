@@ -94,8 +94,10 @@ export function minutesText(minutes: number): string {
 
 /** What a door action is, for the sentences below. `minutes` only matters for `custom`. */
 interface ActionWords {
-  /** The confirm button and the dialog's title: "Unlock Front Door". */
+  /** The dialog's title: "Unlock Front Door". */
   readonly command: string
+  /** The confirm button: the action without the door, which the title already names. */
+  readonly confirm: string
   /** After "Couldn't ": "unlock Front Door". */
   readonly attempt: string
   /** The success toast. */
@@ -112,6 +114,7 @@ function actionWords(action: DoorAction, door: string, minutes: number | null): 
     case 'unlock':
       return {
         command: `Unlock ${door}`,
+        confirm: 'Unlock',
         attempt: `unlock ${door}`,
         done: `${door} unlocked.`,
         maybe: 'have unlocked',
@@ -120,6 +123,7 @@ function actionWords(action: DoorAction, door: string, minutes: number | null): 
     case 'lock':
       return {
         command: `Lock ${door}`,
+        confirm: 'Lock',
         attempt: `lock ${door}`,
         done: `${door} locked.`,
         maybe: 'have locked',
@@ -128,6 +132,7 @@ function actionWords(action: DoorAction, door: string, minutes: number | null): 
     case 'keep_unlock':
       return {
         command: `Keep ${door} unlocked`,
+        confirm: 'Keep unlocked',
         attempt: `keep ${door} unlocked`,
         done: `${door} will stay unlocked.`,
         maybe: 'now be kept unlocked',
@@ -136,6 +141,7 @@ function actionWords(action: DoorAction, door: string, minutes: number | null): 
     case 'keep_lock':
       return {
         command: `Keep ${door} locked`,
+        confirm: 'Keep locked',
         attempt: `keep ${door} locked`,
         done: `${door} will stay locked.`,
         maybe: 'now be kept locked',
@@ -145,6 +151,7 @@ function actionWords(action: DoorAction, door: string, minutes: number | null): 
     case 'custom':
       return {
         command: `Unlock ${door} for ${span}`,
+        confirm: `Unlock for ${span}`,
         attempt: `unlock ${door} for ${span}`,
         done: `${door} unlocked for ${span}.`,
         maybe: `have unlocked for ${span}`,
@@ -153,6 +160,7 @@ function actionWords(action: DoorAction, door: string, minutes: number | null): 
     case 'reset':
       return {
         command: `Put ${door} back to normal`,
+        confirm: 'Back to normal',
         attempt: `put ${door} back to normal`,
         done: `${door} is back to normal.`,
         maybe: 'be back to normal',
@@ -161,14 +169,14 @@ function actionWords(action: DoorAction, door: string, minutes: number | null): 
   }
 }
 
-/** The confirm dialog for one action on one door (DOOR-3: it names both). */
+/** The confirm dialog for one action on one door (DOOR-3: the title names both). */
 export function doorActionConfirm(
   action: DoorAction,
   doorName: string,
   minutes: number | null = null,
 ): ConfirmOptions {
   const words = actionWords(action, doorName, minutes)
-  return { title: `${words.command}?`, message: words.explain, confirmLabel: words.command }
+  return { title: `${words.command}?`, message: words.explain, confirmLabel: words.confirm }
 }
 
 /** The toast for an action main answered: done, or sent with no answer (`unknown`). */

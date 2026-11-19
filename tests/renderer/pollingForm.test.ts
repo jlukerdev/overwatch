@@ -10,6 +10,8 @@ import { describe, expect, it } from 'vitest'
 import {
   defaultPollingDraft,
   parsePollingField,
+  POLLING_GROUPS,
+  POLLING_HELP,
   POLLING_LABELS,
   pollingCanSave,
   pollingDraftFrom,
@@ -38,8 +40,17 @@ describe('the draft', () => {
     for (const field of ACCESS_POLLING_FIELDS) {
       expect(POLLING_LABELS[field]).not.toBe('')
       const { min, max } = ACCESS_POLLING_BOUNDS[field]
-      expect(pollingRangeText(field)).toBe(`Every ${String(min)} to ${String(max)} seconds`)
+      expect(POLLING_HELP[field]).not.toBe('')
+      expect(pollingRangeText(field)).toBe(`${String(min)} to ${String(max)} seconds.`)
     }
+  })
+
+  it('groups the three lock-state intervals, and puts every field in exactly one group', () => {
+    expect(POLLING_GROUPS[0]).toEqual({
+      title: 'Lock states',
+      fields: ['withSocketSec', 'withoutSocketSec', 'unlockedSec'],
+    })
+    expect(POLLING_GROUPS.flatMap((group) => group.fields)).toEqual(ACCESS_POLLING_FIELDS)
   })
 })
 

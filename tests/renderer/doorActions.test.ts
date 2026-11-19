@@ -112,22 +112,22 @@ describe('the rule dropdown', () => {
 })
 
 describe('the confirm dialog', () => {
-  it('names the door and the action, on the title and on the confirm button', () => {
+  it('names the door and the action on the title, and the action alone on the confirm button', () => {
     const labels = {
-      unlock: 'Unlock Front Door',
-      lock: 'Lock Front Door',
-      keep_unlock: 'Keep Front Door unlocked',
-      keep_lock: 'Keep Front Door locked',
-      custom: 'Unlock Front Door for 15 minutes',
-      reset: 'Put Front Door back to normal',
+      unlock: { title: 'Unlock Front Door', button: 'Unlock' },
+      lock: { title: 'Lock Front Door', button: 'Lock' },
+      keep_unlock: { title: 'Keep Front Door unlocked', button: 'Keep unlocked' },
+      keep_lock: { title: 'Keep Front Door locked', button: 'Keep locked' },
+      custom: { title: 'Unlock Front Door for 15 minutes', button: 'Unlock for 15 minutes' },
+      reset: { title: 'Put Front Door back to normal', button: 'Back to normal' },
     }
     for (const action of DOOR_ACTIONS) {
       const dialog = doorActionConfirm(action, DOOR, action === 'custom' ? 15 : null)
-      expect(dialog.confirmLabel).toBe(labels[action])
-      expect(dialog.title).toBe(`${labels[action]}?`)
+      expect(dialog.title).toBe(`${labels[action].title}?`)
+      // Never a bare "OK" (CLAUDE.md); the door is in the title (user decision 2026-11-19).
+      expect(dialog.confirmLabel).toBe(labels[action].button)
+      expect(dialog.confirmLabel).not.toContain(DOOR)
       expect(dialog.message).not.toBe('')
-      // Never a bare "OK" (CLAUDE.md).
-      expect(dialog.confirmLabel).toContain(DOOR)
     }
   })
 })

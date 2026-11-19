@@ -1,9 +1,10 @@
 // The Doors screen's Polling card (P5.6; DOOR-6): how often main reads the Access door API. Four
-// whole-second fields, each with its allowed range, a Save button and "Reset to defaults".
+// whole-second fields in a column, grouped (./pollingForm.ts `POLLING_GROUPS`), each with its range
+// and one line of help to its right, a Save button and "Reset to defaults".
 //
 // This one *is* a form, unlike the rest of the screen: nothing is saved as you type (a half-typed
-// `1` of `15` would be an interval main starts using at once), field validation sits under its
-// field as `.field__error`, and Save's outcome is a `StatusLine`, not a toast. "Reset to defaults"
+// `1` of `15` would be an interval main starts using at once), field validation takes the
+// place of the field's help as `.field__error`, and Save's outcome is a `StatusLine`, not a toast. "Reset to defaults"
 // only fills the fields; it still needs Save. The rules are ./pollingForm.ts's, and main validates
 // the payload again and applies it without a restart.
 import { useState, type JSX } from 'react'
@@ -14,6 +15,8 @@ import { SaveIcon, UndoIcon } from '../../ui/icons'
 import { StatusLine } from '../../ui/StatusLine'
 import {
   defaultPollingDraft,
+  POLLING_GROUPS,
+  POLLING_HELP,
   POLLING_LABELS,
   pollingCanSave,
   pollingDraftFrom,
@@ -65,10 +68,7 @@ export function PollingCard({ polling }: { polling: AccessPolling }): JSX.Elemen
       <h3 className="card__title" id="doors-polling-title">
         Polling
       </h3>
-      <p className="card__hint">
-        How often the app checks the console. Shorter intervals show changes sooner and ask the
-        console more often.
-      </p>
+      <p className="card__hint">Seconds between the app's checks of the console.</p>
       <form
         noValidate
         onSubmit={(event) => {
@@ -76,37 +76,43 @@ export function PollingCard({ polling }: { polling: AccessPolling }): JSX.Elemen
           void save()
         }}
       >
-        <div className="doors__pollingFields">
-          {ACCESS_POLLING_FIELDS.map((field) => {
-            const id = `doors-polling-${field}`
-            const error = pollingFieldError(field, draft[field])
-            return (
-              <div key={field} className="field">
-                <label className="field__label" htmlFor={id}>
-                  {POLLING_LABELS[field]}
-                </label>
-                <input
-                  id={id}
-                  className="field__input doors__pollingInput"
-                  type="number"
-                  inputMode="numeric"
-                  step={1}
-                  value={draft[field]}
-                  aria-invalid={error === null ? undefined : true}
-                  aria-describedby={`${id}-hint`}
-                  onChange={(event) => {
-                    setDraft({ ...draft, [field]: event.target.value })
-                    // The line is about the last save, not about what is being typed now.
-                    setOutcome(null)
-                  }}
-                />
-                <span id={`${id}-hint`} className={error === null ? 'field__hint' : 'field__error'}>
-                  {error ?? pollingRangeText(field)}
-                </span>
-              </div>
-            )
-          })}
-        </div>
+        {POLLING_GROUPS.map((group) => (
+          <fieldset key={group.title} className="doors__pollingGroup">
+            <legend className="doors__pollingLegend">{group.title}</legend>
+            {group.fields.map((field) => {
+              const id = `doors-polling-${field}`
+              const error = pollingFieldError(field, draft[field])
+              return (
+                <div key={field} className="doors__pollingRow">
+                  <label className="field__label" htmlFor={id}>
+                    {POLLING_LABELS[field]}
+                  </label>
+                  <input
+                    id={id}
+                    className="field__input doors__pollingInput"
+                    type="number"
+                    inputMode="numeric"
+                    step={1}
+                    value={draft[field]}
+                    aria-invalid={error === null ? undefined : true}
+                    aria-describedby={`${id}-hint`}
+                    onChange={(event) => {
+                      setDraft({ ...draft, [field]: event.target.value })
+                      // The line is about the last save, not about what is being typed now.
+                      setOutcome(null)
+                    }}
+                  />
+                  <span
+                    id={`${id}-hint`}
+                    className={error === null ? 'field__hint' : 'field__error'}
+                  >
+                    {error ?? `${pollingRangeText(field)} ${POLLING_HELP[field]}`}
+                  </span>
+                </div>
+              )
+            })}
+          </fieldset>
+        ))}
         <div className="row doors__pollingActions">
           <button type="submit" className="button button--primary" disabled={!canSave}>
             <SaveIcon />

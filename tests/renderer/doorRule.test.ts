@@ -9,7 +9,6 @@ import { DoorSchema, type Door, type DoorRule } from '@shared/models'
 import { describe, expect, it } from 'vitest'
 import {
   doorLockLook,
-  doorPositionLine,
   doorRuleLine,
   LOCK_LOOK_LABELS,
   ruleAllowsReset,
@@ -56,14 +55,6 @@ describe('lock state and position', () => {
     expect(doorLockLook(door({ relay: 'lock' }), true)).toBe('unknown')
     expect(doorLockLook(null, false)).toBe('unknown')
     expect(LOCK_LOOK_LABELS.unknown).toBe('Unknown')
-  })
-
-  it('says where the door is only with a sensor and a fresh state', () => {
-    expect(doorPositionLine(door({ position: 'open' }), false)).toBe('Door open')
-    expect(doorPositionLine(door({ position: 'close' }), false)).toBe('Door closed')
-    expect(doorPositionLine(door({ position: null }), false)).toBeNull()
-    expect(doorPositionLine(door({ position: 'open' }), true)).toBeNull()
-    expect(doorPositionLine(null, false)).toBeNull()
   })
 })
 

@@ -1,5 +1,5 @@
-// What a door card says about its door (P5.6; DOOR-6): the lock state, the door position and the
-// line about the rule or schedule controlling it. Pure, with the clock and the locale handed in,
+// What a door card says about its door (P5.6; DOOR-6): the lock state and the line about the rule
+// or schedule controlling it (the door position is not shown: user decision 2026-11-19). Pure, with the clock and the locale handed in,
 // so the tests are the same in every time zone (tests/renderer/doorRule.test.ts).
 //
 // Two things here are about **not claiming more than is known**:
@@ -22,12 +22,6 @@ export const LOCK_LOOK_LABELS: Readonly<Record<DoorLockLook, string>> = {
   locked: 'Locked',
   unlocked: 'Unlocked',
   unknown: 'Unknown',
-}
-
-/** "Door open" / "Door closed", or `null` with no sensor or while the state is not known. */
-export function doorPositionLine(door: Door | null, stale: boolean): string | null {
-  if (door === null || stale || door.position === null) return null
-  return door.position === 'open' ? 'Door open' : 'Door closed'
 }
 
 /** The moment and the conventions a time is written in. The tests pin all three. */

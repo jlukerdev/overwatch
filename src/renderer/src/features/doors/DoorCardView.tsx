@@ -1,5 +1,5 @@
-// One door on the Doors screen (P5.6; DOOR-2, DOOR-3, DOOR-6): its name and lock state, the door
-// position, the rule controlling it, its actions, and the cameras linked to it. Thin on purpose:
+// One door on the Doors screen (P5.6; DOOR-2, DOOR-3, DOOR-6): its name, its actions with the lock
+// state beside them, the rule controlling it, and the cameras linked to it. Thin on purpose:
 // what a card is comes from ./doorLinks.ts, what it says from ./doorRule.ts and ./doorActions.ts.
 //
 // **Actions.** Unlock, Lock, and a "Set a rule" dropdown with its Apply button. The dropdown only
@@ -8,9 +8,14 @@
 // confirm dialog, and the one request is sent from there (DoorsScreen). So activating a button
 // from the keyboard never changes a door without the dialog being confirmed too (DOOR-4).
 //
+// **A door with no hub** has no lock the console drives, so its card is the name and one line
+// saying so: no lock state (what the console reports for it means nothing), no actions and no Add
+// camera (user decision 2026-11-19). Cameras linked to it earlier are still listed, so they can be
+// unlinked.
+//
 // Two kinds of "cannot be pressed":
-//  - **blocked** (`block`): the door has no hub, or its state is not known right now. The controls
-//    are `disabled` and say why in `title`; "no hub" is also text on the card.
+//  - **blocked** (`block`): the door's state is not known right now. The controls are `disabled`
+//    and say why in `title`.
 //  - **busy**: this door's action, or a link save, is in flight. The controls are `aria-disabled`
 //    and ignore the press instead, because disabling the button that has the focus throws the
 //    focus to `document.body`.
@@ -20,7 +25,7 @@
 // offer for a door main has not read (main would refuse an action on it anyway).
 import { useState, type JSX } from 'react'
 import { MAX_DOOR_CUSTOM_MINUTES, type DoorAction, type IpcError } from '@shared/ipc'
-import { DoorIcon, DoorOpenIcon, XIcon } from '../../ui/icons'
+import { CameraIcon, DoorIcon, DoorOpenIcon, XIcon } from '../../ui/icons'
 import { StatusLine } from '../../ui/StatusLine'
 import { AddPicker } from './AddPicker'
 import {
@@ -38,7 +43,6 @@ import { LOCK_LOOK_LABELS, type DoorLockLook } from './doorRule'
 export interface DoorCardViewProps {
   readonly card: DoorCard
   readonly look: DoorLockLook
-  readonly positionLine: string | null
   readonly ruleLine: string | null
   /** "Back to normal" is offered (the door has a temporary rule). */
   readonly allowReset: boolean
@@ -61,7 +65,6 @@ export interface DoorCardViewProps {
 export function DoorCardView({
   card,
   look,
-  positionLine,
   ruleLine,
   allowReset,
   block,
@@ -76,84 +79,84 @@ export function DoorCardView({
 }: DoorCardViewProps): JSX.Element {
   const headingId = domId('door-card', card.doorId)
   const listed = card.kind === 'listed'
+  const noHub = listed && card.door?.boundToHub === false
+  // The pill of the connection badge, not a button here. Never for a door with no hub (header).
+  const lockChip = (
+    <span className="badge doorCard__state" data-lock={look}>
+      <span className="badge__dot" aria-hidden="true" />
+      {LOCK_LOOK_LABELS[look]}
+    </span>
+  )
+  // Nothing to add for a door with no hub or one the list lacks; what is linked can be unlinked.
+  const canAdd = listed && !noHub
   return (
     <li className="card doorCard" aria-labelledby={headingId}>
-      <div className="row doorCard__head">
-        <h3 className="doorCard__title" id={headingId}>
-          {card.title}
-        </h3>
-        {/* The connection badge's pill, not a button here: the dot is green only while unlocked. */}
-        <span className="badge doorCard__lock" data-lock={look}>
-          <span className="badge__dot" aria-hidden="true" />
-          {LOCK_LOOK_LABELS[look]}
-        </span>
-      </div>
+      {/* Two lines are always reserved, so the controls line up across the cards of a row. */}
+      <h3 className="doorCard__title" id={headingId} title={card.title}>
+        {card.title}
+      </h3>
 
-      {positionLine === null && ruleLine === null ? null : (
-        <div className="doorCard__lines">
-          {positionLine === null ? null : <p className="doorCard__line">{positionLine}</p>}
-          {ruleLine === null ? null : <p className="doorCard__line">{ruleLine}</p>}
-        </div>
-      )}
-      {listed && card.door?.boundToHub === false ? (
+      {noHub ? (
         <p className="field__hint">{NO_HUB_TEXT}</p>
-      ) : null}
-
-      {listed ? (
+      ) : listed ? (
         <DoorActions
           card={card}
+          lockChip={lockChip}
+          ruleLine={ruleLine}
           allowReset={allowReset}
           block={block}
           acting={acting}
           onAction={onAction}
         />
-      ) : null}
+      ) : (
+        <div className="row doorCard__buttons">{lockChip}</div>
+      )}
 
-      <div className="doorCard__cameras">
-        <h4 className="doorCard__section">Cameras</h4>
-        {card.cameras.length === 0 ? (
-          <p className="field__hint">No cameras linked</p>
-        ) : (
-          <ul className="doorCard__cameraList">
-            {card.cameras.map((camera) => (
-              <li key={camera.cameraId} className="row doorCard__camera">
-                <span className="doorCard__grow">{camera.label}</span>
-                <button
-                  type="button"
-                  className="button button--ghost button--icon button--sm"
-                  aria-disabled={saving}
-                  aria-label={`Unlink ${camera.label} from ${card.title}`}
-                  title={`Unlink ${camera.label} from ${card.title}`}
-                  onClick={() => {
-                    if (!saving) onUnlink(camera.cameraId)
-                  }}
-                >
-                  <XIcon />
-                </button>
-              </li>
-            ))}
-          </ul>
-        )}
-        {/* Not for a door the list lacks: there is nothing to link a new camera to. */}
-        {listed ? (
-          <AddPicker
-            id={domId('door-card-add', card.doorId)}
-            selectLabel={`Camera to add to ${card.title}`}
-            buttonLabel={`Add camera to ${card.title}`}
-            buttonText="Add"
-            placeholder={cameraPlaceholder}
-            options={cameraOptions}
-            unavailable={cameraOptions.length === 0}
-            busy={saving}
-            onAdd={onAddCamera}
-          />
-        ) : null}
-        {saveError === null ? null : (
-          <StatusLine kind="error" role="alert">
-            {saveError.message}
-          </StatusLine>
-        )}
-      </div>
+      {canAdd || card.cameras.length > 0 ? (
+        <div className="doorCard__cameras">
+          <h4 className="doorCard__section">Cameras</h4>
+          {card.cameras.length === 0 ? null : (
+            <ul className="doorCard__cameraList">
+              {card.cameras.map((camera) => (
+                <li key={camera.cameraId} className="doorCard__camera">
+                  <CameraIcon />
+                  <span className="doorCard__cameraName">{camera.label}</span>
+                  <button
+                    type="button"
+                    className="button button--ghost button--icon button--sm"
+                    aria-disabled={saving}
+                    aria-label={`Unlink ${camera.label} from ${card.title}`}
+                    title={`Unlink ${camera.label} from ${card.title}`}
+                    onClick={() => {
+                      if (!saving) onUnlink(camera.cameraId)
+                    }}
+                  >
+                    <XIcon />
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+          {canAdd ? (
+            <AddPicker
+              id={domId('door-card-add', card.doorId)}
+              selectLabel={`Camera to add to ${card.title}`}
+              buttonLabel={`Add camera to ${card.title}`}
+              buttonText="Add"
+              placeholder={cameraPlaceholder}
+              options={cameraOptions}
+              unavailable={cameraOptions.length === 0}
+              busy={saving}
+              onAdd={onAddCamera}
+            />
+          ) : null}
+          {saveError === null ? null : (
+            <StatusLine kind="error" role="alert">
+              {saveError.message}
+            </StatusLine>
+          )}
+        </div>
+      ) : null}
     </li>
   )
 }
@@ -161,11 +164,15 @@ export function DoorCardView({
 /** Unlock, Lock and the rule control of a listed door (header). */
 function DoorActions({
   card,
+  lockChip,
+  ruleLine,
   allowReset,
   block,
   acting,
   onAction,
-}: Pick<DoorCardViewProps, 'card' | 'allowReset' | 'block' | 'acting' | 'onAction'>): JSX.Element {
+}: Pick<DoorCardViewProps, 'card' | 'ruleLine' | 'allowReset' | 'block' | 'acting' | 'onAction'> & {
+  readonly lockChip: JSX.Element
+}): JSX.Element {
   // The pending rule choice and the minutes being typed. Neither is sent anywhere until Apply.
   const [pending, setPending] = useState<string>(PLACEHOLDER)
   const [minutesText, setMinutesText] = useState<string>(DEFAULT_CUSTOM_MINUTES)
@@ -189,7 +196,7 @@ function DoorActions({
       <div className="row doorCard__buttons">
         <button
           type="button"
-          className="button button--sm"
+          className="button button--sm doorCard__unlock"
           disabled={blocked}
           aria-disabled={acting}
           title={blockTitle}
@@ -203,7 +210,7 @@ function DoorActions({
         </button>
         <button
           type="button"
-          className="button button--sm"
+          className="button button--sm doorCard__lock"
           disabled={blocked}
           aria-disabled={acting}
           title={blockTitle}
@@ -221,6 +228,7 @@ function DoorActions({
             <span className="visuallyHidden">Sending to {card.title}…</span>
           </span>
         ) : null}
+        {lockChip}
       </div>
 
       <div className="row doorCard__add">
@@ -246,7 +254,7 @@ function DoorActions({
         </select>
         <button
           type="button"
-          className="button button--sm"
+          className="button button--primary button--sm"
           disabled={blocked}
           aria-disabled={acting || !ruleReady}
           title={blockTitle}
@@ -293,6 +301,9 @@ function DoorActions({
           )}
         </div>
       ) : null}
+
+      {/* What is controlling the door now, under the control that changes it. */}
+      {ruleLine === null ? null : <p className="doorCard__line">{ruleLine}</p>}
     </div>
   )
 }

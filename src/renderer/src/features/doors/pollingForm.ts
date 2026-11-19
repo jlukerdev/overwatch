@@ -14,18 +14,38 @@ import {
 
 export type PollingDraft = Readonly<Record<AccessPollingField, string>>
 
-/** The field labels: what is read, and when that interval applies. All are in seconds. */
+/**
+ * The card's groups, in order: the three lock-state intervals under one title, so no row has to
+ * repeat it, then the rules and emergency interval (user decision 2026-11-19).
+ */
+export const POLLING_GROUPS: readonly {
+  readonly title: string
+  readonly fields: readonly AccessPollingField[]
+}[] = [
+  { title: 'Lock states', fields: ['withSocketSec', 'withoutSocketSec', 'unlockedSec'] },
+  { title: 'Rules and emergency status', fields: ['detailsSec'] },
+]
+
+/** A row's label: when that interval applies. The group's title says what is read. */
 export const POLLING_LABELS: Readonly<Record<AccessPollingField, string>> = {
-  withSocketSec: 'Door states, while live updates are connected',
-  withoutSocketSec: 'Door states, while live updates are not connected',
-  unlockedSec: 'Door states, while a door is unlocked',
-  detailsSec: 'Rules and emergency status',
+  withSocketSec: 'With Access notifications',
+  withoutSocketSec: 'Without Access notifications',
+  unlockedSec: 'While a door is unlocked',
+  detailsSec: 'Check every',
 }
 
-/** "Every 2 to 60 seconds": the field's hint, which is also where the unit is said. */
+/** One short line to the right of a row's input, after the range. */
+export const POLLING_HELP: Readonly<Record<AccessPollingField, string>> = {
+  withSocketSec: 'Access reports changes itself; this is a backup check.',
+  withoutSocketSec: 'For the first minute after Access stops reporting changes.',
+  unlockedSec: 'Shows the door locking again sooner.',
+  detailsSec: 'Schedules, kept-open rules, lockdown and evacuation.',
+}
+
+/** "2 to 60 seconds": the start of a row's help, which is also where the unit is said. */
 export function pollingRangeText(field: AccessPollingField): string {
   const { min, max } = ACCESS_POLLING_BOUNDS[field]
-  return `Every ${String(min)} to ${String(max)} seconds`
+  return `${String(min)} to ${String(max)} seconds.`
 }
 
 function draftOf(read: (field: AccessPollingField) => number): PollingDraft {

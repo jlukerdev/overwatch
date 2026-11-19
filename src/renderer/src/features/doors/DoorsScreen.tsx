@@ -62,13 +62,7 @@ import {
   unlinkCamera,
   type DoorCard,
 } from './doorLinks'
-import {
-  doorLockLook,
-  doorPositionLine,
-  doorRuleLine,
-  ruleAllowsReset,
-  type RuleClock,
-} from './doorRule'
+import { doorLockLook, doorRuleLine, ruleAllowsReset, type RuleClock } from './doorRule'
 import { useDoorsScreenWatch } from './useDoorsScreenWatch'
 import './doors.css'
 
@@ -262,7 +256,6 @@ export function DoorsScreen({ onOpenSettings }: { onOpenSettings: () => void }):
             key={card.doorId}
             card={card}
             look={doorLockLook(card.door, state.stale)}
-            positionLine={doorPositionLine(card.door, state.stale)}
             ruleLine={
               // Own keys only: a door id such as `constructor` must not find a prototype member.
               card.door !== null && Object.hasOwn(state.rules, card.doorId)

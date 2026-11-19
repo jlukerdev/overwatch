@@ -65,58 +65,88 @@
   min-width: 0;
 }
 
-.doorCard__head {
-  align-items: flex-start;
-  justify-content: space-between;
-}
-
+/*
+ * The door's name. Room for two lines is always kept (and a longer name is cut there, with the
+ * whole name in `title`), so the controls line up across the cards of a row (user decision
+ * 2026-11-19).
+ */
 .doorCard__title {
-  min-width: 0;
+  display: -webkit-box;
+  min-height: 2.6em;
   margin: 0;
+  overflow: hidden;
   font-size: var(--font-md);
   font-weight: 600;
+  line-height: 1.3;
   overflow-wrap: anywhere;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
 }
 
 /*
- * The lock state, as the connection badge's pill but not a button: no pointer, no hover. The cell
- * unlock button's language (features/door/door.css): green while unlocked, neutral while locked,
- * and muted while not known — never green, and never worded as locked.
+ * The lock state, at the far right of the Unlock / Lock row: the connection badge's pill but not
+ * a button (no pointer, no hover). One colour per state, shared with the button that leads to it:
+ * green is unlocked (as the cell's unlock button, features/door/door.css), blue is locked, and
+ * muted is not known — never coloured, and never worded as locked.
  */
-.doorCard__lock,
-.doorCard__lock:hover,
-.doorCard__lock:active {
+.doorCard__state,
+.doorCard__state:hover,
+.doorCard__state:active {
   flex-shrink: 0;
+  margin-left: auto;
   border-color: var(--border);
   background-image: none;
   cursor: default;
 }
 
-.doorCard__lock[data-lock='unlocked'],
-.doorCard__lock[data-lock='unlocked']:hover {
-  border-color: var(--ok);
+.doorCard__state[data-lock='unlocked'],
+.doorCard__state[data-lock='unlocked']:hover {
+  border-color: color-mix(in srgb, var(--ok) 60%, var(--border));
+  background-color: color-mix(in srgb, var(--ok) 14%, var(--bg-sunken));
   color: var(--ok);
 }
 
-.doorCard__lock[data-lock='unlocked'] .badge__dot {
+.doorCard__state[data-lock='unlocked'] .badge__dot {
   background: var(--ok);
 }
 
-.doorCard__lock[data-lock='locked'] .badge__dot {
-  background: var(--fg);
+.doorCard__state[data-lock='locked'],
+.doorCard__state[data-lock='locked']:hover {
+  border-color: color-mix(in srgb, var(--accent) 60%, var(--border));
+  background-color: color-mix(in srgb, var(--accent) 14%, var(--bg-sunken));
+  color: var(--accent-hover);
 }
 
-.doorCard__lock[data-lock='unknown'] {
+.doorCard__state[data-lock='locked'] .badge__dot {
+  background: var(--accent);
+}
+
+.doorCard__state[data-lock='unknown'] {
   color: var(--muted);
 }
 
-/* Door position and the rule line, one under the other. */
-.doorCard__lines {
-  display: flex;
-  flex-direction: column;
-  gap: 0.15rem;
+/* Unlock in the unlocked state's green, Lock in the locked state's blue (as `.button--danger`). */
+.doorCard__unlock {
+  border-color: color-mix(in srgb, var(--ok) 60%, var(--border));
+  color: var(--ok);
 }
 
+.doorCard__unlock:hover:not(:disabled) {
+  border-color: var(--ok);
+  background-color: color-mix(in srgb, var(--ok) 14%, transparent);
+}
+
+.doorCard__lock {
+  border-color: color-mix(in srgb, var(--accent) 60%, var(--border));
+  color: var(--accent-hover);
+}
+
+.doorCard__lock:hover:not(:disabled) {
+  border-color: var(--accent);
+  background-color: color-mix(in srgb, var(--accent) 14%, transparent);
+}
+
+/* What is controlling the door, under the rule control. */
 .doorCard__line {
   margin: 0;
   color: var(--muted);
@@ -171,41 +201,76 @@
 
 .doorCard__cameraList {
   display: flex;
-  flex-direction: column;
-  gap: 0.25rem;
+  flex-wrap: wrap;
+  gap: 0.35rem;
   margin: 0;
   padding: 0;
   list-style: none;
 }
 
-/* One linked camera: its name and the ✕ that unlinks it. */
+/* One linked camera: a blue-tinted chip with its name and the ✕ that unlinks it. */
 .doorCard__camera {
-  padding: 0.15rem 0.15rem 0.15rem 0.5rem;
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  background: var(--bg-sunken);
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  min-width: 0;
+  max-width: 100%;
+  padding: 0.1rem 0.15rem 0.1rem 0.55rem;
+  border: 1px solid color-mix(in srgb, var(--accent) 45%, var(--border));
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent) 14%, var(--bg-sunken));
+  color: var(--accent-hover);
+  font-size: var(--font-sm);
+}
+
+.doorCard__cameraName {
+  min-width: 0;
+  color: var(--fg);
   overflow-wrap: anywhere;
 }
 
-.doorCard__grow {
-  flex: 1;
-  min-width: 0;
+.doorCard__camera .button {
+  border-radius: 999px;
 }
 
 /*
- * The Polling card: four fields side by side, wrapping down to one column. Bottom-aligned, so the
- * inputs of one row line up when a label wraps to two lines and its neighbour's does not.
+ * The Polling card: a column of rows, each a label, its seconds input and one line of help to the
+ * right (user decision 2026-11-19). The three lock-state intervals share one group and its title.
  */
-.doors__pollingFields {
+.doors__pollingGroup {
+  min-width: 0;
+  margin: 0 0 0.75rem;
+  padding: 0;
+  border: 0;
+}
+
+.doors__pollingLegend {
+  margin-bottom: 0.4rem;
+  padding: 0;
+  font-weight: 600;
+}
+
+.doors__pollingRow {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(min(17rem, 100%), 1fr));
-  align-items: end;
-  gap: 0 1rem;
+  grid-template-columns: minmax(0, 15rem) 5rem minmax(0, 1fr);
+  align-items: center;
+  gap: 0.25rem 0.75rem;
+  margin-bottom: 0.4rem;
+}
+
+/* Too narrow for three columns: the help goes under the input. */
+@media (width <= 40rem) {
+  .doors__pollingRow {
+    grid-template-columns: minmax(0, 1fr) 5rem;
+  }
+
+  .doors__pollingRow > :last-child {
+    grid-column: 1 / -1;
+  }
 }
 
 .doors__pollingInput {
-  align-self: flex-start;
-  width: 7rem;
+  width: 5rem;
 }
 
 .doors__pollingActions {

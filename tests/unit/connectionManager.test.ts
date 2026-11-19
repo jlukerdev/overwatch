@@ -73,6 +73,8 @@ interface FeedHandle<Options = DevicesOptions> {
   readonly options: Options
   starts: number
   stops: number
+  /** P6.2: `reconnectNow()` calls (NFR-7). */
+  reconnects: number
   /** Pushes a `SubscriptionState` as the real subscription would. */
   emitState(next: SubscriptionState): void
 }
@@ -89,6 +91,7 @@ function createFeedFactory<Options extends ProtectSubscriptionOptions = DevicesO
       options,
       starts: 0,
       stops: 0,
+      reconnects: 0,
       emitState(next) {
         state = next
         options.onStateChange?.(next)
@@ -103,6 +106,9 @@ function createFeedFactory<Options extends ProtectSubscriptionOptions = DevicesO
         handle.stops += 1
         handle.emitState('stopped')
         return Promise.resolve()
+      },
+      reconnectNow() {
+        handle.reconnects += 1
       },
       get state() {
         return state
@@ -223,13 +229,17 @@ function setup(options: SetupOptions = {}) {
 
   // DOOR-6: the Access notifications socket as a recorded fake. Nothing is opened unless the
   // door-state monitor starts, which is itself what the DOOR-0 tests assert.
-  const doorSockets: { handlers: DoorNotificationHandlers; stops: number }[] = []
+  const doorSockets: { handlers: DoorNotificationHandlers; stops: number; reconnects: number }[] =
+    []
   const openDoorNotifications = vi.fn((handlers: DoorNotificationHandlers) => {
-    const socket = { handlers, stops: 0 }
+    const socket = { handlers, stops: 0, reconnects: 0 }
     doorSockets.push(socket)
     return {
       stop: () => {
         socket.stops += 1
+      },
+      reconnectNow: () => {
+        socket.reconnects += 1
       },
     }
   })
@@ -2411,5 +2421,109 @@ describe('the door-state monitor (DOOR-6, P5.5)', () => {
     await tick(POLL_WITHOUT_SOCKET_MS)
     w.manager.watchDoors(false)
     expect(JSON.stringify([w.logged, w.emitted])).not.toContain(ACCESS_TOKEN)
+  })
+})
+
+describe('recover (P6.2, NFR-7)', () => {
+  const FRONT_DOOR = {
+    id: 'door-front',
+    name: 'Front',
+    fullName: 'Front',
+    floorId: 'floor-1',
+    type: 'door',
+    boundToHub: true,
+    relay: 'lock',
+    position: null,
+  }
+
+  it('does nothing before a connect: no feed, no monitor, nothing started', () => {
+    h.manager.recover('resume')
+    expect(h.feeds.feeds).toHaveLength(0)
+    expect(h.events.feeds).toHaveLength(0)
+    expect(h.access.doors).not.toHaveBeenCalled()
+    expect(h.openDoorNotifications).not.toHaveBeenCalled()
+  })
+
+  it('tells both Protect feeds to reconnect now, once each', async () => {
+    await h.manager.connect()
+    h.feeds.last().emitState('open')
+    h.manager.recover('resume')
+    expect(h.feeds.last().reconnects).toBe(1)
+    expect(h.events.last().reconnects).toBe(1)
+    // Nothing new is opened: the feeds reconnect themselves.
+    expect(h.feeds.feeds).toHaveLength(1)
+    expect(h.events.feeds).toHaveLength(1)
+    // A safe line: the reason and the counts, no address or key.
+    const line = h.logged.find((entry) => entry.startsWith('recover ('))
+    expect(line).toContain('woke from sleep')
+    expect(line).not.toContain('192.0.2.10')
+    expect(line).not.toContain(API_KEY)
+  })
+
+  it('leaves a feed that stopped for good alone (a wrong key or pin)', async () => {
+    await h.manager.connect()
+    const devices = h.feeds.last()
+    const events = h.events.last()
+    // Stopped by itself: the manager drops both handles.
+    devices.emitState('stopped')
+    h.manager.recover('network')
+    expect(devices.reconnects).toBe(0)
+    expect(events.reconnects).toBe(0)
+  })
+
+  it('leaves the feeds alone after the key was cleared', async () => {
+    await h.manager.connect()
+    await h.manager.credentialCleared()
+    h.manager.recover('network')
+    expect(h.feeds.last().reconnects).toBe(0)
+    expect(h.events.last().reconnects).toBe(0)
+  })
+
+  describe('the door-state monitor', () => {
+    beforeEach(() => {
+      vi.useFakeTimers()
+    })
+    afterEach(() => {
+      vi.useRealTimers()
+    })
+
+    it('reads the doors at once and reconnects the notifications socket while it runs', async () => {
+      const w = setup({ accessEnabled: true, doorLinks: { 'cam-1': FRONT_DOOR.id } })
+      w.access.doors.mockResolvedValue([FRONT_DOOR] as never)
+      w.manager.watchDoors(true)
+      await vi.advanceTimersByTimeAsync(TRIGGER_COALESCE_MS)
+      expect(w.doorSockets).toHaveLength(1)
+      w.access.doors.mockClear()
+
+      w.manager.recover('resume')
+      expect(w.access.doors).toHaveBeenCalledTimes(1)
+      expect(w.doorSockets[0]?.reconnects).toBe(1)
+      // Read-only: recovery never touches a door (DOOR-3/4).
+      await vi.advanceTimersByTimeAsync(POLL_WITHOUT_SOCKET_MS * 3)
+      expect(w.access.unlock).not.toHaveBeenCalled()
+      expect(w.access.setLockRule).not.toHaveBeenCalled()
+      expect(w.access.setEmergencyStatus).not.toHaveBeenCalled()
+      w.manager.watchDoors(false)
+    })
+
+    it('starts nothing while the monitor is not wanted, and leaves the 60 s token retry be', async () => {
+      const off = setup({ accessEnabled: false, doorLinks: { 'cam-1': FRONT_DOOR.id } })
+      off.manager.watchDoors(true)
+      off.manager.recover('network')
+      await vi.advanceTimersByTimeAsync(POLL_WITHOUT_SOCKET_MS)
+      expect(off.access.doors).not.toHaveBeenCalled()
+
+      const refused = setup({ accessEnabled: true, doorLinks: { 'cam-1': FRONT_DOOR.id } })
+      refused.access.doors.mockRejectedValue(new AccessApiError('HTTP 401.', { kind: 'auth' }))
+      refused.manager.watchDoors(true)
+      await vi.advanceTimersByTimeAsync(0)
+      expect(refused.access.doors).toHaveBeenCalledTimes(1)
+      refused.manager.recover('resume')
+      await vi.advanceTimersByTimeAsync(DOOR_MONITOR_AUTH_RETRY_MS - 1)
+      expect(refused.access.doors).toHaveBeenCalledTimes(1)
+      await vi.advanceTimersByTimeAsync(1)
+      expect(refused.access.doors).toHaveBeenCalledTimes(2)
+      refused.manager.watchDoors(false)
+    })
   })
 })

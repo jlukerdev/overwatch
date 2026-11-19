@@ -147,6 +147,10 @@ function fakeBridge(overrides: Partial<ViewProtectApi> = {}): FakeBridge {
     doorAction: unimplemented('doorAction'),
     setDoorEmergency: unimplemented('setDoorEmergency'),
     setAccessPolling: unimplemented('setAccessPolling'),
+    // P6.2 (NFR-7/8): the wall reports itself (features/power/) and the players hear `onRecover`
+    // themselves; no store test drives either.
+    setViewVisible: unimplemented('setViewVisible'),
+    onRecover: () => () => undefined,
     onDoorsScreen: () => () => undefined,
     onConnection: (listener) => subscribeTo(connectionListeners, listener),
     onCameras: (listener) => subscribeTo(cameraListeners, listener),

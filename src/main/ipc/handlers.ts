@@ -41,6 +41,7 @@ import type { Config } from '../config/schema'
 import type { ConfigStore } from '../config/store'
 import { accessEndpoint, protectEndpoint, type ConsoleEndpoint } from '../console/endpoints'
 import type { ConnectionManager } from '../connection'
+import type { Power } from '../power'
 import type { Secrets, SecretsStore } from '../secrets/secrets'
 import { StreamRegistryError, type StreamRegistry } from '../streams/registry'
 import {
@@ -99,6 +100,12 @@ export interface IpcRouterDeps {
    * `not-ready` on that one channel instead of making every other call unavailable.
    */
   readonly getRegistry: () => StreamRegistry | null
+  /**
+   * The display-sleep blocker (P6.2, NFR-8), built in `src/main/index.ts` once the app is ready.
+   * Optional so the handler tests that never touch it need not build one; absent or `null`, the
+   * `setViewVisible` channel answers `not-ready` like any other dependency that is not up.
+   */
+  readonly getPower?: () => Pick<Power, 'setViewVisible'> | null
   /**
    * `app.getVersion()`, injected rather than imported: reading it from Electron here would make
    * this module — and so every handler test — need an Electron runtime.
@@ -549,6 +556,15 @@ export function createIpcRouter(deps: IpcRouterDeps): ReadonlyMap<string, IpcHan
     // Applied without a restart: the monitor re-arms its pending timers from the new values.
     ready.manager.accessPollingChanged()
     return state(ready)
+  })
+
+  // NFR-8 (P6.2). Local only: no console call, no config write, and so no perf-run block — the
+  // harness keeps the display awake with a blocker of its own (`perfMode.ts`), independent of this
+  // one. Rule 2 as for every channel; the power module is one more dependency that may not be up.
+  on(IPC.setViewVisible, (input) => {
+    const power = deps.getPower?.() ?? null
+    if (power === null) return Promise.resolve(ipcFail('not-ready', NOT_READY, { retryable: true }))
+    return Promise.resolve(ipcOk(power.setViewVisible(input.visible)))
   })
 
   on(IPC.ensureStream, async (input) => {

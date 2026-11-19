@@ -165,6 +165,15 @@ export interface DoorNotificationHandlers {
   onStateChange(state: AccessNotificationsState): void
 }
 
+/**
+ * The notifications socket as the monitor holds it. `reconnectNow` (P6.2, NFR-7) is optional so an
+ * opener that cannot cut its backoff short — or a test that does not care — still fits.
+ */
+export interface DoorNotificationsHandle {
+  stop(): void
+  reconnectNow?(): void
+}
+
 export interface DoorStateMonitorTimers {
   setTimeout(fn: () => void, ms: number): unknown
   clearTimeout(handle: unknown): void
@@ -198,7 +207,7 @@ export interface DoorStateMonitorOptions {
    * does not resolve. Called at most once per `start()`, after the first read that works. Polling
    * runs either way.
    */
-  readonly openNotifications: (handlers: DoorNotificationHandlers) => { stop(): void } | null
+  readonly openNotifications: (handlers: DoorNotificationHandlers) => DoorNotificationsHandle | null
   /** The door ids to report: the values of the saved `doorLinks`, read at every use. */
   readonly linkedDoorIds: () => ReadonlySet<string>
   /** The whole map, whenever what is known changes. Never called with an unchanged map. */
@@ -255,6 +264,19 @@ export interface DoorStateMonitor {
    * `states` are left alone (they are re-read by the same read). A no-op while not running.
    */
   forgetScreen(reason: string): void
+  /**
+   * P6.2 (NFR-7): the machine woke from sleep or its network changed. While running: the
+   * notifications socket is told to reconnect now, one `GET /doors` is read at once (coalesced
+   * like any trigger, and without starting the unlocked burst), and the spacing that failed reads
+   * had built up is forgotten, so if that read fails too the next one is on the ordinary baseline
+   * rather than up to `FAILURE_BACKOFF_MAX_MS` away. How many reads failed in a row is kept: the
+   * states stay unknown (`stale`) until a read works. With the Doors screen open, one full details
+   * round follows **that read**, once it has worked — not in parallel with it, and not twice when
+   * the read is also the first to work after failures. A no-op while not running —
+   * a monitor halted on a rejected token stays halted (the connection manager's 60 s retry is
+   * unchanged). Read-only like everything here (DOOR-3/4).
+   */
+  recoverNow(reason: string): void
   readonly running: boolean
   /** A copy of what is known right now. */
   readonly states: DoorStates
@@ -313,7 +335,7 @@ export function createDoorStateMonitor(options: DoorStateMonitorOptions): DoorSt
    */
   let run = 0
   let states: DoorStates = {}
-  let socket: { stop(): void } | null = null
+  let socket: DoorNotificationsHandle | null = null
   let socketOpen = false
   /** `openNotifications` has been called in this run (once only, even if it answered `null`). */
   let socketAsked = false
@@ -334,6 +356,19 @@ export function createDoorStateMonitor(options: DoorStateMonitorOptions): DoorSt
    */
   const unlockedSince = new Map<string, number>()
   let failures = 0
+  /**
+   * The exponent of the failure spacing (`pollInterval`). Moves with `failures`, except that
+   * `recoverNow()` sets it back to 0 (P6.2): after a wake the old spacing says nothing about the
+   * network that is up now, but the reads that failed still make the states unknown.
+   */
+  let backoffFailures = 0
+  /**
+   * P6.2: `recoverNow()` asked for a full details round after its door read. Taken by the next read
+   * that **starts** (so not by one already in flight, which was sent before the wake) and acted on
+   * only if that read works; a failed one drops it, and the read that next works is `recovered`,
+   * which asks for the same round anyway.
+   */
+  let detailsAfterRead = false
   /**
    * P5.6: the last `GET /doors` answer of this run, kept only while the Doors screen is open.
    * `null` until a read works, and again whenever it may no longer be the current console's.
@@ -458,7 +493,7 @@ export function createDoorStateMonitor(options: DoorStateMonitorOptions): DoorSt
       // without the `max` a console that is not answering would be read more often than one that
       // is.
       const base = baseline(at)
-      return Math.max(base, Math.min(base * 2 ** failures, FAILURE_BACKOFF_MAX_MS))
+      return Math.max(base, Math.min(base * 2 ** backoffFailures, FAILURE_BACKOFF_MAX_MS))
     }
     // A burst only ever reads sooner: a user who sets the unlocked interval above a baseline (the
     // ranges overlap) gets the baseline, not a slower poll for a door that is standing open.
@@ -519,7 +554,11 @@ export function createDoorStateMonitor(options: DoorStateMonitorOptions): DoorSt
    * P5.6: takes a fresh door list for the Doors screen and decides whether the details are due.
    * `recovered`: this is the first read to work after one or more failed.
    */
-  function applyScreenDoors(doors: readonly Door[], recovered: boolean): void {
+  function applyScreenDoors(
+    doors: readonly Door[],
+    recovered: boolean,
+    recoverRequested: boolean,
+  ): void {
     if (details === null) return
     if (!screenOpen()) {
       // Normally done by `screenChanged()`; this covers a caller that forgot to say.
@@ -545,8 +584,13 @@ export function createDoorStateMonitor(options: DoorStateMonitorOptions): DoorSt
       return
     }
     if (recovered) {
-      // Everything was forgotten while the reads failed (`details.forget()`).
+      // Everything was forgotten while the reads failed (`details.forget()`). Also covers a
+      // `recoverNow()` round: one full round, not two.
       details.request('the door reads work again')
+      return
+    }
+    if (recoverRequested) {
+      details.request('woke from sleep or the network changed')
       return
     }
     // A relay that moved: that door's rule is probably not what was read last. Only those doors
@@ -563,7 +607,12 @@ export function createDoorStateMonitor(options: DoorStateMonitorOptions): DoorSt
    * `forScreen`: the read may become the Doors screen's list (`false` for one that was in flight
    * across a `forgetScreen()`; the Live states still take it, as they always did).
    */
-  function applyDoors(doors: readonly Door[], recovered: boolean, forScreen: boolean): void {
+  function applyDoors(
+    doors: readonly Door[],
+    recovered: boolean,
+    forScreen: boolean,
+    recoverRequested: boolean,
+  ): void {
     const linked = options.linkedDoorIds()
     const everyDoor = screenOpen()
     const at = now()
@@ -581,7 +630,7 @@ export function createDoorStateMonitor(options: DoorStateMonitorOptions): DoorSt
     for (const id of watchedUnlocked) {
       if (!unlockedSince.has(id)) unlockedSince.set(id, at)
     }
-    if (forScreen) applyScreenDoors(doors, recovered)
+    if (forScreen) applyScreenDoors(doors, recovered, recoverRequested)
     publish(next)
     publishScreen()
   }
@@ -591,6 +640,8 @@ export function createDoorStateMonitor(options: DoorStateMonitorOptions): DoorSt
     cancelTimer()
     const mine = run
     const generation = screenGeneration
+    const recoverRequested = detailsAfterRead
+    detailsAfterRead = false
     inFlight = true
     triggered = false
     lastReadStartedAt = now()
@@ -609,9 +660,10 @@ export function createDoorStateMonitor(options: DoorStateMonitorOptions): DoorSt
         lastReadEndedAt = now()
         const recovered = failures > 0
         failures = 0
+        backoffFailures = 0
         screenError = null
         // `forgetScreen()` asked for a read of its own (`trigger`), which follows this one.
-        applyDoors(doors, recovered, generation === screenGeneration)
+        applyDoors(doors, recovered, generation === screenGeneration, recoverRequested)
         options.onReadResult?.({ ok: true })
         if (mine !== run) return
         // The console has just accepted the token and the certificate: now the socket may use them.
@@ -623,6 +675,7 @@ export function createDoorStateMonitor(options: DoorStateMonitorOptions): DoorSt
         inFlight = false
         lastReadEndedAt = now()
         failures += 1
+        backoffFailures += 1
         // Recorded whether or not the Doors screen is open, and from the first failure although it
         // is shown from the second (`screenErrorShown`): a screen that opens while the reads are
         // failing has no list, and has to be able to say why at once.
@@ -674,6 +727,8 @@ export function createDoorStateMonitor(options: DoorStateMonitorOptions): DoorSt
     run += 1
     states = {}
     failures = 0
+    backoffFailures = 0
+    detailsAfterRead = false
     triggered = false
     inFlight = false
     socketOpen = false
@@ -696,7 +751,7 @@ export function createDoorStateMonitor(options: DoorStateMonitorOptions): DoorSt
     if (!running || socketAsked) return
     socketAsked = true
     const mine = run
-    let opened: { stop(): void } | null = null
+    let opened: DoorNotificationsHandle | null = null
     try {
       opened = options.openNotifications({
         onNotification: () => {
@@ -802,10 +857,30 @@ export function createDoorStateMonitor(options: DoorStateMonitorOptions): DoorSt
     trigger(false)
   }
 
+  function recoverNow(reason: string): void {
+    if (!running) return
+    log(`door monitor: reading now (${reason})`)
+    backoffFailures = 0
+    // The socket may be dead without knowing it; `null` before the first read worked, in which case
+    // the read below is what opens it.
+    try {
+      socket?.reconnectNow?.()
+    } catch {
+      log('door monitor: the notifications socket could not be told to reconnect')
+    }
+    // Not `trigger()`: that also starts the unlocked burst, and a wake is no sign a door moved.
+    // The details round follows this read once it has worked (`detailsAfterRead`), so the two
+    // never run side by side against a network that may only just be back.
+    if (screenOpen()) detailsAfterRead = true
+    triggered = true
+    schedule()
+  }
+
   return {
     start,
     stop,
     poke,
+    recoverNow,
     rearm,
     screenChanged,
     refreshDetails,

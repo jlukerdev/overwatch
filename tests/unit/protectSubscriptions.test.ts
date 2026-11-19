@@ -963,3 +963,214 @@ describe('stop()', () => {
     }
   })
 })
+
+describe('reconnectNow (P6.2, NFR-7)', () => {
+  it('while open: closes the socket as its own close and connects again at once', async () => {
+    const { h, sub } = devicesHarness()
+    sub.start()
+    await h.tick()
+    h.socket(0).open()
+    sub.reconnectNow()
+    expect(h.socket(0).closeCalls).toEqual([{ code: 1000, reason: 'reconnect' }])
+    await h.tick()
+    // No backoff wait, no error: the close was ours.
+    expect(h.sleeps).toEqual([])
+    expect(h.errors).toEqual([])
+    expect(h.sockets).toHaveLength(2)
+    // Still through the shared limiter, like every upgrade (R9).
+    expect(h.acquires()).toBe(2)
+    expect(h.states).toEqual(['connecting', 'open', 'connecting'])
+    // The reconnect fires onConnected, so the caller re-reads the inventory (R11).
+    h.socket(1).open()
+    expect(h.connects).toEqual([{ reconnect: false }, { reconnect: true }])
+    await sub.stop()
+  })
+
+  it('resets the backoff: a failure after it waits the initial delay again', async () => {
+    const { h, sub } = eventsHarness()
+    sub.start()
+    await h.tick()
+    for (let attempt = 0; attempt < 4; attempt++) {
+      h.socket(attempt).serverClose(1006)
+      await h.advance()
+    }
+    expect(h.sleeps).toEqual([1000, 2000, 4000, 8000])
+    h.socket(4).open()
+    sub.reconnectNow()
+    await h.tick()
+    h.socket(5).serverClose(1006)
+    await h.tick()
+    expect(h.sleeps).toEqual([1000, 2000, 4000, 8000, 1000])
+    await sub.stop()
+  })
+
+  it('while connecting: abandons the handshake and starts a fresh one', async () => {
+    const { h, sub } = eventsHarness()
+    sub.start()
+    await h.tick()
+    expect(sub.state).toBe('connecting')
+    sub.reconnectNow()
+    expect(h.socket(0).closed).toBe(true)
+    await h.tick()
+    expect(h.sockets).toHaveLength(2)
+    expect(h.sleeps).toEqual([])
+    expect(h.errors).toEqual([])
+    expect(h.acquires()).toBe(2)
+    await sub.stop()
+  })
+
+  it('during the backoff wait: cuts it short, with the backoff reset and a permit taken', async () => {
+    const { h, sub } = eventsHarness()
+    sub.start()
+    await h.tick()
+    for (let attempt = 0; attempt < 3; attempt++) {
+      h.socket(attempt).serverClose(1006)
+      if (attempt < 2) await h.advance()
+    }
+    await h.tick()
+    expect(sub.state).toBe('reconnecting')
+    expect(h.sleeps).toEqual([1000, 2000, 4000])
+    expect(h.sockets).toHaveLength(3)
+
+    sub.reconnectNow()
+    await h.tick()
+    expect(h.sockets).toHaveLength(4)
+    expect(h.acquires()).toBe(4)
+    expect(sub.state).toBe('connecting')
+    // The next failure starts the sequence again.
+    h.socket(3).serverClose(1006)
+    await h.tick()
+    expect(h.sleeps).toEqual([1000, 2000, 4000, 1000])
+    await sub.stop()
+  })
+
+  it('does nothing before start(), after stop(), or after a stop for good on auth', async () => {
+    const idle = eventsHarness()
+    idle.sub.reconnectNow()
+    await idle.h.tick()
+    expect(idle.h.sockets).toHaveLength(0)
+    expect(idle.sub.state).toBe('idle')
+
+    const stopped = eventsHarness()
+    stopped.sub.start()
+    await stopped.h.tick()
+    stopped.h.socket(0).open()
+    await stopped.sub.stop()
+    stopped.sub.reconnectNow()
+    await stopped.h.tick()
+    expect(stopped.h.sockets).toHaveLength(1)
+    expect(stopped.sub.state).toBe('stopped')
+
+    const refused = eventsHarness()
+    refused.sub.start()
+    await refused.h.tick()
+    refused.h.socket(0).failUpgrade(Object.assign(new Error('non-101'), { status: 401 }))
+    await refused.h.tick()
+    expect(refused.sub.state).toBe('stopped')
+    refused.sub.reconnectNow()
+    await refused.h.tick()
+    expect(refused.h.sockets).toHaveLength(1)
+    expect(refused.h.acquires()).toBe(1)
+  })
+
+  it('waits for a permit like any upgrade: a held-back limiter holds the reconnect back too', async () => {
+    let release = (): void => undefined
+    let held = false
+    const { h, sub } = eventsHarness({
+      limiter: {
+        acquire: () =>
+          held
+            ? new Promise<void>((resolve) => {
+                release = resolve
+              })
+            : Promise.resolve(),
+        run: (fn) => fn(),
+        penalize: () => undefined,
+        get pending() {
+          return 0
+        },
+      },
+    })
+    sub.start()
+    await h.tick()
+    h.socket(0).open()
+    held = true
+    sub.reconnectNow()
+    await h.tick()
+    expect(h.sockets).toHaveLength(1)
+    release()
+    await h.tick()
+    expect(h.sockets).toHaveLength(2)
+    await sub.stop()
+  })
+})
+
+describe('reconnectNow and a rate-limit floor (P6.2, R9)', () => {
+  it('cuts the backoff short but holds the reconnect until the 429 window has passed', async () => {
+    const { h, sub } = eventsHarness()
+    sub.start()
+    await h.tick()
+    h.socket(0).open()
+    h.socket(0).receiveJson(RATE_LIMIT_BODY)
+    h.socket(0).serverClose(PROTECT_WS_CLOSE_RATE_LIMITED)
+    await h.tick()
+    // The 429's windowMs is the floor of this wait.
+    expect(h.sleeps).toEqual([5000])
+    h.jump(3000)
+    sub.reconnectNow()
+    await h.tick()
+    // Woken, but only down to the floor: 2 s of the window are left, and nothing connects yet.
+    expect(h.sleeps).toEqual([5000, 2000])
+    expect(h.sockets).toHaveLength(1)
+    // A second wake cannot cut the floor either.
+    sub.reconnectNow()
+    await h.tick()
+    expect(h.sockets).toHaveLength(1)
+    // The abandoned first wait, then the floor.
+    await h.advance()
+    await h.advance()
+    expect(h.sockets).toHaveLength(2)
+    // The backoff was still reset by the wake.
+    h.socket(1).serverClose(1006)
+    await h.tick()
+    expect(h.sleeps.at(-1)).toBe(1000)
+    await sub.stop()
+  })
+
+  it('with no floor left, a wake reconnects at once', async () => {
+    const { h, sub } = eventsHarness()
+    sub.start()
+    await h.tick()
+    h.socket(0).open()
+    h.socket(0).receiveJson(RATE_LIMIT_BODY)
+    h.socket(0).serverClose(PROTECT_WS_CLOSE_RATE_LIMITED)
+    await h.tick()
+    h.jump(5000)
+    sub.reconnectNow()
+    await h.tick()
+    expect(h.sleeps).toEqual([5000])
+    expect(h.sockets).toHaveLength(2)
+    await sub.stop()
+  })
+
+  it('a wake clears the default sleep timer, leaving none pending', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    try {
+      const h = makeHarness({}, true)
+      const sub = createEventsSubscription({ ...h.options, onEvent: () => undefined })
+      sub.start()
+      await h.tick()
+      h.socket(0).serverClose(1006)
+      await h.tick()
+      expect(vi.getTimerCount()).toBe(1)
+      sub.reconnectNow()
+      expect(vi.getTimerCount()).toBe(0)
+      await h.tick()
+      expect(h.sockets).toHaveLength(2)
+      await sub.stop()
+      expect(vi.getTimerCount()).toBe(0)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+})

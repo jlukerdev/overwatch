@@ -60,6 +60,7 @@ import {
   type AccessNotification,
 } from './types'
 import type { ConsoleEndpoint } from '../console/endpoints'
+import { startBackoffWait, timerSleep, type BackoffWait } from '../net/backoffWait'
 import { causeChain } from '../net/errorCause'
 
 /** Backoff defaults: 1 s, doubling, capped at 60 s, ±30 % jitter, as for the Protect sockets. */
@@ -143,8 +144,9 @@ export interface AccessNotificationsOptions {
   /** Deterministic time for tests. */
   readonly now?: () => number
   /**
-   * The backoff wait. `signal` aborts when `stop()` is called, so an implementation can clear its
-   * timer; it does not have to honour it, because the wait is also raced against the stop.
+   * The backoff wait. `signal` aborts when `stop()` or `reconnectNow()` ends the wait, so an
+   * implementation can clear its timer; it does not have to honour it, because the wait is also
+   * raced against both.
    */
   readonly sleep?: (ms: number, signal: AbortSignal) => Promise<void>
   readonly random?: () => number
@@ -160,6 +162,15 @@ export interface AccessNotifications {
    * except the final 'stopped' state change.
    */
   stop(): void
+  /**
+   * NFR-7 (P6.2): the machine woke from sleep or its network changed. The same rules as the Protect
+   * feeds' `reconnectNow()` (`../protect/subscriptions.ts`): an `open` or `connecting` socket is
+   * closed as our own close (no error, not a failure) and the next upgrade starts at once; the
+   * backoff wait of `reconnecting` is cut short; either way the backoff starts again from
+   * `initialMs`. `idle` and `stopped` — including a stop for good on a missing token or a pin
+   * failure — do nothing. Read-only like everything here: a reconnect only listens (DOOR-3/4).
+   */
+  reconnectNow(): void
   readonly state: AccessNotificationsState
 }
 
@@ -200,6 +211,14 @@ interface Run {
   /** Resolves when the run is aborted; awaits are raced against it so none outlives the run. */
   readonly aborted: Promise<void>
   socket: AccessWebSocketLike | null
+  /** Consecutive attempts that did not reach `stableAfterMs`; the backoff exponent. */
+  failures: number
+  /** NFR-7: `reconnectNow()` ended the live attempt, so the loop skips the backoff once. */
+  reconnectRequested: boolean
+  /** Ends the live attempt as our own close; set while an upgrade or connection is in progress. */
+  abortAttempt: (() => void) | null
+  /** The backoff wait a wake may cut short; set only while the loop is in one. */
+  backoffWait: BackoffWait | null
 }
 
 export function createAccessNotifications(
@@ -219,7 +238,7 @@ export function createAccessNotifications(
   const now = options.now ?? Date.now
   const random = options.random ?? Math.random
   const log = options.log ?? ((): void => undefined)
-  const sleep = options.sleep ?? defaultSleep
+  const sleep = options.sleep ?? timerSleep
   // `host:port` for error messages. The URL carries no credential (the token is a header), but the
   // endpoint is what Settings shows, so that is all the errors need.
   const endpoint = hostOf(url)
@@ -317,8 +336,20 @@ export function createAccessNotifications(
         if (settled) return
         settled = true
         if (current.socket === ws) current.socket = null
+        if (current.abortAttempt === abort) current.abortAttempt = null
         resolve({ fatal, stable: openedAt !== null && now() - openedAt >= stableAfterMs })
       }
+
+      /** NFR-7, from `reconnectNow()`: close this socket ourselves, reporting nothing. */
+      const abort = (): void => {
+        if (settled) return
+        selfClosed = true
+        log('access notifications: closing to reconnect now (woke or the network changed)')
+        // Settled first, as for an error: the close event it may fire must not decide anything.
+        finish(false)
+        closeQuietly(ws, 'reconnect')
+      }
+      current.abortAttempt = abort
 
       ws.addEventListener('open', () => {
         if (!isLive(current)) return
@@ -409,8 +440,6 @@ export function createAccessNotifications(
 
   /** The retry loop of one run. Ends when the run is stopped or fails for good. */
   async function loop(current: Run): Promise<void> {
-    /** Consecutive attempts that did not reach `stableAfterMs`; the backoff exponent. */
-    let failures = 0
     while (isLive(current)) {
       let outcome: AttemptOutcome
       try {
@@ -436,16 +465,30 @@ export function createAccessNotifications(
         setState('stopped')
         return
       }
-      if (outcome.stable) failures = 0
-      const delay = delayMs(failures)
-      failures++
+      if (outcome.stable) current.failures = 0
+      if (current.reconnectRequested) {
+        // Our own close (NFR-7): not a failure, and no wait.
+        current.reconnectRequested = false
+        current.failures = 0
+        continue
+      }
+      const delay = delayMs(current.failures)
+      current.failures++
       setState('reconnecting')
-      log(`access notifications: reconnecting in ${String(delay)} ms (attempt ${String(failures)})`)
+      log(
+        `access notifications: reconnecting in ${String(delay)} ms ` +
+          `(attempt ${String(current.failures)})`,
+      )
+      // Ended early by `stop()` (the run's signal) or a wake; a sleep that rejects *because* of
+      // either is a normal early end, which `startBackoffWait` swallows (`../net/backoffWait.ts`).
+      // No rate-limit floor to respect here: the Access reference documents none for this socket.
+      const wait = startBackoffWait(sleep, delay, current.controller.signal)
+      current.backoffWait = wait
       try {
-        await Promise.race([sleep(delay, current.controller.signal), current.aborted])
+        await Promise.race([wait.done, current.aborted])
       } catch (err) {
-        // An injected sleep that rejects on abort is fine; one that rejects otherwise must not
-        // turn the backoff into a tight loop, so it ends the run like any internal error.
+        // A sleep that rejects on its own must not turn the backoff into a tight loop, so it ends
+        // the run like any internal error.
         if (!isLive(current)) return
         report(
           new AccessApiError(`${WHAT} stopped after an internal error: ${messageOf(err)}.`, {
@@ -458,6 +501,8 @@ export function createAccessNotifications(
         current.controller.abort()
         setState('stopped')
         return
+      } finally {
+        current.backoffWait = null
       }
     }
   }
@@ -475,7 +520,15 @@ export function createAccessNotifications(
           { once: true },
         )
       })
-      const started: Run = { controller, aborted, socket: null }
+      const started: Run = {
+        controller,
+        aborted,
+        socket: null,
+        failures: 0,
+        reconnectRequested: false,
+        abortAttempt: null,
+        backoffWait: null,
+      }
       run = started
       void loop(started)
     },
@@ -491,6 +544,21 @@ export function createAccessNotifications(
         if (ws !== null) closeQuietly(ws, 'stopped')
       }
       setState('stopped')
+    },
+    reconnectNow() {
+      const current = run
+      if (current === null) return
+      current.failures = 0
+      const wait = current.backoffWait
+      if (wait !== null) {
+        log('access notifications: reconnecting now (woke or the network changed)')
+        wait.wake()
+        return
+      }
+      const abort = current.abortAttempt
+      if (abort === null) return
+      current.reconnectRequested = true
+      abort()
     },
     get state() {
       return state
@@ -535,25 +603,6 @@ function authStatusOf(raw: unknown): 401 | 403 | null {
 }
 
 // --- small helpers ------------------------------------------------------------------------------
-
-/** The default backoff wait: a timer that `stop()` clears through the signal. */
-function defaultSleep(ms: number, signal: AbortSignal): Promise<void> {
-  return new Promise<void>((resolve) => {
-    if (signal.aborted) {
-      resolve()
-      return
-    }
-    const onAbort = (): void => {
-      clearTimeout(timer)
-      resolve()
-    }
-    const timer = setTimeout(() => {
-      signal.removeEventListener('abort', onAbort)
-      resolve()
-    }, ms)
-    signal.addEventListener('abort', onAbort, { once: true })
-  })
-}
 
 const decoder = new TextDecoder()
 

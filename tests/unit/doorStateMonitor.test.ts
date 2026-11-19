@@ -58,14 +58,17 @@ function setup(options: SetupOptions = {}) {
   const results: DoorReadResult[] = []
   const logged: string[] = []
   const halts: DoorMonitorHaltReason[] = []
-  const sockets: { handlers: DoorNotificationHandlers; stops: number }[] = []
+  const sockets: { handlers: DoorNotificationHandlers; stops: number; reconnects: number }[] = []
   const openNotifications = vi.fn((handlers: DoorNotificationHandlers) => {
     if (options.socket === false) return null
-    const socket = { handlers, stops: 0 }
+    const socket = { handlers, stops: 0, reconnects: 0 }
     sockets.push(socket)
     return {
       stop: () => {
         socket.stops += 1
+      },
+      reconnectNow: () => {
+        socket.reconnects += 1
       },
     }
   })
@@ -1716,5 +1719,149 @@ describe('without the Doors screen option (P5.5 behaviour, unchanged)', () => {
     await vi.advanceTimersByTimeAsync(POLL_WITH_SOCKET_MS)
     expect(h.monitor.running).toBe(true)
     expect(h.monitor.states).toEqual({ front: LOCKED, garage: LOCKED })
+  })
+})
+
+describe('recoverNow (P6.2, NFR-7)', () => {
+  const network = (): AccessApiError =>
+    new AccessApiError('The console did not answer.', { kind: 'network' })
+
+  it('reads at once and tells the socket to reconnect, without starting the burst', async () => {
+    const h = setup()
+    await h.started()
+    await h.settle()
+    h.monitor.recoverNow('the machine woke from sleep')
+    expect(h.readDoors).toHaveBeenCalledTimes(1)
+    expect(h.socket().reconnects).toBe(1)
+    // No 1 s burst: the next read is a whole baseline later.
+    await vi.advanceTimersByTimeAsync(POLL_WITH_SOCKET_MS - 1)
+    expect(h.readDoors).toHaveBeenCalledTimes(1)
+    await vi.advanceTimersByTimeAsync(1)
+    expect(h.readDoors).toHaveBeenCalledTimes(2)
+  })
+
+  it('is coalesced like any trigger: right after a read it waits out the 250 ms', async () => {
+    const h = setup()
+    await h.started()
+    await h.settle()
+    h.monitor.poke('an unlock was answered')
+    expect(h.readDoors).toHaveBeenCalledTimes(1)
+    await vi.advanceTimersByTimeAsync(0)
+    h.monitor.recoverNow('the network changed')
+    expect(h.readDoors).toHaveBeenCalledTimes(1)
+    await vi.advanceTimersByTimeAsync(TRIGGER_COALESCE_MS)
+    expect(h.readDoors).toHaveBeenCalledTimes(2)
+  })
+
+  it('cuts the failure backoff short, and a further failure waits only a baseline', async () => {
+    const h = setup()
+    await h.started(false)
+    h.readDoors.mockImplementation(() => Promise.reject(network()))
+    // Four failures in a row: 2 s, then 4, 8 and 16 s apart; the next would be 30 s away.
+    await vi.advanceTimersByTimeAsync(POLL_WITHOUT_SOCKET_MS + 4_000 + 8_000 + 16_000)
+    expect(h.readDoors).toHaveBeenCalledTimes(4)
+    await vi.advanceTimersByTimeAsync(TRIGGER_COALESCE_MS)
+    h.monitor.recoverNow('the machine woke from sleep')
+    expect(h.readDoors).toHaveBeenCalledTimes(5)
+    await vi.advanceTimersByTimeAsync(0)
+    // That one failed too: the next is one baseline later (2 s: the socket has not been down a
+    // minute), then doubling again from there.
+    await vi.advanceTimersByTimeAsync(POLL_WITHOUT_SOCKET_MS * 2)
+    expect(h.readDoors).toHaveBeenCalledTimes(6)
+    // The reads that failed still count: the states stay unknown until one works.
+    expect(h.monitor.states).toEqual({})
+    expect(h.monitor.stale).toBe(true)
+  })
+
+  it('is a no-op while not running, and after a halt', async () => {
+    const h = setup()
+    h.monitor.recoverNow('the machine woke from sleep')
+    expect(h.readDoors).not.toHaveBeenCalled()
+    await h.started()
+    h.setFailure(new AccessApiError('HTTP 401.', { kind: 'auth' }))
+    await vi.advanceTimersByTimeAsync(POLL_WITH_SOCKET_MS)
+    expect(h.halts).toEqual(['auth'])
+    h.readDoors.mockClear()
+    const reconnects = h.socket().reconnects
+    h.monitor.recoverNow('the machine woke from sleep')
+    await vi.advanceTimersByTimeAsync(FAILURE_BACKOFF_MAX_MS)
+    expect(h.readDoors).not.toHaveBeenCalled()
+    expect(h.socket().reconnects).toBe(reconnects)
+  })
+
+  it('reads with no socket yet, or an opener whose handle cannot reconnect', async () => {
+    const h = setup({ socket: false })
+    await h.started(false)
+    await h.settle()
+    h.monitor.recoverNow('the network changed')
+    expect(h.readDoors).toHaveBeenCalledTimes(1)
+  })
+
+  it('runs one full details round after the door read works, never beside it', async () => {
+    const h = screenSetup()
+    await h.started()
+    await vi.advanceTimersByTimeAsync(TRIGGER_COALESCE_MS)
+    let answer: (doors: readonly Door[]) => void = () => undefined
+    h.readDoors.mockImplementationOnce(
+      () =>
+        new Promise<readonly Door[]>((resolve) => {
+          answer = resolve
+        }),
+    )
+    h.monitor.recoverNow('the machine woke from sleep')
+    expect(h.readDoors).toHaveBeenCalledTimes(1)
+    await vi.advanceTimersByTimeAsync(0)
+    // The door read is still out: nothing else is sent meanwhile.
+    expect(h.readEmergency).not.toHaveBeenCalled()
+    expect(h.readLockRule).not.toHaveBeenCalled()
+    answer([door('front'), door('garage'), door('unlinked')])
+    await vi.advanceTimersByTimeAsync(0)
+    expect(h.readEmergency).toHaveBeenCalledTimes(1)
+    expect(h.readLockRule).toHaveBeenCalledTimes(3)
+
+    const closed = screenSetup({ open: false })
+    await closed.started()
+    closed.monitor.recoverNow('the machine woke from sleep')
+    await vi.advanceTimersByTimeAsync(TRIGGER_COALESCE_MS)
+    expect(closed.readDoors).toHaveBeenCalledTimes(1)
+    expect(closed.readEmergency).not.toHaveBeenCalled()
+    expect(closed.readLockRule).not.toHaveBeenCalled()
+  })
+})
+
+describe('recoverNow and the Doors screen details (P6.2)', () => {
+  it('sends no details while the recover read fails, then exactly one round once one works', async () => {
+    const h = screenSetup()
+    await h.started()
+    await vi.advanceTimersByTimeAsync(TRIGGER_COALESCE_MS)
+    h.setFailure(new AccessApiError('The console did not answer.', { kind: 'network' }))
+    h.monitor.recoverNow('the machine woke from sleep')
+    await vi.advanceTimersByTimeAsync(0)
+    expect(h.readDoors).toHaveBeenCalledTimes(1)
+    expect(h.readEmergency).not.toHaveBeenCalled()
+    expect(h.readLockRule).not.toHaveBeenCalled()
+    // The network is back: the next read works, and it is both the "recovered" read and the one
+    // after a wake. One full round, not two.
+    h.setFailure(null)
+    // One failure with the socket open: the next read is 10 s away (inside the 30 s details period).
+    await vi.advanceTimersByTimeAsync(POLL_WITH_SOCKET_MS * 2)
+    expect(h.readDoors).toHaveBeenCalledTimes(2)
+    expect(h.readEmergency).toHaveBeenCalledTimes(1)
+    expect(h.readLockRule).toHaveBeenCalledTimes(3)
+  })
+
+  it('one round only when a wake follows a failure and the read works', async () => {
+    const h = screenSetup()
+    await h.started()
+    h.setFailure(new AccessApiError('The console did not answer.', { kind: 'network' }))
+    await vi.advanceTimersByTimeAsync(POLL_WITH_SOCKET_MS)
+    expect(h.readDoors).toHaveBeenCalledTimes(1)
+    h.setFailure(null)
+    await vi.advanceTimersByTimeAsync(TRIGGER_COALESCE_MS)
+    h.monitor.recoverNow('the network changed')
+    await vi.advanceTimersByTimeAsync(0)
+    expect(h.readDoors).toHaveBeenCalledTimes(2)
+    expect(h.readEmergency).toHaveBeenCalledTimes(1)
+    expect(h.readLockRule).toHaveBeenCalledTimes(3)
   })
 })

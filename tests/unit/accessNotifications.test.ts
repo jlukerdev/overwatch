@@ -846,3 +846,163 @@ describe('the token', () => {
     for (const err of h.errors) expect(err).toBeInstanceOf(AccessApiError)
   })
 })
+
+describe('reconnectNow (P6.2, NFR-7)', () => {
+  it('while open: closes the socket as its own close and connects again at once', async () => {
+    const h = makeHarness()
+    h.sub.start()
+    await tick()
+    h.socket(0).open()
+    h.sub.reconnectNow()
+    expect(h.socket(0).closeCalls).toEqual([{ code: 1000, reason: 'reconnect' }])
+    await tick()
+    expect(h.sleeps).toEqual([])
+    expect(h.errors).toEqual([])
+    expect(h.sockets).toHaveLength(2)
+    expect(h.states).toEqual(['connecting', 'open', 'connecting'])
+    h.socket(1).open()
+    expect(h.sub.state).toBe('open')
+    h.sub.stop()
+  })
+
+  it('while connecting: abandons the handshake and starts a fresh one', async () => {
+    const h = makeHarness()
+    h.sub.start()
+    await tick()
+    h.sub.reconnectNow()
+    expect(h.socket(0).closed).toBe(true)
+    await tick()
+    expect(h.sockets).toHaveLength(2)
+    expect(h.sleeps).toEqual([])
+    expect(h.errors).toEqual([])
+    h.sub.stop()
+  })
+
+  it('during the backoff wait: cuts it short, aborts the wait signal and resets the backoff', async () => {
+    const h = makeHarness()
+    h.sub.start()
+    await tick()
+    for (let i = 0; i < 3; i++) {
+      h.socket(i).serverClose(1006)
+      if (i < 2) await h.advance()
+    }
+    await tick()
+    expect(h.sub.state).toBe('reconnecting')
+    expect(h.sleeps).toEqual([1000, 2000, 4000])
+
+    h.sub.reconnectNow()
+    // The default sleep clears its timer on this signal.
+    expect(h.sleepSignals[2]?.aborted).toBe(true)
+    await tick()
+    expect(h.sockets).toHaveLength(4)
+    h.socket(3).serverClose(1006)
+    await tick()
+    expect(h.sleeps).toEqual([1000, 2000, 4000, 1000])
+    h.sub.stop()
+  })
+
+  it('resets the backoff after a reconnect from open, too', async () => {
+    const h = makeHarness()
+    h.sub.start()
+    await tick()
+    for (let i = 0; i < 3; i++) {
+      h.socket(i).serverClose(1006)
+      await h.advance()
+    }
+    h.socket(3).open()
+    h.sub.reconnectNow()
+    await tick()
+    h.socket(4).serverClose(1006)
+    await tick()
+    expect(h.sleeps).toEqual([1000, 2000, 4000, 1000])
+    h.sub.stop()
+  })
+
+  it('does nothing before start(), after stop(), or after a stop for good', async () => {
+    const idle = makeHarness()
+    idle.sub.reconnectNow()
+    await tick()
+    expect(idle.sockets).toHaveLength(0)
+    expect(idle.sub.state).toBe('idle')
+
+    const stopped = makeHarness()
+    stopped.sub.start()
+    await tick()
+    stopped.socket(0).open()
+    stopped.sub.stop()
+    stopped.sub.reconnectNow()
+    await tick()
+    expect(stopped.sockets).toHaveLength(1)
+    expect(stopped.sub.state).toBe('stopped')
+
+    const noToken = makeHarness()
+    noToken.creds.token = null
+    noToken.sub.start()
+    await tick()
+    expect(noToken.sub.state).toBe('stopped')
+    noToken.sub.reconnectNow()
+    await tick()
+    expect(noToken.sockets).toHaveLength(0)
+  })
+
+  it('leaves no real timer pending after cutting the default sleep short', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    try {
+      const h = makeHarness({}, true)
+      h.sub.start()
+      await tick()
+      h.socket(0).serverClose(1006)
+      await tick()
+      expect(vi.getTimerCount()).toBe(1)
+      h.sub.reconnectNow()
+      expect(vi.getTimerCount()).toBe(0)
+      await tick()
+      expect(h.sockets).toHaveLength(2)
+      h.sub.stop()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+})
+
+describe('reconnectNow with a sleep that rejects on abort (P6.2)', () => {
+  it('treats the rejection as the end of the wait, not as an internal error', async () => {
+    const h = makeHarness({
+      sleep: (_ms, signal) =>
+        new Promise<void>((_resolve, reject) => {
+          signal.addEventListener('abort', () => {
+            reject(new Error('aborted'))
+          })
+        }),
+    })
+    h.sub.start()
+    await tick()
+    h.socket(0).serverClose(1006)
+    await tick()
+    expect(h.sub.state).toBe('reconnecting')
+    const errorsBefore = h.errors.length
+    h.sub.reconnectNow()
+    await tick()
+    expect(h.sockets).toHaveLength(2)
+    expect(h.sub.state).toBe('connecting')
+    expect(h.errors).toHaveLength(errorsBefore)
+    // And stop during the wait ends it quietly too.
+    h.socket(1).serverClose(1006)
+    await tick()
+    h.sub.stop()
+    await tick()
+    expect(h.sub.state).toBe('stopped')
+    expect(h.errors.filter((err) => err.message.includes('internal error'))).toEqual([])
+  })
+
+  it('still stops on a sleep that rejects on its own', async () => {
+    const h = makeHarness({ sleep: () => Promise.reject(new Error('a broken clock')) })
+    h.sub.start()
+    await tick()
+    h.socket(0).serverClose(1006)
+    await tick()
+    await tick()
+    expect(h.sub.state).toBe('stopped')
+    expect(h.errors.at(-1)?.message).toContain('internal error')
+  })
+})

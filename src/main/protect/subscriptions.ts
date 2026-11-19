@@ -36,6 +36,7 @@
 // plain Node (tests/unit/protectSubscriptions.test.ts) instead of waiting out a real backoff.
 import { WebSocket, type Dispatcher } from 'undici'
 import { ProtectApiError, protectErrorFromThrown } from './errors'
+import { startBackoffWait, timerSleep, type BackoffWait } from '../net/backoffWait'
 import { causeChain } from '../net/errorCause'
 import { PROTECT_RATE_WINDOW_MS, type RateLimiter } from '../net/rateLimiter'
 import {
@@ -152,7 +153,12 @@ export interface ProtectSubscriptionOptions {
   log?: (line: string) => void
   /** Deterministic time for tests. */
   now?: () => number
-  sleep?: (ms: number) => Promise<void>
+  /**
+   * The backoff and idle waits. `signal` aborts when `stop()` or a `reconnectNow()` ends the wait,
+   * so an implementation can clear its timer; it does not have to honour it, because the wait is
+   * also raced against both (`../net/backoffWait.ts`).
+   */
+  sleep?: (ms: number, signal: AbortSignal) => Promise<void>
   random?: () => number
 }
 
@@ -160,6 +166,25 @@ export interface ProtectSubscription {
   start(): void
   /** Stops for good: no further reconnect, socket closed with 1000. Idempotent. */
   stop(): Promise<void>
+  /**
+   * NFR-7 (P6.2): the machine woke from sleep or its network changed, so the socket may be dead
+   * without TCP having noticed yet (keepalive takes a minute or more), and any backoff that grew
+   * while the network was gone is now only a delay. By state:
+   *
+   * - `open` / `connecting` with a socket: closes it as our own close (no error reported, not
+   *   counted as a failure) and connects again at once, with the backoff reset.
+   * - `connecting` while still waiting for the permit: the backoff is reset; the attempt that is
+   *   about to start is already a fresh one.
+   * - `reconnecting` (the backoff wait): the wait is cut short and it connects now, backoff reset —
+   *   but never below a rate-limit floor: a wait that a 429's `windowMs` set is held until that
+   *   window has passed (the console said so; waking does not change it).
+   * - `idle` / `stopped` (never started, stopped by the caller, or stopped for good on an auth or pin
+   *   failure — rule 4): nothing. A wake does not make a wrong key right.
+   *
+   * Every reconnect still takes a permit from the shared `RateLimiter` (R9), so a wake cannot burst
+   * past the budget, and `onConnected` still fires after it, so the inventory is re-read (R11).
+   */
+  reconnectNow(): void
   readonly state: SubscriptionState
 }
 
@@ -382,18 +407,8 @@ function createSubscription(
   // the endpoint is what Settings shows, so that is all the errors need.
   const endpoint = hostOf(url)
 
-  /** Timers the default `sleep` owns, so `stop()` can leave none pending (rule 9). */
-  const timers = new Set<ReturnType<typeof setTimeout>>()
-  const sleep =
-    options.sleep ??
-    ((ms: number): Promise<void> =>
-      new Promise<void>((resolve) => {
-        const timer = setTimeout(() => {
-          timers.delete(timer)
-          resolve()
-        }, ms)
-        timers.add(timer)
-      }))
+  // The default clears its timer on the signal, so `stop()` and a wake leave none pending (rule 9).
+  const sleep = options.sleep ?? timerSleep
 
   let state: SubscriptionState = 'idle'
   let stopped = false
@@ -406,9 +421,28 @@ function createSubscription(
   let connectedOnce = false
   let socket: ProtectWebSocketLike | null = null
   let loop: Promise<void> | null = null
+  /**
+   * NFR-7: `reconnectNow()` ended the live attempt on purpose, so the loop goes straight to the next
+   * one instead of waiting out a backoff. Cleared by the loop when it acts on it.
+   */
+  let reconnectRequested = false
+  /** Ends the live attempt as our own close; set while an upgrade or connection is in progress. */
+  let abortAttempt: (() => void) | null = null
+  /** The backoff wait a wake may cut short; set only while the loop is in one. */
+  let backoffWait: BackoffWait | null = null
+  /**
+   * Until when a 429 forbids the next upgrade (`windowMs` from the console), or `null`. A wake cuts
+   * the backoff short but never this floor.
+   */
+  let penaltyUntil: number | null = null
+  /** Aborted by every stop, so every wait (backoff, idle) clears its timer at once. */
+  const stopController = new AbortController()
   let releaseStop = (): void => undefined
   const untilStopped = new Promise<void>((resolve) => {
-    releaseStop = resolve
+    releaseStop = () => {
+      stopController.abort()
+      resolve()
+    }
   })
 
   const setState = (next: SubscriptionState): void => {
@@ -493,9 +527,24 @@ function createSubscription(
         if (settled) return
         settled = true
         if (socket === ws) socket = null
+        if (abortAttempt === abort) abortAttempt = null
         const stable = openedAt !== null && now() - openedAt >= stableAfterMs
         resolve({ ...outcome, stable })
       }
+
+      /**
+       * NFR-7, from `reconnectNow()`: close this socket ourselves. `selfClosed` first, so the close
+       * it causes is neither reported as the console's nor treated as anything but a normal end;
+       * the loop reads `reconnectRequested` and skips the backoff.
+       */
+      const abort = (): void => {
+        if (settled) return
+        selfClosed = true
+        log(`${channel}: closing to reconnect now (woke or the network changed)`)
+        closeQuietly(ws, 1000, 'reconnect')
+        finish({ fatal: false, penaltyMs: null })
+      }
+      abortAttempt = abort
 
       ws.addEventListener('open', () => {
         openedAt = now()
@@ -606,7 +655,10 @@ function createSubscription(
             const remaining = lastFrameAt + idleTimeoutMs - now()
             if (remaining > 0) {
               const before = now()
-              await raceStop(sleep(remaining), undefined)
+              await raceStop(
+                startBackoffWait(sleep, remaining, stopController.signal).done,
+                undefined,
+              )
               stalls = now() > before ? 0 : stalls + 1
               if (stalls < MAX_IDLE_ROUNDS) continue
               // Give up watching rather than spin: the socket is left alone, so a real close still
@@ -684,11 +736,35 @@ function createSubscription(
         return
       }
       if (outcome.stable) failures = 0
+      if (reconnectRequested) {
+        reconnectRequested = false
+        // Our own close (NFR-7): not a failure, and no wait — unless the console rate limited the
+        // attempt in the meantime, whose floor still applies (the limiter holds it back too).
+        failures = 0
+        if (outcome.penaltyMs === null) continue
+      }
       const delay = nextDelayMs(outcome.penaltyMs)
+      penaltyUntil = outcome.penaltyMs === null ? null : now() + outcome.penaltyMs
       failures++
       setState('reconnecting')
       log(`${channel}: reconnecting in ${String(delay)} ms (attempt ${String(failures)})`)
-      await raceStop(sleep(delay), undefined)
+      const wait = startBackoffWait(sleep, delay, stopController.signal)
+      backoffWait = wait
+      try {
+        await raceStop(wait.done, undefined)
+      } finally {
+        backoffWait = null
+      }
+      // A wake ended the wait early: the backoff is gone, but a 429's floor is not. One more wait
+      // for what is left of it, which no wake can cut short. Once only, so an injected clock that
+      // does not move cannot spin here.
+      const floor = penaltyUntil
+      penaltyUntil = null
+      const left = floor === null ? 0 : floor - now()
+      if (left > 0 && !isStopped()) {
+        log(`${channel}: rate limited; holding the reconnect back ${String(left)} ms more`)
+        await raceStop(startBackoffWait(sleep, left, stopController.signal).done, undefined)
+      }
     }
   }
 
@@ -705,9 +781,22 @@ function createSubscription(
       const ws = socket
       socket = null
       if (ws !== null) closeQuietly(ws, 1000, 'stopped')
-      for (const timer of timers) clearTimeout(timer)
-      timers.clear()
       await loop
+    },
+    reconnectNow() {
+      if (isStopped() || !started) return
+      const wait = backoffWait
+      if (wait !== null) {
+        log(`${channel}: reconnecting now (woke or the network changed)`)
+        failures = 0
+        wait.wake()
+        return
+      }
+      failures = 0
+      const abort = abortAttempt
+      if (abort === null) return
+      reconnectRequested = true
+      abort()
     },
     get state() {
       return state

@@ -61,6 +61,7 @@ import {
   type IpcError,
   type IpcResult,
   type ProtectProbe,
+  type RecoverReason,
   type RtspsAvailability,
   type SnapshotInput,
   type SnapshotResult,
@@ -85,6 +86,7 @@ import {
   type DoorMonitorHaltReason,
   type DoorMonitorIntervals,
   type DoorNotificationHandlers,
+  type DoorNotificationsHandle,
   type DoorReadResult,
   type DoorStateMonitor,
 } from './access/doorStateMonitor'
@@ -163,9 +165,11 @@ export interface ConnectionManagerOptions {
    * now, or answers `null` when it cannot (`src/main/index.ts` wires the real one). Called only when
    * the door-state monitor starts, so never while Access is off (DOOR-0). The socket's own failures
    * are the opener's to log: they never move the Access status, and polling covers for it. Default:
-   * no socket, polling only.
+   * no socket, polling only. The handle's `reconnectNow` (P6.2) is what `recover()` calls.
    */
-  readonly openDoorNotifications?: (handlers: DoorNotificationHandlers) => { stop(): void } | null
+  readonly openDoorNotifications?: (
+    handlers: DoorNotificationHandlers,
+  ) => DoorNotificationsHandle | null
 }
 
 export interface ConnectionManager {
@@ -271,6 +275,18 @@ export interface ConnectionManager {
    * nothing by itself.
    */
   accessPollingChanged(): void
+  /**
+   * NFR-7 (P6.2): the machine woke from sleep (`resume`) or its network changed (`network`), so
+   * every socket may be dead without knowing it and every backoff that grew while the network was
+   * gone is only a delay now. Cuts them short on whatever is running: both Protect feeds
+   * `reconnectNow()` (each still takes a rate-limit permit, R9, and the devices feed's reconnect
+   * re-reads the inventory, R11), and a running door-state monitor reads `GET /doors` at once and
+   * reconnects its notifications socket (`recoverNow`). Nothing that is not running is started: a
+   * feed that stopped for good on its key or pin stays stopped, and so does a door monitor halted
+   * on a rejected token (its 60 s retry is untouched). Never sends a door action (DOOR-3/4).
+   * Synchronous and never throws.
+   */
+  recover(reason: RecoverReason): void
   /**
    * CON-1/2: the Protect API key has just been deleted. Closes the feed and empties the inventory,
    * because nothing may keep running on a credential the user has removed. Clears
@@ -1757,6 +1773,29 @@ export function createConnectionManager(options: ConnectionManagerOptions): Conn
     }
   }
 
+  function recover(reason: RecoverReason): void {
+    const why = reason === 'resume' ? 'the machine woke from sleep' : 'the network changed'
+    // Not through `serialize`: nothing here replaces a feed or the endpoint, and a recover queued
+    // behind a connect's backoff would arrive after it was needed. The handles are read now; a feed
+    // being replaced by a queued call is either already gone (null) or about to be stopped anyway.
+    const feeds = [subscription, eventsFeed].filter(
+      (feed): feed is ProtectSubscription => feed !== null,
+    )
+    const monitor = doorMonitor?.running === true ? doorMonitor : null
+    log(
+      `recover (${why}): ${String(feeds.length)} Protect feed(s), door monitor ` +
+        (monitor === null ? 'not running' : 'running'),
+    )
+    for (const feed of feeds) {
+      try {
+        feed.reconnectNow()
+      } catch (err) {
+        log(`recover: a feed failed to reconnect: ${err instanceof Error ? err.name : 'unknown'}`)
+      }
+    }
+    monitor?.recoverNow(why)
+  }
+
   async function shutdown(): Promise<void> {
     doorsWatched = false
     doorsScreenOpen = false
@@ -1787,6 +1826,7 @@ export function createConnectionManager(options: ConnectionManagerOptions): Conn
     setDoorEmergency,
     accessInputsChanged,
     accessPollingChanged,
+    recover,
     credentialCleared: () => serialize(credentialCleared),
     credentialReplaced: () =>
       serialize(() => {

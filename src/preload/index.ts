@@ -30,6 +30,8 @@ import {
   type DoorsScreenState,
   type IpcResult,
   type PinCheck,
+  type PowerState,
+  type Recover,
   type RtspsAvailability,
   type SnapshotResult,
   type StreamHandle,
@@ -143,6 +145,7 @@ const impl: ViewProtectApi = {
   setDoorEmergency: (input): Promise<IpcResult<DoorEmergencyResult>> =>
     call(IPC.setDoorEmergency, input),
   setAccessPolling: (input): Promise<IpcResult<AppState>> => call(IPC.setAccessPolling, input),
+  setViewVisible: (input): Promise<IpcResult<PowerState>> => call(IPC.setViewVisible, input),
 
   onConnection: (listener: (status: ConnectionStatus) => void): Unsubscribe =>
     subscribe(IPC_EVENTS.connection, listener),
@@ -163,6 +166,9 @@ const impl: ViewProtectApi = {
   // P5.6: validated like the rest, so a malformed state never draws a door as locked or unlocked.
   onDoorsScreen: (listener: (state: DoorsScreenState) => void): Unsubscribe =>
     subscribe(IPC_EVENTS.doorsScreen, listener),
+  // NFR-7 (P6.2): a hint to retry now; validated like the rest.
+  onRecover: (listener: (event: Recover) => void): Unsubscribe =>
+    subscribe(IPC_EVENTS.recover, listener),
 }
 
 contextBridge.exposeInMainWorld(BRIDGE_KEY, Object.freeze(impl))

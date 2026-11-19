@@ -25,7 +25,7 @@
 // offer for a door main has not read (main would refuse an action on it anyway).
 import { useState, type JSX } from 'react'
 import { MAX_DOOR_CUSTOM_MINUTES, type DoorAction, type IpcError } from '@shared/ipc'
-import { CameraIcon, DoorIcon, DoorOpenIcon, XIcon } from '../../ui/icons'
+import { CameraIcon, DoorIcon, DoorOpenIcon, LockIcon, LockOpenIcon, XIcon } from '../../ui/icons'
 import { StatusLine } from '../../ui/StatusLine'
 import { AddPicker } from './AddPicker'
 import {
@@ -80,11 +80,22 @@ export function DoorCardView({
   const headingId = domId('door-card', card.doorId)
   const listed = card.kind === 'listed'
   const noHub = listed && card.door?.boundToHub === false
-  // The pill of the connection badge, not a button here. Never for a door with no hub (header).
-  const lockChip = (
-    <span className="badge doorCard__state" data-lock={look}>
-      <span className="badge__dot" aria-hidden="true" />
+  // The lock state, top right: a padlock alone for locked (amber) and unlocked (green), named for
+  // assistive tech and in the tooltip; the word "Unknown" when it is not known, because a greyed
+  // padlock would still read as locked (user decision 2026-11-19). Never for a door with no hub.
+  const lockState = noHub ? null : look === 'unknown' ? (
+    <span className="doorCard__state" data-lock={look}>
       {LOCK_LOOK_LABELS[look]}
+    </span>
+  ) : (
+    <span
+      className="doorCard__state"
+      data-lock={look}
+      role="img"
+      aria-label={LOCK_LOOK_LABELS[look]}
+      title={LOCK_LOOK_LABELS[look]}
+    >
+      {look === 'locked' ? <LockIcon /> : <LockOpenIcon />}
     </span>
   )
   // Nothing to add for a door with no hub or one the list lacks; what is linked can be unlinked.
@@ -92,25 +103,25 @@ export function DoorCardView({
   return (
     <li className="card doorCard" aria-labelledby={headingId}>
       {/* Two lines are always reserved, so the controls line up across the cards of a row. */}
-      <h3 className="doorCard__title" id={headingId} title={card.title}>
-        {card.title}
-      </h3>
+      <div className="doorCard__head">
+        <h3 className="doorCard__title" id={headingId} title={card.title}>
+          {card.title}
+        </h3>
+        {lockState}
+      </div>
 
       {noHub ? (
         <p className="field__hint">{NO_HUB_TEXT}</p>
       ) : listed ? (
         <DoorActions
           card={card}
-          lockChip={lockChip}
           ruleLine={ruleLine}
           allowReset={allowReset}
           block={block}
           acting={acting}
           onAction={onAction}
         />
-      ) : (
-        <div className="row doorCard__buttons">{lockChip}</div>
-      )}
+      ) : null}
 
       {canAdd || card.cameras.length > 0 ? (
         <div className="doorCard__cameras">
@@ -164,15 +175,15 @@ export function DoorCardView({
 /** Unlock, Lock and the rule control of a listed door (header). */
 function DoorActions({
   card,
-  lockChip,
   ruleLine,
   allowReset,
   block,
   acting,
   onAction,
-}: Pick<DoorCardViewProps, 'card' | 'ruleLine' | 'allowReset' | 'block' | 'acting' | 'onAction'> & {
-  readonly lockChip: JSX.Element
-}): JSX.Element {
+}: Pick<
+  DoorCardViewProps,
+  'card' | 'ruleLine' | 'allowReset' | 'block' | 'acting' | 'onAction'
+>): JSX.Element {
   // The pending rule choice and the minutes being typed. Neither is sent anywhere until Apply.
   const [pending, setPending] = useState<string>(PLACEHOLDER)
   const [minutesText, setMinutesText] = useState<string>(DEFAULT_CUSTOM_MINUTES)
@@ -196,7 +207,7 @@ function DoorActions({
       <div className="row doorCard__buttons">
         <button
           type="button"
-          className="button button--sm doorCard__unlock"
+          className="button button--sm"
           disabled={blocked}
           aria-disabled={acting}
           title={blockTitle}
@@ -210,7 +221,7 @@ function DoorActions({
         </button>
         <button
           type="button"
-          className="button button--sm doorCard__lock"
+          className="button button--sm"
           disabled={blocked}
           aria-disabled={acting}
           title={blockTitle}
@@ -228,10 +239,9 @@ function DoorActions({
             <span className="visuallyHidden">Sending to {card.title}…</span>
           </span>
         ) : null}
-        {lockChip}
       </div>
 
-      <div className="row doorCard__add">
+      <div className="row doorCard__add doorCard__rule">
         <select
           className="field__input doorCard__select"
           aria-label={`Rule to set on ${card.title}`}
@@ -254,7 +264,10 @@ function DoorActions({
         </select>
         <button
           type="button"
-          className="button button--primary button--sm"
+          // Coloured only while it can act: a dimmed blue button still reads as the thing to press.
+          className={
+            ruleReady && !acting ? 'button button--primary button--sm' : 'button button--sm'
+          }
           disabled={blocked}
           aria-disabled={acting || !ruleReady}
           title={blockTitle}

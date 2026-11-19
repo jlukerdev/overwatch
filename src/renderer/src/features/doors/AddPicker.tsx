@@ -62,7 +62,7 @@ export function AddPicker({
       </select>
       <button
         type="button"
-        className="button button--primary button--sm"
+        className={ready ? 'button button--primary button--sm' : 'button button--sm'}
         aria-disabled={!ready}
         aria-label={buttonLabel}
         onClick={() => {

@@ -65,6 +65,14 @@
   min-width: 0;
 }
 
+/* The door's name with its lock state at the top right. */
+.doorCard__head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
 /*
  * The door's name. Room for two lines is always kept (and a longer name is cut there, with the
  * whole name in `title`), so the controls line up across the cards of a row (user decision
@@ -72,6 +80,7 @@
  */
 .doorCard__title {
   display: -webkit-box;
+  min-width: 0;
   min-height: 2.6em;
   margin: 0;
   overflow: hidden;
@@ -84,66 +93,35 @@
 }
 
 /*
- * The lock state, at the far right of the Unlock / Lock row: the connection badge's pill but not
- * a button (no pointer, no hover). One colour per state, shared with the button that leads to it:
- * green is unlocked (as the cell's unlock button, features/door/door.css), blue is locked, and
- * muted is not known — never coloured, and never worded as locked.
+ * The lock state (user decision 2026-11-19): a padlock and nothing else — amber (the warning
+ * colour) while locked, green while unlocked, as the cell's unlock button
+ * (features/door/door.css) — or the muted word "Unknown", never coloured.
  */
-.doorCard__state,
-.doorCard__state:hover,
-.doorCard__state:active {
+.doorCard__state {
+  display: inline-flex;
   flex-shrink: 0;
-  margin-left: auto;
-  border-color: var(--border);
-  background-image: none;
-  cursor: default;
-}
-
-.doorCard__state[data-lock='unlocked'],
-.doorCard__state[data-lock='unlocked']:hover {
-  border-color: color-mix(in srgb, var(--ok) 60%, var(--border));
-  background-color: color-mix(in srgb, var(--ok) 14%, var(--bg-sunken));
-  color: var(--ok);
-}
-
-.doorCard__state[data-lock='unlocked'] .badge__dot {
-  background: var(--ok);
-}
-
-.doorCard__state[data-lock='locked'],
-.doorCard__state[data-lock='locked']:hover {
-  border-color: color-mix(in srgb, var(--accent) 60%, var(--border));
-  background-color: color-mix(in srgb, var(--accent) 14%, var(--bg-sunken));
-  color: var(--accent-hover);
-}
-
-.doorCard__state[data-lock='locked'] .badge__dot {
-  background: var(--accent);
-}
-
-.doorCard__state[data-lock='unknown'] {
+  align-items: center;
+  min-height: 1.3em;
   color: var(--muted);
+  font-size: var(--font-sm);
 }
 
-/* Unlock in the unlocked state's green, Lock in the locked state's blue (as `.button--danger`). */
-.doorCard__unlock {
-  border-color: color-mix(in srgb, var(--ok) 60%, var(--border));
+.doorCard__state .icon {
+  width: 1.25rem;
+  height: 1.25rem;
+}
+
+.doorCard__state[data-lock='locked'] {
+  color: var(--warn);
+}
+
+.doorCard__state[data-lock='unlocked'] {
   color: var(--ok);
 }
 
-.doorCard__unlock:hover:not(:disabled) {
-  border-color: var(--ok);
-  background-color: color-mix(in srgb, var(--ok) 14%, transparent);
-}
-
-.doorCard__lock {
-  border-color: color-mix(in srgb, var(--accent) 60%, var(--border));
-  color: var(--accent-hover);
-}
-
-.doorCard__lock:hover:not(:disabled) {
-  border-color: var(--accent);
-  background-color: color-mix(in srgb, var(--accent) 14%, transparent);
+/* The rule control, set a little apart from Unlock / Lock above it. */
+.doorCard__rule {
+  margin-top: 0.4rem;
 }
 
 /* What is controlling the door, under the rule control. */

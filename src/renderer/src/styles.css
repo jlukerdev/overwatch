@@ -27,6 +27,10 @@
   --error-tint-strong: rgb(248 81 73 / 24%);
   --control-height: 2rem;
   --control-height-sm: 1.6rem;
+  /* A screen's padding (.cameras, .doors), which .settingsBar takes back to sit flush. */
+  --screen-pad-top: 1rem;
+  --screen-pad-x: 1.25rem;
+  --screen-pad-bottom: 1.5rem;
   /* QUAL-7 quality badge colours (features/cells/cells.css). */
   --quality-high: #3fb950;
   --quality-medium: #e3b341;
@@ -776,6 +780,106 @@ body,
   flex: 1;
   min-width: 0;
   font-size: var(--font-sm);
+}
+
+/* --- settings bar (ui/SettingsBar.tsx) -----------------------------------------------------------
+ * A screen's own settings, collapsible and pinned to the bottom of the screen (user decision
+ * 2026-11-19): the Doors screen's polling, the Cameras screen's stream qualities. It expects to be
+ * the last child of a screen that is a flex column with `min-height: 100%` and the padding
+ * `--screen-pad-*` tokens (`.doors`, `.cameras`): `margin-top: auto` puts it at the bottom of a short
+ * screen and `position: sticky` keeps it there while the screen scrolls under it, so opening it
+ * grows upwards. Its body scrolls by itself when the window is too short for it.
+ */
+.settingsBar {
+  position: sticky;
+  z-index: 1;
+  bottom: 0;
+  /*
+   * Flush with the bottom and the sides of the screen (user decision 2026-11-19): the negative
+   * margins take back the screen's padding, and only the top edge is drawn.
+   */
+  margin: auto calc(-1 * var(--screen-pad-x)) calc(-1 * var(--screen-pad-bottom));
+  padding: 0;
+  border-width: 1px 0 0;
+  border-radius: 0;
+  box-shadow: 0 -8px 16px var(--bg);
+}
+
+.settingsBar__heading {
+  margin: 0;
+  font-size: var(--font-md);
+}
+
+/* The whole bar is the button. */
+.settingsBar__toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  min-height: var(--control-height);
+  padding: 0.5rem var(--screen-pad-x);
+  border: 0;
+  background: none;
+  color: var(--fg);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.settingsBar__toggle:hover {
+  background: var(--hover-tint);
+}
+
+.settingsBar__toggle:active {
+  background: var(--active-tint);
+}
+
+.settingsBar__toggle:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.settingsBar__body {
+  max-height: min(60vh, 28rem);
+  padding: 0.25rem var(--screen-pad-x) 1rem;
+  overflow: auto;
+}
+
+/*
+ * Inside the body: a column of rows, each a label, its control and one line of help (or the
+ * row's error) to the right (user decision 2026-11-19), in titled groups where a screen needs them.
+ * The control column is as wide as the screen's control (`auto`).
+ */
+.settingsBar__group {
+  min-width: 0;
+  margin: 0 0 0.75rem;
+  padding: 0;
+  border: 0;
+}
+
+.settingsBar__legend {
+  margin-bottom: 0.4rem;
+  padding: 0;
+  font-weight: 600;
+}
+
+.settingsBar__row {
+  display: grid;
+  grid-template-columns: minmax(0, 15rem) auto minmax(0, 1fr);
+  align-items: center;
+  gap: 0.25rem 0.75rem;
+  margin-bottom: 0.4rem;
+}
+
+/* Too narrow for three columns: the help goes under the control. */
+@media (width <= 40rem) {
+  .settingsBar__row {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .settingsBar__row > :last-child {
+    grid-column: 1 / -1;
+  }
 }
 
 /* --- dialog (ui/ConfirmDialog.tsx) -------------------------------------------------------------- */

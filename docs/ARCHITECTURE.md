@@ -42,7 +42,8 @@
 │   ├─ views/ grid, cell, fill mode, zoom                        │
 │   ├─ player/ MSE player ──ws://127.0.0.1:<port>/api/ws──┐      │
 │   ├─ doors/ door cards, actions, links, polling         │      │
-│   └─ settings/ connection, stream defaults              │      │
+│   ├─ cameras/ camera list, stream defaults              │      │
+│   └─ settings/ connection                               │      │
 └─────────────────────────────────────────────────────────┼──────┘
                                                           │
                      go2rtc (child process, loopback only)│

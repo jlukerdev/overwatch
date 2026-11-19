@@ -17,7 +17,7 @@
   /* Fills the body, so an empty state is centred in the screen and not under the header. */
   box-sizing: border-box;
   min-height: 100%;
-  padding: 1rem 1.25rem 1.5rem;
+  padding: var(--screen-pad-top) var(--screen-pad-x) var(--screen-pad-bottom);
 }
 
 .cameras__header {
@@ -276,4 +276,12 @@
 .cameras__progressLabel {
   font-size: var(--font-sm);
   font-variant-numeric: tabular-nums;
+}
+
+/*
+ * QUAL-1's two selects in the Settings bar (./StreamsSettings.tsx): rows of the shared
+ * `.settingsBar__row`, as the Doors screen's polling. As wide as the longest option.
+ */
+.cameras__streamsSelect {
+  width: 9rem;
 }

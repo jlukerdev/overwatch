@@ -25,6 +25,7 @@ import { useEffect, useMemo, useRef, useState, type JSX } from 'react'
 import type { DoorAction, DoorLinks, IpcError } from '@shared/ipc'
 import { defaultAccessPolling } from '@shared/models'
 import { useAppStore } from '../../state/appStore'
+import { rejectedCall } from '../../state/rejectedCall'
 import { showToast } from '../../state/toastStore'
 import { confirmDialog } from '../../ui/ConfirmDialog'
 import { AlertIcon, DoorIcon, GearIcon, RefreshIcon } from '../../ui/icons'
@@ -84,19 +85,6 @@ function useClock(): RuleClock {
     }
   }, [])
   return useMemo(() => ({ nowMs }), [nowMs])
-}
-
-/**
- * A call that rejected instead of answering. The bridge is written never to reject (ipc.ts rule 2),
- * so this is a bug somewhere — but a card must still leave its busy state and say something.
- */
-function rejected(err: unknown): IpcError {
-  return {
-    kind: 'internal',
-    message: err instanceof Error ? err.message : 'An unexpected error occurred in View Protect.',
-    endpoint: null,
-    retryable: true,
-  }
 }
 
 /**
@@ -236,7 +224,7 @@ export function DoorsScreen({ onOpenSettings }: { onOpenSettings: () => void }):
       const result = await setDoorLinks({ links: next(stored) })
       if (!result.ok) setSaveError({ doorId, error: result.error })
     } catch (err) {
-      setSaveError({ doorId, error: rejected(err) })
+      setSaveError({ doorId, error: rejectedCall(err) })
     } finally {
       setSaving(false)
     }

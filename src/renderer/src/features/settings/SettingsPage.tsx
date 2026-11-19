@@ -15,11 +15,8 @@
 // Secrets are write-only (CON-2, NFR-9): the two password fields start empty, are never seeded, and
 // each has its own Save — `setConsole` carries no credential at all.
 //
-// The Streams card (QUAL-1, P3.7) is the exception to "nothing saves as you type": a select has no
-// half-typed state, so each one saves on change and shows its own failure. The card runs one save
-// at a time (both selects are disabled while it is in flight) and builds each payload from the
-// store's defaults at the moment of the change, so a quick Grid-then-Fill change cannot have the
-// second save write back the Grid value the first one replaced.
+// The stream quality defaults (QUAL-1) are no longer here either: since P5.7 they are the Cameras
+// screen's Settings bar (features/cameras/StreamsSettings.tsx).
 //
 // The door links (DOOR-2) are no longer here: since P5.6 they live on the Doors screen
 // (features/doors/), each door's cameras on the door's own card. The form's unsaved Access checkbox
@@ -27,7 +24,7 @@
 //
 // Layout (user request 2026-11-17): a section sidebar on the left and the groups in their own
 // scroll container on the right — the keystore warning (only without a keystore), **Console**
-// (address and credentials, then Certificate, then Connection) and **Streams**. The sidebar highlights the group in view (measured against the scroll container, decided
+// (address and credentials, then Certificate, then Connection). The sidebar highlights the group in view (measured against the scroll container, decided
 // by ./settingsSections.ts) and scrolls to a group on click; its rows are the shared `.sideItem`,
 // and the app version sits quietly at its foot. Help text is one short line at
 // most; what a requirement mandates (CON-2's keystore notice, CON-3's compare-the-fingerprint prompt,
@@ -39,18 +36,15 @@ import { useAppStore } from '../../state/appStore'
 import { CheckIcon, PlugIcon, PulseIcon, TrashIcon } from '../../ui/icons'
 import { CertificateCard } from './CertificateCard'
 import { StatusLine, type StatusKind } from '../../ui/StatusLine'
-import { QualityOptions } from '../quality/QualityOptions'
 import {
   activeSection,
   CONSOLE_SECTION,
   KEYSTORE_SECTION,
   sectionTitleId,
   settingsSections,
-  STREAMS_SECTION,
   type SettingsSection,
 } from './settingsSections'
 import {
-  streamsInputFrom,
   consoleDraftFrom,
   consoleInputFrom,
   consoleSignature,
@@ -58,7 +52,6 @@ import {
   isConsoleDirty,
   type ConsoleDraft,
   type ConsoleFieldErrors,
-  type StreamsField,
 } from './settingsForm'
 import './settings.css'
 
@@ -83,7 +76,6 @@ export function SettingsPage(): JSX.Element {
         <CertificateSection accessEnabled={settings.console.accessEnabled} />
         <ConnectionCard accessEnabled={settings.console.accessEnabled} />
       </ConsoleCard>
-      <StreamsCard streams={settings.streams} />
     </SettingsLayout>
   )
 }
@@ -695,102 +687,4 @@ function describeAccessProbe(probe: AccessProbe): string {
   if (probe.state === 'error') return probe.error.message
   const count = String(probe.doorCount)
   return probe.doorCount === 1 ? 'Reachable. 1 door.' : `Reachable. ${count} doors.`
-}
-
-// -------------------------------------------------------------------------------------------------
-// QUAL-1: the app-wide grid and fill quality defaults
-
-function StreamsCard({ streams }: { streams: Settings['streams'] }): JSX.Element {
-  const setStreams = useAppStore((s) => s.setStreams)
-  // One save at a time for the whole card (header): while one is in flight both selects are
-  // disabled, so a second change cannot start from the defaults the first one is replacing.
-  const [saving, setSaving] = useState(false)
-  /** The last failed save, shown under the select that made it. */
-  const [saveError, setSaveError] = useState<{ field: StreamsField; error: IpcError } | null>(null)
-
-  const save = async (field: StreamsField, value: string): Promise<void> => {
-    // The store's defaults as they are now, not the `streams` this render was given: an answer
-    // that landed since is already in the store, and the other default must go out as stored.
-    const stored = useAppStore.getState().settings?.streams ?? streams
-    const input = streamsInputFrom(stored, field, value)
-    if (input === null) return
-    setSaving(true)
-    setSaveError(null)
-    const result = await setStreams(input)
-    setSaving(false)
-    if (!result.ok) setSaveError({ field, error: result.error })
-  }
-
-  const select = (field: StreamsField, label: string): JSX.Element => (
-    <QualitySelect
-      value={streams[field]}
-      field={field}
-      label={label}
-      disabled={saving}
-      error={saveError?.field === field ? saveError.error : null}
-      onChange={(value) => {
-        void save(field, value)
-      }}
-    />
-  )
-
-  return (
-    <section
-      className="card"
-      id={STREAMS_SECTION.id}
-      aria-labelledby={sectionTitleId(STREAMS_SECTION)}
-    >
-      <GroupTitle section={STREAMS_SECTION}>Streams</GroupTitle>
-      <p className="card__hint">
-        The default quality in the grid and when a camera fills the window. A View can set its own,
-        and a cell its own grid quality.
-      </p>
-      <div className="settings__streamsGrid">
-        {select('defaultGridQuality', 'Grid quality')}
-        {select('defaultFillQuality', 'Fill quality')}
-      </div>
-    </section>
-  )
-}
-
-/**
- * One QUAL-1 default. Controlled by the stored value, not by a draft: the select shows what main
- * holds, so a failed save snaps back to the stored quality and says why underneath. The saving
- * itself is the card's (`StreamsCard`), which serialises the two selects.
- */
-function QualitySelect({
-  value,
-  field,
-  label,
-  disabled,
-  error,
-  onChange,
-}: {
-  value: Settings['streams'][StreamsField]
-  field: StreamsField
-  label: string
-  disabled: boolean
-  error: IpcError | null
-  onChange: (value: string) => void
-}): JSX.Element {
-  const id = `streams-${field}`
-  return (
-    <div className="field">
-      <label className="field__label" htmlFor={id}>
-        {label}
-      </label>
-      <select
-        id={id}
-        className="field__input settings__select"
-        value={value}
-        disabled={disabled}
-        onChange={(event) => {
-          onChange(event.target.value)
-        }}
-      >
-        <QualityOptions />
-      </select>
-      {error === null ? null : <StatusLine kind="error">{error.message}</StatusLine>}
-    </div>
-  )
 }

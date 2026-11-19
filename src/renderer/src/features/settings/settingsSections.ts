@@ -13,21 +13,16 @@ export interface SettingsSection {
 
 export const KEYSTORE_SECTION: SettingsSection = { id: 'settings-keystore', label: 'Keystore' }
 export const CONSOLE_SECTION: SettingsSection = { id: 'settings-console', label: 'Console' }
-export const STREAMS_SECTION: SettingsSection = { id: 'settings-streams', label: 'Streams' }
 
 /**
  * The sections in page order: the keystore warning only while there is no keystore (CON-2), then
- * Console and Streams. (The door links were a third group until P5.6 moved them to the Doors
- * screen.)
+ * Console. (The door links were a group until P5.6 moved them to the Doors screen, and Streams
+ * until P5.7 moved the QUAL-1 defaults to the Cameras screen's Settings bar.)
  */
 export function settingsSections(options: {
   readonly keystoreAvailable: boolean
 }): SettingsSection[] {
-  return [
-    ...(options.keystoreAvailable ? [] : [KEYSTORE_SECTION]),
-    CONSOLE_SECTION,
-    STREAMS_SECTION,
-  ]
+  return [...(options.keystoreAvailable ? [] : [KEYSTORE_SECTION]), CONSOLE_SECTION]
 }
 
 /** The heading id of a section, which the sidebar scrolls to and focuses. */

@@ -7,39 +7,40 @@ import {
   KEYSTORE_SECTION,
   sectionTitleId,
   settingsSections,
-  STREAMS_SECTION,
 } from '../../src/renderer/src/features/settings/settingsSections'
 
-// A third group for `activeSection`, which works on any list: the page had three until P5.6 moved
-// the door links to the Doors screen, and "the short last group" is still the case worth testing.
+// More groups for `activeSection`, which works on any list: the page had three until P5.6 moved
+// the door links to the Doors screen and P5.7 the stream defaults to the Cameras screen, and "the
+// short last group" is still the case worth testing.
+const MIDDLE_SECTION = { id: 'settings-middle', label: 'Middle' }
 const LAST_SECTION = { id: 'settings-last', label: 'Last' }
 
 const ids = (options: { keystoreAvailable: boolean }): string[] =>
   settingsSections(options).map((section) => section.label)
 
 describe('settingsSections', () => {
-  it('lists Console and Streams; the door links moved to the Doors screen (P5.6)', () => {
-    expect(ids({ keystoreAvailable: true })).toEqual(['Console', 'Streams'])
+  it('lists Console only; door links and streams moved to the Doors and Cameras screens', () => {
+    expect(ids({ keystoreAvailable: true })).toEqual(['Console'])
   })
 
   it('puts the keystore warning first while there is no keystore (CON-2)', () => {
-    expect(ids({ keystoreAvailable: false })).toEqual(['Keystore', 'Console', 'Streams'])
+    expect(ids({ keystoreAvailable: false })).toEqual(['Keystore', 'Console'])
   })
 
   it('gives each heading an id derived from its section', () => {
     expect(sectionTitleId(CONSOLE_SECTION)).toBe('settings-console-title')
-    const all = [KEYSTORE_SECTION, CONSOLE_SECTION, STREAMS_SECTION]
+    const all = [KEYSTORE_SECTION, CONSOLE_SECTION]
     expect(new Set(all.map((section) => section.id)).size).toBe(all.length)
   })
 })
 
 describe('activeSection', () => {
-  const sections = [CONSOLE_SECTION, STREAMS_SECTION, LAST_SECTION]
-  const tops = (consoleTop: number, streamsTop: number, doorsTop: number): Map<string, number> =>
+  const sections = [CONSOLE_SECTION, MIDDLE_SECTION, LAST_SECTION]
+  const tops = (consoleTop: number, middleTop: number, lastTop: number): Map<string, number> =>
     new Map([
       [CONSOLE_SECTION.id, consoleTop],
-      [STREAMS_SECTION.id, streamsTop],
-      [LAST_SECTION.id, doorsTop],
+      [MIDDLE_SECTION.id, middleTop],
+      [LAST_SECTION.id, lastTop],
     ])
   // A 400px container over 2000px of content; the reading line is at 100px.
   const scrolled = (scrollTop: number) => ({ scrollTop, scrollHeight: 2000, clientHeight: 400 })
@@ -49,7 +50,7 @@ describe('activeSection', () => {
   })
 
   it('is the last section whose top is at or above the reading line', () => {
-    expect(activeSection(sections, tops(-600, 100, 400), scrolled(600))).toBe(STREAMS_SECTION.id)
+    expect(activeSection(sections, tops(-600, 100, 400), scrolled(600))).toBe(MIDDLE_SECTION.id)
     expect(activeSection(sections, tops(-600, 101, 400), scrolled(600))).toBe(CONSOLE_SECTION.id)
     expect(activeSection(sections, tops(-900, -300, 50), scrolled(900))).toBe(LAST_SECTION.id)
   })
@@ -73,13 +74,13 @@ describe('activeSection', () => {
   })
 
   it('keeps a clicked section current while its scroll is locked', () => {
-    expect(
-      activeSection(sections, tops(-1400, -700, 250), scrolled(1600), STREAMS_SECTION.id),
-    ).toBe(STREAMS_SECTION.id)
+    expect(activeSection(sections, tops(-1400, -700, 250), scrolled(1600), MIDDLE_SECTION.id)).toBe(
+      MIDDLE_SECTION.id,
+    )
     // A lock on a section the page no longer has (Access switched off) is ignored.
     expect(
       activeSection(
-        [CONSOLE_SECTION, STREAMS_SECTION],
+        [CONSOLE_SECTION, MIDDLE_SECTION],
         tops(16, 900, 0),
         scrolled(0),
         LAST_SECTION.id,

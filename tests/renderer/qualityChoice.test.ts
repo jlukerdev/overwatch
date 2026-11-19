@@ -43,7 +43,7 @@ describe('quality options', () => {
     expect(QUALITY_OPTIONS).toEqual(QUALITIES)
     for (const quality of QUALITY_OPTIONS) expect(qualityName(quality)).not.toBe('')
     expect(new Set(QUALITY_OPTIONS.map(qualityName)).size).toBe(QUALITY_OPTIONS.length)
-    // The words every select shows, Settings' QUAL-1 defaults included (QualityOptions).
+    // The words every select shows, the Cameras screen's QUAL-1 defaults included (QualityOptions).
     expect(QUALITY_OPTIONS.map(qualityName)).toEqual(['High', 'Medium', 'Low'])
   })
 

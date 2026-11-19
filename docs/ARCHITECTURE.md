@@ -82,7 +82,7 @@
 
 - `<userData>/config.json`: views, door links, the Access polling intervals (`accessPolling`, DOOR-9), UI prefs (schema in SPEC §6)
 - `<userData>/secrets.bin`: safeStorage-encrypted `{ protectApiKey, accessToken }`
-- `<userData>/logs/`: app log (rotating; not built yet) and `unlock.log` (P5.4, DOOR-5: JSON Lines, one line per unlock attempt and, since P5.6, per Doors screen door action and emergency change, with an `action` key saying which; rotated to `unlock.log.1` above 1 MiB; `src/main/access/unlockLog.ts`)
+- `<userData>/logs/`: `app.log` (P6.3, NFR-9: every main-process console line, the startup line, crashes and the renderer's warnings/errors, as `<time> <LEVEL> <message>`; rotated before 5 MiB to `app.log.1`…`.3`; written by `src/main/logger.ts`, with every line passed through the log redactor `src/main/log/redact.ts` — live secret values plus credential patterns — before it reaches the file or the terminal; Help → Show Log Files opens the folder) and `unlock.log` (P5.4, DOOR-5: JSON Lines, one line per unlock attempt and, since P5.6, per Doors screen door action and emergency change, with an `action` key saying which; rotated to `unlock.log.1` above 1 MiB; `src/main/access/unlockLog.ts`)
 - `<userData>/go2rtc.yaml`: generated on every launch. Never hand-edited
 
 ## 5. Updating

@@ -50,6 +50,14 @@ A full getting-started guide is coming.
 - OverWatch connects only to your console. Video is relayed by a bundled [go2rtc](https://github.com/AlexxIT/go2rtc) that listens on this computer only.
 - Every door unlock needs you to press a button, and each attempt is written to a local log.
 
+## Log files
+
+If something goes wrong, choose **Help → Show Log Files** to open the folder with OverWatch's logs. It is in `~/Library/Application Support/View Protect/logs` on macOS and `%APPDATA%\View Protect\logs` on Windows.
+
+- `app.log` records what the app did and any errors. It keeps itself small: older entries move to `app.log.1`, `.2` and `.3`, and the oldest are deleted.
+- Your API key, token, passwords and camera stream addresses are left out of it, so you can send it to someone helping you.
+- `unlock.log` is the record of every door action: each unlock, lock and emergency change, and whether it worked.
+
 ## Building from source
 
 You need Node 24 or later.

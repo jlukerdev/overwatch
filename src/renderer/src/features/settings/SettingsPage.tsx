@@ -156,7 +156,7 @@ function ConsoleCard({
   return (
     <section aria-labelledby="settings-console-title">
       <h2 className="card__title settings__groupTitle" id="settings-console-title">
-        Console
+        UniFi Console
       </h2>
       <h3 className="settings__subhead">Address and credentials</h3>
       <p className="card__hint">

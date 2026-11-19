@@ -30,11 +30,13 @@
 //     *skips* Basic auth for loopback clients unless `local_auth` is set, so without that flag the
 //     credentials would do nothing at all (P0.5 §"Security"). The credentials live for one launch,
 //     in memory and in a `0600` file that is deleted as soon as the API answers, and they go into
-//     the redactors below so they can never reach a log line (CON-2, NFR-9).
+//     the redactors (`src/main/log/redact.ts`) so they can never reach a log line (CON-2, NFR-9).
 //
 // **No secrets leave main.** The RTSPS source URLs (whose 16-char alias is the credential for the
 // camera stream) and the API credentials are inputs here and never outputs: the renderer only ever
 // gets a port and a stream name (CON-2, NFR-9, SPEC §6.1 "No secrets, ever").
+
+import { redactSecrets, redactSourceUrls } from '../log/redact'
 
 /** The file `go2rtcManager` writes into `<userData>/` (ARCHITECTURE §4). Never hand-edited. */
 export const GO2RTC_CONFIG_FILE = 'go2rtc.yaml'
@@ -174,26 +176,9 @@ export function authSecrets(auth: Go2rtcAuth): string[] {
   return [header.slice('Basic '.length), auth.password, auth.username]
 }
 
-/**
- * Replaces each secret (longest first, so a token is not half-replaced through a substring of
- * another) and any `Basic`/`Bearer` value with `<redacted>`. Values shorter than 4 characters are
- * ignored: redacting those would mangle unrelated text without protecting anything.
- */
-export function redactSecrets(text: string, secrets: readonly string[]): string {
-  let out = text.replace(/\b(Basic|Bearer)\s+[A-Za-z0-9+/=._~-]{8,}/gi, '$1 <redacted>')
-  for (const s of [...secrets].filter((x) => x.length >= 4).sort((a, b) => b.length - a.length))
-    out = out.split(s).join('<redacted>')
-  return out
-}
-
-/**
- * Redacts anything that looks like an RTSP(S) URL. The alias in a Protect RTSPS URL *is* the
- * credential for that camera's stream, and go2rtc logs its sources on connect and on every
- * reconnect error, so this runs over every line of the child's output (CON-2, NFR-9).
- */
-export function redactSourceUrls(line: string): string {
-  return line.replace(/\brtsp[sx]?:\/\/[^\s"',}]+/gi, '<redacted-source-url>')
-}
+// The two redactors moved to `src/main/log/redact.ts` in P6.3, where the app log shares them.
+// Re-exported unchanged, so this module's callers and tests keep importing them from here.
+export { redactSecrets, redactSourceUrls }
 
 // ---------------------------------------------------------------------------------------------
 // Loopback URLs

@@ -17,13 +17,22 @@ export interface AppMenuOptions {
   readonly isPackaged: boolean
   /** The name shown in the menu items (`APP_NAME`). */
   readonly appName: string
+  /** Help → Show Log Files (P6.3): opens `<userData>/logs` in Finder / Explorer. */
+  readonly onShowLogFiles: () => void
 }
 
 const separator: MenuItemConstructorOptions = { type: 'separator' }
 
 export function buildAppMenuTemplate(options: AppMenuOptions): MenuItemConstructorOptions[] {
-  const { isMac, isPackaged, appName } = options
+  const { isMac, isPackaged, appName, onShowLogFiles } = options
   const about: MenuItemConstructorOptions = { role: 'about', label: `About ${appName}` }
+  // P6.3 (NFR-9): the app log and unlock.log, for a user asked to send them in.
+  const showLogFiles: MenuItemConstructorOptions = {
+    label: 'Show Log Files',
+    click: () => {
+      onShowLogFiles()
+    },
+  }
 
   const edit: MenuItemConstructorOptions = {
     label: 'Edit',
@@ -85,6 +94,8 @@ export function buildAppMenuTemplate(options: AppMenuOptions): MenuItemConstruct
           { role: 'close' },
         ],
       },
+      // `role: 'help'` makes it macOS's own Help menu (with the search field).
+      { role: 'help', label: 'Help', submenu: [showLogFiles] },
     ]
   }
 
@@ -94,6 +105,6 @@ export function buildAppMenuTemplate(options: AppMenuOptions): MenuItemConstruct
     edit,
     view,
     { label: 'Window', submenu: [{ role: 'minimize' }, { role: 'close' }] },
-    { label: 'Help', submenu: [about] },
+    { label: 'Help', submenu: [showLogFiles, separator, about] },
   ]
 }

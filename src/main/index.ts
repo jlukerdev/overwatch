@@ -1,7 +1,7 @@
 // App entry: window creation, single-instance lock, lifecycle, and the one place where the
 // main-process services are assembled from their parts (config, secrets, TLS pins, the shared
 // Protect request throttle and the two API clients).
-import { existsSync } from 'node:fs'
+import { existsSync, mkdirSync } from 'node:fs'
 import { basename, join } from 'node:path'
 import {
   app,
@@ -13,6 +13,7 @@ import {
   powerSaveBlocker,
   safeStorage,
   session,
+  shell,
 } from 'electron'
 import { IPC_EVENTS, type Recover, type RecoverReason } from '@shared/ipc'
 import type { View } from '@shared/models'
@@ -28,6 +29,8 @@ import { type Config } from './config/schema'
 import { createConnectionManager, type ConnectionManager } from './connection'
 import { accessEndpoint, protectEndpoint } from './console/endpoints'
 import { createIpcRouter, registerIpcHandlers } from './ipc/handlers'
+import { basicHeaderSecrets } from './log/redact'
+import { createAppLogger, teeConsole } from './logger'
 import { isAppUrl } from './navigation'
 import { createRateLimiter, type RateLimiter } from './net/rateLimiter'
 import { startPerfRun } from './perf/perfMode'
@@ -81,6 +84,53 @@ const userDataDir = userDataOverride({
 })
 if (userDataDir !== null) app.setPath('userData', userDataDir)
 
+/**
+ * The main-process services (`Services`, below), created once at startup by `startServices`.
+ * Declared up here, before the app log, because the log's secrets provider reads their
+ * credentials on every line, including the first ones (P6.3).
+ */
+let services: Services | null = null
+
+/**
+ * The go2rtc sidecar (P2.1). `null` if startup failed, and the sidecar is **not** running just
+ * because this exists: go2rtc starts lazily, on the first `ensureStream` (see `buildStreaming`).
+ * Up here for the same reason as `services`: the log redacts its per-launch credential.
+ */
+let go2rtc: Go2rtcManager | null = null
+
+// The single-instance lock is taken here, as soon as `userData` is final (the lock lives there)
+// and before the app log opens: a second launch must not write to, or rotate, the running
+// instance's log. It only quits (below, where `gotTheLock` is checked).
+const gotTheLock = app.requestSingleInstanceLock()
+
+// P6.3 (NFR-9): the rotating app log, `<userData>/logs/app.log`, as early as `userData` is final
+// and only in the instance holding the lock. From here on every console call in main is written
+// there and to the terminal, **redacted** in both (src/main/logger.ts, src/main/log/redact.ts).
+// The only line before this point is the ELECTRON_RUN_AS_NODE refusal above, which exits at once
+// and goes to the terminal only; a second instance logs to the terminal only.
+const logsDir = join(app.getPath('userData'), 'logs')
+/** The console as it was before the tee: the log's own failures are reported through it. */
+const rawConsoleError = console.error.bind(console)
+const appLog = gotTheLock
+  ? createAppLogger({ dir: logsDir, secrets: liveLogSecrets, reportError: rawConsoleError })
+  : null
+if (appLog !== null) {
+  teeConsole(console, appLog)
+  console.info(
+    `[app] ${APP_NAME} ${app.getVersion()} starting: ${process.platform}/${process.arch}, ` +
+      `Electron ${process.versions.electron}, Chrome ${process.versions.chrome}, ` +
+      (app.isPackaged ? 'packaged' : 'unpackaged'),
+  )
+}
+// Monitor only: Electron's own handling of an uncaught exception is unchanged.
+process.on('uncaughtExceptionMonitor', (err, origin) => {
+  console.error(`[process] ${origin}:`, err)
+})
+// Logged, nothing more (the default would be Node's warning on stderr, which this replaces).
+process.on('unhandledRejection', (reason) => {
+  console.error('[process] unhandled promise rejection:', reason)
+})
+
 // P2.5 perf harness (`npm run perf`): on only with VP_PERF_QUALITY set in an unpackaged build. It
 // overrides the grid quality and the Views the renderer is shown (in memory, never saved) and
 // drives the window from `startPerfRun` below; see src/main/perf/.
@@ -133,8 +183,6 @@ export interface Services {
   access(): AccessClient
 }
 
-let services: Services | null = null
-
 /** The services, or `null` before `startServices()` has finished. */
 export function getServices(): Services | null {
   return services
@@ -146,12 +194,7 @@ let connection: ConnectionManager | null = null
 /** Removes every IPC handler again; set once the router is bound to `ipcMain`. */
 let disposeIpcHandlers: (() => void) | null = null
 
-/**
- * The go2rtc sidecar (P2.1) and the stream registry (P2.2). `null` if startup failed, and the
- * sidecar is **not** running just because these exist: go2rtc starts lazily, on the first
- * `ensureStream` (see `buildStreaming`).
- */
-let go2rtc: Go2rtcManager | null = null
+/** The stream registry (P2.2), next to `go2rtc` (declared above the app log). */
 let streams: StreamRegistry | null = null
 
 /**
@@ -525,6 +568,38 @@ function openDoorNotifications(
   }
 }
 
+/**
+ * P6.3: the secret values the app log redacts, read on every line so a key saved or cleared in
+ * Settings is covered from the next line on: the Protect API key, the Access token and go2rtc's
+ * per-launch API credential (its Basic value, username and password). `services` and `go2rtc` are
+ * declared above the logger, so this is safe to call from the first line on.
+ */
+function liveLogSecrets(): string[] {
+  const credentials = services?.credentials
+  return [
+    ...(credentials?.protectApiKey === undefined ? [] : [credentials.protectApiKey]),
+    ...(credentials?.accessToken === undefined ? [] : [credentials.accessToken]),
+    ...basicHeaderSecrets(go2rtc?.authHeader() ?? null),
+  ]
+}
+
+/** Help → Show Log Files (P6.3): the folder holding `app.log` and `unlock.log`. */
+function showLogFiles(): void {
+  try {
+    mkdirSync(logsDir, { recursive: true })
+  } catch (err: unknown) {
+    console.error(`[app] could not create ${logsDir}: ${message(err)}`)
+  }
+  shell
+    .openPath(logsDir)
+    .then((problem) => {
+      if (problem !== '') console.error(`[app] could not open ${logsDir}: ${problem}`)
+    })
+    .catch((err: unknown) => {
+      console.error(`[app] could not open ${logsDir}: ${message(err)}`)
+    })
+}
+
 /** An error's message, for a log line. Never carries a secret: these errors are built from config. */
 function message(err: unknown): string {
   return err instanceof Error ? err.message : String(err)
@@ -622,7 +697,12 @@ function applyBranding(): void {
   const isMac = process.platform === 'darwin'
   Menu.setApplicationMenu(
     Menu.buildFromTemplate(
-      buildAppMenuTemplate({ isMac, isPackaged: app.isPackaged, appName: APP_NAME }),
+      buildAppMenuTemplate({
+        isMac,
+        isPackaged: app.isPackaged,
+        appName: APP_NAME,
+        onShowLogFiles: showLogFiles,
+      }),
     ),
   )
   appIcon = resolveAppIcon()
@@ -714,6 +794,15 @@ function createWindow(): void {
   win.webContents.on('render-process-gone', () => {
     pageGone('the renderer process is gone')
   })
+  // P6.3: the renderer's warnings and errors go to the app log (redacted like every line). Info and
+  // debug stay in DevTools: the renderer logs per stream and would drown the file.
+  win.webContents.on('console-message', (event) => {
+    if (event.level !== 'warning' && event.level !== 'error') return
+    const where = event.sourceId === '' ? '' : ` (${event.sourceId}:${String(event.lineNumber)})`
+    const line = `[renderer] ${event.message.trim()}${where}`
+    if (event.level === 'error') console.error(line)
+    else console.warn(line)
+  })
   win.on('closed', () => {
     pageGone('the window closed')
     if (mainWindow === win) mainWindow = null
@@ -775,6 +864,22 @@ app.on('login', (event, _webContents, _details, _authInfo, callback) => {
   callback()
 })
 
+// P6.3: a renderer or helper process that died, with why. A clean exit (a helper winding down at
+// quit) is an INFO line; anything else is an error worth finding in the log afterwards.
+app.on('render-process-gone', (_event, _contents, details) => {
+  const line = `[app] renderer process gone: ${details.reason}, exit code ${String(details.exitCode)}`
+  if (details.reason === 'clean-exit') console.info(line)
+  else console.error(line)
+})
+app.on('child-process-gone', (_event, details) => {
+  const name = details.name ?? details.serviceName ?? details.type
+  const line =
+    `[app] ${details.type} process gone (${name}): ${details.reason}, ` +
+    `exit code ${String(details.exitCode)}`
+  if (details.reason === 'clean-exit') console.info(line)
+  else console.error(line)
+})
+
 // Security baseline for every web contents the app creates.
 app.on('web-contents-created', (_event, contents) => {
   // No new windows and no external links: the app has none, so deny everything.
@@ -792,7 +897,7 @@ app.on('web-contents-created', (_event, contents) => {
   })
 })
 
-if (!app.requestSingleInstanceLock()) {
+if (!gotTheLock) {
   app.quit()
 } else {
   app.on('second-instance', () => {
@@ -833,7 +938,7 @@ if (!app.requestSingleInstanceLock()) {
           },
           // DOOR-5: `<userData>/logs/unlock.log`, one JSON line per attempt. Its write failures go
           // to `console.error('[unlock-log] …')` and never change an unlock's answer.
-          unlockLog: createUnlockLog({ dir: join(app.getPath('userData'), 'logs') }),
+          unlockLog: createUnlockLog({ dir: logsDir }),
           // DOOR-6: only ever called while the door-state monitor runs (Access on, token stored,
           // and the Live screen watching a linked door or the Doors screen open).
           openDoorNotifications: (handlers) => openDoorNotifications(started, handlers),
@@ -936,5 +1041,8 @@ if (!app.requestSingleInstanceLock()) {
     void manager?.shutdown().catch((err: unknown) => {
       console.error('[connection] Shutdown failed:', err)
     })
+    // Last (P6.3): release the app log's file descriptor. A shutdown failure logged after this
+    // (the two not-awaited stops above) reopens it for that line.
+    appLog?.close()
   })
 }

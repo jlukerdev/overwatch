@@ -1,6 +1,6 @@
 import { join } from 'node:path'
 import type { MenuItemConstructorOptions } from 'electron'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { buildAppMenuTemplate } from '../../src/main/appMenu'
 import {
   APP_NAME,
@@ -26,12 +26,12 @@ function outline(template: MenuItemConstructorOptions[]): Record<string, string[
   )
 }
 
-const base = { appName: APP_NAME }
+const base = { appName: APP_NAME, onShowLogFiles: () => undefined }
 
 describe('buildAppMenuTemplate (macOS)', () => {
   it('names OverWatch in the app menu and has Edit, View and Window', () => {
     const menu = outline(buildAppMenuTemplate({ ...base, isMac: true, isPackaged: true }))
-    expect(Object.keys(menu)).toEqual(['OverWatch', 'Edit', 'View', 'Window'])
+    expect(Object.keys(menu)).toEqual(['OverWatch', 'Edit', 'View', 'Window', 'Help'])
     expect(menu.OverWatch).toEqual([
       'about:About OverWatch',
       '-',
@@ -42,6 +42,12 @@ describe('buildAppMenuTemplate (macOS)', () => {
       'quit:Quit OverWatch',
     ])
     expect(menu.Window).toEqual(['minimize', 'zoom', '-', 'front', '-', 'close'])
+    expect(menu.Help).toEqual([':Show Log Files'])
+  })
+
+  it('makes Help the macOS help menu', () => {
+    const template = buildAppMenuTemplate({ ...base, isMac: true, isPackaged: true })
+    expect(template.at(-1)?.role).toBe('help')
   })
 
   it('has the edit roles text fields need for Cmd+C/V', () => {
@@ -60,8 +66,24 @@ describe('buildAppMenuTemplate (Windows)', () => {
     const menu = outline(buildAppMenuTemplate({ ...base, isMac: false, isPackaged: true }))
     expect(Object.keys(menu)).toEqual(['File', 'Edit', 'View', 'Window', 'Help'])
     expect(menu.File).toEqual(['quit:Exit'])
-    expect(menu.Help).toEqual(['about:About OverWatch'])
+    expect(menu.Help).toEqual([':Show Log Files', '-', 'about:About OverWatch'])
     expect(menu.Window).toEqual(['minimize', 'close'])
+  })
+})
+
+describe('buildAppMenuTemplate Show Log Files', () => {
+  it('calls the callback it was given, on both platforms', () => {
+    for (const isMac of [true, false]) {
+      const onShowLogFiles = vi.fn()
+      const template = buildAppMenuTemplate({ ...base, isMac, isPackaged: true, onShowLogFiles })
+      const help = template.find((menu) => menu.label === 'Help')
+      const items = Array.isArray(help?.submenu) ? help.submenu : []
+      const item = items.find((i) => i.label === 'Show Log Files')
+      expect(item?.click).toBeTypeOf('function')
+      // Electron passes (menuItem, window, event); the item ignores them.
+      ;(item?.click as unknown as () => void)()
+      expect(onShowLogFiles).toHaveBeenCalledTimes(1)
+    }
   })
 })
 

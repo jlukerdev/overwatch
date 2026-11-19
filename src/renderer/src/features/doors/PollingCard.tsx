@@ -15,7 +15,7 @@ import { useState, type JSX } from 'react'
 import type { IpcError } from '@shared/ipc'
 import { ACCESS_POLLING_FIELDS, type AccessPolling } from '@shared/models'
 import { useAppStore } from '../../state/appStore'
-import { ChevronDownIcon, ChevronUpIcon, SaveIcon, UndoIcon } from '../../ui/icons'
+import { ChevronDownIcon, ChevronUpIcon, GearIcon, SaveIcon, UndoIcon } from '../../ui/icons'
 import { StatusLine } from '../../ui/StatusLine'
 import {
   defaultPollingDraft,
@@ -80,14 +80,19 @@ export function PollingCard({ polling }: { polling: AccessPolling }): JSX.Elemen
             setOpen(!open)
           }}
         >
-          Polling
+          {/* Titled "Settings" (user decision 2026-11-19). The header nav's Settings button is found
+              inside `nav.app__nav` by the perf harness, so this second one is not mistaken for it. */}
+          <span className="row">
+            <GearIcon />
+            Settings
+          </span>
           {/* Closed, it opens upwards. */}
           {open ? <ChevronDownIcon /> : <ChevronUpIcon />}
         </button>
       </h3>
       {open ? (
         <div id="doors-polling-body" className="doors__pollingBody">
-          <p className="card__hint">Seconds between the app's checks of the console.</p>
+          <p className="card__hint">Polling: seconds between the app's checks of the console.</p>
           <form
             noValidate
             onSubmit={(event) => {

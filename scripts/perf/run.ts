@@ -94,7 +94,7 @@ child.on('exit', (code, signal) => {
   if (!existsSync(summaryPath)) {
     console.error(
       `perf: the app exited (${signal ?? `code ${String(code)}`}) without writing a summary. ` +
-        'Is View Protect already running (it allows one instance)? Re-run with --verbose for details.',
+        'Is OverWatch already running (it allows one instance)? Re-run with --verbose for details.',
     )
     process.exit(1)
   }

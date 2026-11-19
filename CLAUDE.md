@@ -1,4 +1,6 @@
-# CLAUDE.md — View Protect
+# CLAUDE.md — View Protect (OverWatch)
+
+The app's external name is **OverWatch** (P6.1, SPEC BRAND-1…5); "View Protect" is the internal and repo name. Every string the user sees — window title, header, menus, About, dialogs, errors, toasts, the Settings foot "OverWatch v<version>" — says OverWatch, in that casing. Code identifiers (`window.viewProtect`, `ViewProtectApi`, `vp:` channels, `VP_*`), the package name `view-protect` and the `userData` folder name "View Protect" stay as they are: renaming that folder would lose every user's data (`src/main/branding.ts`).
 
 This app is built and maintained by agents. Read `docs/SPEC.md`, `docs/ARCHITECTURE.md` and `docs/DEV_PLAN.md` before changing anything.
 
@@ -46,6 +48,6 @@ The look is defined once, in `src/renderer/src/styles.css` and `src/renderer/src
 - **Icons** are the inline SVGs in `ui/icons.tsx` (16×16 grid, `currentColor`, decorative). Add new ones there in the same style; no icon packages or image assets. An icon-only button needs `aria-label` and `title`.
 - **Over live video.** Chips sit on `--scrim`, 28 px tall, buttons at least 28 × 28 px (`features/cells/cells.css`). The quality-coloured select is the one opaque chip (user decision 2026-11-16). No `backdrop-filter` and no per-frame React state over video; animate `transform` / `opacity` only.
 - **States.** Every interactive element has hover, active and a visible `:focus-visible` ring (2 px `--accent`). Disabled controls are dimmed and, where it is not obvious, say why in `title`. Any animation is off or reduced under `prefers-reduced-motion`.
-- **Copy.** Plain sentences a homeowner would read, sentence case, one short line of help at most. Product names exact (Protect, Access, API key). The certificate UI says "accepted", not "pinned".
+- **Copy.** Plain sentences a homeowner would read, sentence case, one short line of help at most. Product names exact (OverWatch, Protect, Access, API key). The certificate UI says "accepted", not "pinned".
 - **Do not rename** the header nav buttons' text ("Cameras", "Doors", "Live"): the perf harness clicks them by text. Settings is not a nav button but the gear icon button at the header's end (P5.8), found by its `aria-label` "Settings"; do not change that label either. Grep `tests/` and `scripts/perf/` before changing any visible string.
 - **Check it on screen.** For a visual change, launch the app on a blank profile (`npm run build`, then `npx electron out/main/index.js --user-data-dir=<empty dir>`) and look at the screens you touched; say in the PR what could not be seen without a console.

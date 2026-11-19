@@ -75,7 +75,7 @@ export function SettingsPage(): JSX.Element {
 /** The app version, quiet, at the foot of the column; nothing until the first state lands. */
 function AppVersion(): JSX.Element | null {
   const version = useAppStore((s) => s.version)
-  return version === '' ? null : <p className="settings__version">View Protect v{version}</p>
+  return version === '' ? null : <p className="settings__version">OverWatch v{version}</p>
 }
 
 /**

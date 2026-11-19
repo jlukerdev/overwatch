@@ -137,7 +137,7 @@ interface Ready {
 }
 
 const NOT_READY =
-  'View Protect is still starting up, or its services failed to start. Look at the application ' +
+  'OverWatch is still starting up, or its services failed to start. Look at the application ' +
   'log and try again.'
 
 /** First zod issue as one line, for a message the UI can show. Quotes no value. */
@@ -319,7 +319,7 @@ export function createIpcRouter(deps: IpcRouterDeps): ReadonlyMap<string, IpcHan
       return ipcFail(
         'internal',
         'The OS keystore (Keychain on macOS, DPAPI on Windows) is not available, so the ' +
-          'credential cannot be stored. View Protect never writes a secret in plaintext (CON-2).',
+          'credential cannot be stored. OverWatch never writes a secret in plaintext (CON-2).',
       )
     }
     const replaced = credentials[input.key] !== input.value

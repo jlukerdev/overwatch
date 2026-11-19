@@ -290,7 +290,7 @@ function encryptionUnavailable(): SecretsError {
   return new SecretsError(
     'encryption-unavailable',
     'The OS keystore (Keychain on macOS, DPAPI on Windows) is not available, so the API key ' +
-      'cannot be stored. View Protect never writes secrets in plaintext (CON-2).',
+      'cannot be stored. OverWatch never writes secrets in plaintext (CON-2).',
   )
 }
 

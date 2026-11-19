@@ -248,7 +248,7 @@ export function describeRenameError(err: unknown, binPath: string): unknown {
   if (code === undefined || !LOCKED_CODES.has(code)) return err
   return new Error(
     `Could not replace ${binPath} (${code}): the file is probably in use. ` +
-      'Quit View Protect (and any running go2rtc process), then run the fetch again. ' +
+      'Quit OverWatch (and any running go2rtc process), then run the fetch again. ' +
       'The partial download was removed.',
     { cause: err },
   )

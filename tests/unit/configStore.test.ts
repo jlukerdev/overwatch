@@ -305,7 +305,7 @@ describe('recovery', () => {
     const { problem, backupPath, config } = await loadBad(
       JSON.stringify({ schemaVersion: 99, views: [], somethingNew: true }),
     )
-    expect(problem).toContain('newer version of View Protect')
+    expect(problem).toContain('newer version of OverWatch')
     expect(config).toEqual(defaultConfig())
     if (backupPath !== null) {
       expect(JSON.parse(await readFile(backupPath, 'utf8'))).toMatchObject({ somethingNew: true })

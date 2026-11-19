@@ -1,8 +1,10 @@
-# View Protect
+# OverWatch (View Protect)
 
-A desktop app for Windows and macOS that shows live UniFi Protect cameras in named, auto-scaling grid Views. It uses the official Protect **Integration API**, and it can unlock the UniFi Access door linked to a camera. For personal, local-LAN use only.
+**OverWatch** is a desktop app for Windows and macOS that shows live UniFi Protect cameras in named, auto-scaling grid Views. It uses the official Protect **Integration API**, and it can unlock the UniFi Access door linked to a camera. For personal, local-LAN use only.
 
-**Status:** Prototype. Phases 0–5 are done (gate G5 passed 2026-11-19). Phase 6 (OverWatch branding, hardening, packaging) is next, then v1.0.0.
+"View Protect" is the project's internal name: the repo folder, the `view-protect` package and the code use it. Everything the user sees says OverWatch (SPEC BRAND-1).
+
+**Status:** v1.0.0 in progress. Phases 0–5 are done (gate G5 passed 2026-11-19). Phase 6 (OverWatch branding, hardening, packaging) is under way.
 
 | Doc | Purpose |
 |---|---|
@@ -21,7 +23,7 @@ view-protect/
 ├─ docs/                      spec, architecture, dev plan, perf results
 ├─ resources/
 │  ├─ bin/<platform>-<arch>/  go2rtc binaries (gitignored; scripts/fetch-go2rtc.ts)
-│  └─ icons/
+│  └─ icons/                  icon.svg (source) → icon.png / .icns / .ico (npm run gen:icons)
 ├─ scripts/
 │  ├─ fetch-go2rtc.ts         pinned download + checksum (run by Node directly)
 │  ├─ gen-protect-types.ts    Protect contract → src/main/protect/generated.ts
@@ -66,7 +68,7 @@ npm run dev
 - `--target <platform>-<arch>`: one target; repeatable (multiple targets also run in parallel)
 - `--force`: download again even if the installed binary is current
 
-On Windows, if the binary can't be replaced because it is in use, quit View Protect (and any running go2rtc) and run the fetch again.
+On Windows, if the binary can't be replaced because it is in use, quit OverWatch (and any running go2rtc) and run the fetch again.
 
 ### Updating go2rtc
 The version and the SHA-256 of each release zip are pinned in `scripts/go2rtc.manifest.json`. To update, change `version`, then replace each `sha256` with the new asset's hash (download the zips from the GitHub release and run `shasum -a 256`, and cross-check with `gh api repos/AlexxIT/go2rtc/releases/tags/<version> --jq '.assets[] | {name, digest}'`). Check that the zip still contains the `binary` named in the manifest, then run `npm run fetch:go2rtc -- --all --force`.
@@ -91,8 +93,16 @@ VP_ACCESS_BASE_URL=https://127.0.0.1:12445/api/v1/developer VP_ACCESS_TOKEN=<moc
 
 Lists doors and checks the responses against the zod schemas in `src/main/access/types.ts`. Add `-- --unlock "Front Door"` to unlock one door after typing its name to confirm (`--yes` skips the prompt, and is refused unless the target sends the mock-only `x-view-protect-mock` header). The spike pins the certificate per host and port in `scripts/spikes/output/` and writes sanitized fixtures to `tests/fixtures/access/` marked `"_source": "mock"` (only when that header is present; otherwise `"console"`). On-site, the same script runs against the real console (OS-1).
 
+### App icons
+The app icon's source is `resources/icons/icon.svg`. After changing it, run `npm run gen:icons` to regenerate `icon.png` (1024 × 1024, the window icon), `icon.icns` (macOS bundle; needs macOS for `iconutil`) and `icon.ico` (Windows) next to it, and commit all four. electron-builder takes the `.icns` and `.ico` from `electron-builder.yml`; the app reads the PNG at runtime (SPEC BRAND-4).
+
 ### Video spike (P0.5)
 `npm run spike:video` plays one camera through go2rtc (on a free `127.0.0.1` port) over MSE in a bare Electron window. It reports the codec, the decoder (hardware or not, read from the Chromium Media domain), audio, latency and CPU, then prints a Gate G0 PASS/FAIL. It needs `.env.local` (`VP_CONSOLE_HOST`, `VP_PROTECT_API_KEY`) and `npm run fetch:go2rtc`. It only makes GET calls to the console and never creates RTSPS streams. Options: `--camera <name>`, `--quality high|medium|low`, `--duration <s>`, `--list` (cameras, existing qualities and their codecs), `--keep-open`, `--bare`, `--trim-keep <s>`. Results go to `scripts/spikes/output/video-spike/` (gitignored). Findings and the Windows procedure are in `docs/spikes/P0.5-video.md`.
 
-## Installing prototype builds
-Prototype builds are unsigned. On macOS, right-click the app → Open the first time. On Windows, choose SmartScreen → "More info" → "Run anyway". Installing a newer build over an older one keeps your Views and settings.
+## Installing builds
+Builds are unsigned. On macOS, right-click the app → Open the first time. On Windows, choose SmartScreen → "More info" → "Run anyway". Installing a newer build over an older one keeps your Views and settings.
+
+### Upgrading from a View Protect build
+The app was renamed OverWatch in v1.0.0. Your Views, settings and accepted certificates carry over: the data folder keeps its old name, `View Protect` (`~/Library/Application Support/View Protect` on macOS, `%APPDATA%\View Protect` on Windows), so don't delete it. Remove the old "View Protect" app or uninstall it from Windows Settings; the new one installs as OverWatch alongside it.
+
+**macOS: enter your API key once more.** macOS keeps the key that encrypts the stored secrets in the keychain under the app's name, and that name is now "OverWatch Safe Storage". OverWatch can't read the Protect API key (or Access token) the old build saved, so it starts with them shown as not stored. Open Settings, enter the key (and token) again and save. You only do this once; the old "View Protect Safe Storage" keychain item can then be deleted in Keychain Access. On Windows nothing needs re-entering.

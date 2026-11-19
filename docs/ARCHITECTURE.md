@@ -76,6 +76,8 @@
 - Protect RTSPS uses a self-signed cert. Main builds go2rtc sources with go2rtc's no-verify RTSPS scheme, **only for the pinned console host**. (Phase 0 confirms the exact scheme and URL rewriting, e.g. removing `?enableSrtp`.)
 
 ## 4. Persistence
+`<userData>` is `<appData>/View Protect`, kept by name when the app became OverWatch (P6.1, SPEC BRAND-5): `src/main/branding.ts` sets it before `ready`, unless `--user-data-dir` is given.
+
 - `<userData>/config.json`: views, door links, the Access polling intervals (`accessPolling`, DOOR-9), UI prefs (schema in SPEC §6)
 - `<userData>/secrets.bin`: safeStorage-encrypted `{ protectApiKey, accessToken }`
 - `<userData>/logs/`: app log (rotating; not built yet) and `unlock.log` (P5.4, DOOR-5: JSON Lines, one line per unlock attempt and, since P5.6, per Doors screen door action and emergency change, with an `action` key saying which; rotated to `unlock.log.1` above 1 MiB; `src/main/access/unlockLog.ts`)

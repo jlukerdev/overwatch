@@ -130,7 +130,7 @@ export function App(): JSX.Element {
           <span className="emptyState__icon emptyState__icon--error">
             <AlertIcon />
           </span>
-          <h1 className="app__title">View Protect could not start</h1>
+          <h1 className="app__title">OverWatch could not start</h1>
           <p className="emptyState__hint" role="alert">
             {loadError?.message ?? 'The app could not read its own state from the main process.'}
           </p>
@@ -150,7 +150,7 @@ export function App(): JSX.Element {
       {/* Focus mode: no header at all, so nothing hidden is still reachable by Tab. */}
       {focusMode ? null : (
         <header className="app__header">
-          <h1 className="app__brand">View Protect</h1>
+          <h1 className="app__brand">OverWatch</h1>
           <nav className="app__nav">
             <button
               type="button"

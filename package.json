@@ -1,9 +1,9 @@
 {
   "name": "view-protect",
-  "productName": "View Protect",
-  "version": "0.1.0",
+  "productName": "OverWatch",
+  "version": "1.0.0",
   "private": true,
-  "description": "Live UniFi Protect camera grid Views for Windows and macOS.",
+  "description": "OverWatch: live UniFi Protect camera grid Views for Windows and macOS.",
   "main": "./out/main/index.js",
   "scripts": {
     "dev": "node scripts/electron-vite.ts dev",
@@ -21,6 +21,7 @@
     "fetch:go2rtc": "node scripts/fetch-go2rtc.ts",
     "gen:protect-types": "node scripts/gen-protect-types.ts",
     "check:protect-types": "node scripts/gen-protect-types.ts --check",
+    "gen:icons": "node scripts/gen-icons.ts",
     "predist": "npm run fetch:go2rtc -- --all",
     "dist": "npm run build && electron-builder",
     "postinstall": "install-electron",

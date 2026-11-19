@@ -1,0 +1,64 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <!--
+    OverWatch app icon: a minimal watchtower on a dark rounded square.
+    Source of every raster in this folder: run `node scripts/gen-icons.ts` after editing.
+
+    Grid: 1024 x 1024. The tile is 824 x 824 at (100, 100), the macOS icon safe area, so the icon
+    sits at the same visual size as other Dock icons; outside it stays transparent.
+    Colours are the app's tokens (src/renderer/src/styles.css): bg #0b0d10, bg-raised #14181d,
+    border #242a31, fg #e6e8eb, accent #4c8dff, accent-hover #6ea2ff.
+  -->
+  <defs>
+    <linearGradient id="tile" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#1a1f26" />
+      <stop offset="1" stop-color="#0b0d10" />
+    </linearGradient>
+    <!-- Searchlight beam: bright at the window, fading out towards the tile edge. -->
+    <linearGradient id="beam" gradientUnits="userSpaceOnUse" x1="652" y1="0" x2="940" y2="0">
+      <stop offset="0" stop-color="#6ea2ff" stop-opacity="0.6" />
+      <stop offset="1" stop-color="#4c8dff" stop-opacity="0" />
+    </linearGradient>
+    <!-- The tile, in the tower group's (shifted) coordinates. -->
+    <clipPath id="beamClip">
+      <rect x="124" y="100" width="824" height="824" rx="185" />
+    </clipPath>
+  </defs>
+
+  <!-- Tile: 22.5% corner radius, faint top-lit gradient (its border is drawn last). -->
+  <rect x="100" y="100" width="824" height="824" rx="185" fill="url(#tile)" />
+
+  <!--
+    The tower is drawn centred on x = 512 and shifted 24 left as a whole, so the tower plus its
+    beam (which only goes right) sit balanced in the tile.
+  -->
+  <g transform="translate(-24 0)">
+    <!-- Beam: a wedge sweeping right from the lit window, clipped to the tile. -->
+    <g clip-path="url(#beamClip)">
+      <path d="M560 426 L990 280 L990 572 Z" fill="url(#beam)" />
+    </g>
+
+    <g fill="#e6e8eb">
+      <!-- Roof: pitched, slightly wider than the cabin. -->
+      <path d="M512 228 L700 360 L324 360 Z" />
+      <!-- Cabin walls (the window is drawn over them in accent). -->
+      <rect x="372" y="360" width="280" height="136" />
+      <!-- Deck. -->
+      <rect x="336" y="496" width="352" height="40" rx="8" />
+    </g>
+
+    <!-- Lit window. -->
+    <rect x="408" y="388" width="208" height="76" rx="6" fill="#4c8dff" />
+
+    <!--
+      Cross-brace first, ending on the legs' centrelines so its round caps hide under them, then
+      the legs, tapered outward towards the ground.
+    -->
+    <g stroke="#e6e8eb" fill="none" stroke-linecap="round">
+      <path d="M392 586 L674 760 M632 586 L350 760" stroke-width="28" />
+      <path d="M404 536 L340 800 M620 536 L684 800" stroke-width="40" />
+    </g>
+  </g>
+
+  <!-- Tile border, on top so the beam does not cover it. -->
+  <rect x="106" y="106" width="812" height="812" rx="179" fill="none" stroke="#242a31" stroke-width="12" />
+</svg>

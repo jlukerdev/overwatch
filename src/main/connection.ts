@@ -1471,7 +1471,7 @@ export function createConnectionManager(options: ConnectionManagerOptions): Conn
     if (door === null) {
       return refuse(
         'not-found',
-        'That door is not in the list View Protect last read from the console, so nothing was ' +
+        'That door is not in the list OverWatch last read from the console, so nothing was ' +
           'sent. Open the Doors screen, wait for the door list and try again.',
         null,
       )

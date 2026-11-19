@@ -1,6 +1,10 @@
-# Minimal packaging config (P0.1). Finished in P6.3: icons, signing, artifact names, go2rtc checks.
-appId: com.personal.viewprotect
-productName: View Protect
+# Packaging config (P0.1). P6.1 named it for OverWatch and added the icons; P6.4 finishes it
+# (unsigned DMG + NSIS, go2rtc checks, first-run Gatekeeper/SmartScreen notes).
+# "View Protect" stays the internal and repo name; OverWatch is what the user sees (SPEC BRAND-1).
+# The userData folder stays "View Protect" (src/main/branding.ts), so changing productName or
+# appId does not move anyone's Views or settings.
+appId: com.personal.overwatch
+productName: OverWatch
 directories:
   output: dist
   buildResources: resources
@@ -13,6 +17,9 @@ files:
 # gives mac/win and its `${platform}` macro gives the *build host's* process.platform,
 # which is wrong when cross-building. `${arch}` is the target arch.
 mac:
+  # The bundle icon (Dock, Finder, About panel). Made from resources/icons/icon.svg.
+  icon: resources/icons/icon.icns
+  artifactName: OverWatch-${version}-${arch}.${ext}
   extraResources:
     - from: resources/bin/darwin-${arch}
       to: bin
@@ -22,14 +29,23 @@ mac:
     - target: dmg
       arch: [arm64]
 win:
+  # The .exe, installer and shortcut icon.
+  icon: resources/icons/icon.ico
+  artifactName: OverWatch-${version}-${arch}.${ext}
   extraResources:
     - from: resources/bin/win32-${arch}
       to: bin
       filter:
         - '**/*'
+    # The window/taskbar and About panel icon, read at runtime from <resources>/icons/icon.png
+    # (appIconPath in src/main/branding.ts). macOS needs no copy: it uses the bundle's .icns.
+    - from: resources/icons/icon.png
+      to: icons/icon.png
   target:
     - target: nsis
       arch: [x64]
 nsis:
+  shortcutName: OverWatch
+  uninstallDisplayName: OverWatch
   oneClick: false
   allowToChangeInstallationDirectory: true

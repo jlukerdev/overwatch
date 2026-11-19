@@ -2,7 +2,7 @@
 
 A desktop app for Windows and macOS that shows live UniFi Protect cameras in named, auto-scaling grid Views. It uses the official Protect **Integration API**, and it can unlock the UniFi Access door linked to a camera. For personal, local-LAN use only.
 
-**Status:** Prototype. Phase 0 (spikes) is next.
+**Status:** Prototype. Phases 0–5 are done (gate G5 passed 2026-11-19). Phase 6 (hardening and packaging) is next.
 
 | Doc | Purpose |
 |---|---|

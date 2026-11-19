@@ -160,6 +160,8 @@ AUD-1…3, VIEW-3, DOOR-0…6, plus the requirements P5.6…P5.8 add to SPEC (Do
 
 **Gate G5:** unmuting a second cell mutes the first. With Access disabled, no door UI shows and no Access calls are made. With Access enabled against the mock, unlocking from a camera cell unlocks the right mock door, and the attempt is logged. Added with P5.6…P5.8 (user request 2026-11-18): with Access disabled there is no Doors button either. Against the mock, the Doors screen lists every door with its lock state, unlocks and locks the right door, shows a door's current rule or schedule, sets and clears lockdown and evacuation, and links a camera to a door, with each door action logged. Changing a polling interval changes the read cadence without a restart. Settings holds only the console connection and opens from its own button.
 
+**G5 outcome: PASSED on 2026-11-19.** The user verified every gate item on screen against the Access mock (the build machine cannot reach the console, the G1/G3 split). Real Access hardware is still unverified: OS-1 and OS-2 stay open.
+
 ---
 
 ## Phase 6 — Hardening & prototype packaging

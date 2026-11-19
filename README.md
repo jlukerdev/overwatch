@@ -2,13 +2,13 @@
 
 A desktop app for Windows and macOS that shows live UniFi Protect cameras in named, auto-scaling grid Views. It uses the official Protect **Integration API**, and it can unlock the UniFi Access door linked to a camera. For personal, local-LAN use only.
 
-**Status:** Prototype. Phases 0–5 are done (gate G5 passed 2026-11-19). Phase 6 (hardening and packaging) is next.
+**Status:** Prototype. Phases 0–5 are done (gate G5 passed 2026-11-19). Phase 6 (OverWatch branding, hardening, packaging) is next, then v1.0.0.
 
 | Doc | Purpose |
 |---|---|
 | [docs/SPEC.md](docs/SPEC.md) | Requirements (IDs used throughout), data model, external APIs, risks |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Stack decision, process model, streaming pipeline |
-| [docs/DEV_PLAN.md](docs/DEV_PLAN.md) | Phased prototype plan with gates |
+| [docs/DEV_PLAN.md](docs/DEV_PLAN.md) | Phased plan with gates |
 | [CLAUDE.md](CLAUDE.md) | Rules for coding agents working in this folder |
 
 ## Stack

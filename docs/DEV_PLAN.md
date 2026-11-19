@@ -1,4 +1,4 @@
-# View Protect — Prototype Development Plan
+# View Protect (OverWatch) — Development Plan
 
 Phases run in order. Each one ends with a **gate**: a check you can demo or measure. A phase isn't done until its gate passes on **both macOS and Windows** (unless marked otherwise). Requirement IDs refer to `SPEC.md`.
 
@@ -164,16 +164,17 @@ AUD-1…3, VIEW-3, DOOR-0…6, plus the requirements P5.6…P5.8 add to SPEC (Do
 
 ---
 
-## Phase 6 — Hardening & prototype packaging
-NFR-6…10
+## Phase 6 — Hardening, branding & v1.0.0 packaging
+NFR-6…10, plus the OverWatch branding P6.1 adds to SPEC. The app is no longer a prototype: what Phases 0–5 built is the v1.0.0 product (user decision 2026-11-19).
 
 | # | Task |
 |---|---|
-| P6.1 | Sleep/wake + network-change recovery. `powerSaveBlocker` while a View is visible |
-| P6.2 | Rotating app log. Redact secrets |
-| P6.3 | electron-builder: unsigned DMG (arm64) + NSIS (x64) bundling the right go2rtc binary. Document the first-run Gatekeeper/SmartScreen bypass in README |
-| P6.4 | Playwright-Electron smoke test (launch, connect with mocked API, render a view) |
-| P6.5 | Prototype review: write `docs/PROTOTYPE_REVIEW.md` (what worked, perf numbers, decisions for MVP) |
+| P6.1 | **OverWatch branding** (user request 2026-11-19). "View Protect" stays the internal and repo name; the app's external name is **OverWatch**. (1) Every user-facing name: the packaged app (`productName`, DMG and installer names, bundle and Start-menu names, `appId` decided here), the window title and the header, the macOS app menu and menubar (it says "Electron" today), the **About** panel (name, version 1.0.0, copyright), the Windows menu, dialogs and toasts, and the first-run copy. (2) The Electron default menu is replaced with an app menu built for OverWatch (name, About, Hide, Quit, Edit, View, Window), set before the window opens, so dev runs show the right name too (`app.setName`). (3) An app icon: a source image in `resources/icons/` made into `.icns` (macOS) and `.ico` (Windows) plus the window icon, and set in electron-builder. (4) `package.json` version `1.0.0`. Keep the `userData` folder name stable, or migrate it, so existing Views and settings survive the rename (decide in the task; this is the G6 data-kept check). Grep `tests/` and `scripts/perf/` for any visible string or window title they find before changing it (CLAUDE.md UI conventions) and update CLAUDE.md, README and SPEC to the new name. |
+| P6.2 | Sleep/wake + network-change recovery. `powerSaveBlocker` while a View is visible |
+| P6.3 | Rotating app log. Redact secrets |
+| P6.4 | electron-builder: unsigned DMG (arm64) + NSIS (x64) bundling the right go2rtc binary, named for OverWatch with the P6.1 icons. Document the first-run Gatekeeper/SmartScreen bypass in README |
+
+*Dropped (user decision 2026-11-19): the Playwright-Electron smoke test and the prototype review (`PROTOTYPE_REVIEW.md`). They are not needed for v1.0.0.*
 
 **Gate G6:** run the installer over an older build and data is kept. The app runs for 8 hours unattended with no intervention.
 
@@ -189,7 +190,7 @@ Things that can only be checked where the real Access hardware is. Run these bef
 
 ---
 
-## MVP backlog (after prototype review)
+## Future enhancements (after v1.0.0)
 Code signing + notarization · import Protect Live Views · Cloud Connector remote control/unlock · badge-in camera pop-up · auto-update (electron-updater) · two-way talk · multi-monitor / kiosk / launch at login · view import/export · door-link auto-suggest · PTZ · smart-detect type filters for auto-switch (person/vehicle only) · motion badge on cells · pre-warm when rotating off a missing camera's placeholder (P4.4 review, user decision 2026-11-16).
 
 ## Working agreements for agents

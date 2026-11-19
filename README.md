@@ -4,7 +4,7 @@ A desktop app for macOS and Windows that shows your UniFi Protect cameras live, 
 
 OverWatch talks straight to your UniFi console over your local network, using Ubiquiti's official Protect Integration API. It has no cloud service, no account and no telemetry.
 
-> OverWatch is a personal project, not a Ubiquiti product. It is for live viewing: for recordings, the timeline and exports, use the Protect app.
+> OverWatch is a personal project, not a Ubiquiti product
 
 ## Features
 
@@ -18,10 +18,14 @@ OverWatch talks straight to your UniFi console over your local network, using Ub
 
 ## Requirements
 
-- macOS on Apple silicon, or Windows 10/11 (x64)
-- A UniFi console running **UniFi Protect** (built against Protect 7.3), on the same network or reached over a VPN
+- A 64-bit computer running one of:
+  - **macOS 12 (Monterey) or later**, on Apple silicon or Intel
+  - **Windows 10 or 11**, on x64 or ARM64
+- A UniFi console running **UniFi Protect** on the same network or reached over a VPN. The Protect Integration API it is built against is **v7.3.74**.
 - A Protect **Integration API key**, created in Protect under *Integrations*
-- For doors: **UniFi Access** and an Access API token
+- For doors: **UniFi Access** and an Access API token. The Access API it is built against is **v4.2.16**. Access 1.9.1 or later is required, and some features need newer: lock rules and emergency status need 1.24.6, and door-state push needs 1.20.11.
+
+Installers are currently built only for Apple silicon Macs and Windows x64 (see below). The other combinations above are supported by the platform but need their own build.
 
 ## Install
 

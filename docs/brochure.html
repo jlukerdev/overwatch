@@ -1,0 +1,521 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>body{margin:0}img{max-width:100%}</style>
+<title>OverWatch Brochure</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Big+Shoulders+Display:wght@700;800&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<style>
+  /* Layout: a searchlight beam sweeps from the wordmark across a left-set headline; below it,
+     product shots alternate sides with three-line captions. One dark look, like the app itself. */
+  :root {
+    color-scheme: dark;
+    --bg: #0b0d10;
+    --raised: #14181d;
+    --sunken: #090b0e;
+    --line: #242a31;
+    --fg: #e6e8eb;
+    --muted: #8a9099;
+    --accent: #4c8dff;
+    --accent-2: #6ea2ff;
+    --ok: #3fb950;
+    --warn: #d29922;
+    --error: #f85149;
+    --scrim: rgb(8 10 13 / 72%);
+    --chip-line: rgb(255 255 255 / 16%);
+    --display: 'Big Shoulders Display', 'Arial Narrow', 'Helvetica Neue', sans-serif;
+    --body: 'IBM Plex Sans', system-ui, -apple-system, 'Segoe UI', sans-serif;
+    --mono: 'IBM Plex Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+    --app: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  }
+  *, *::before, *::after { box-sizing: border-box; }
+  body {
+    background: var(--bg);
+    color: var(--fg);
+    font-family: var(--body);
+    font-size: 17px;
+    line-height: 1.55;
+    overflow-x: hidden;
+  }
+  .wrap {
+    max-width: 1120px;
+    margin-inline: auto;
+    padding-left: max(20px, env(safe-area-inset-left, 0px));
+    padding-right: max(20px, env(safe-area-inset-right, 0px));
+  }
+  h1, h2, p, figure, ul { margin: 0; }
+  h1, h2 {
+    font-family: var(--display);
+    font-weight: 800;
+    text-transform: uppercase;
+    letter-spacing: 0.01em;
+    line-height: 0.94;
+    text-wrap: balance;
+  }
+  .label {
+    font-family: var(--mono);
+    font-size: 0.74rem;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--accent-2);
+  }
+  .defs { position: absolute; width: 0; height: 0; overflow: hidden; }
+
+  /* ---- hero ---- */
+  .hero { position: relative; overflow: hidden; border-bottom: 1px solid var(--line); }
+  .beam {
+    position: absolute;
+    top: 0; left: 0; right: 0;
+    height: 30rem;
+    background: linear-gradient(90deg, rgb(110 162 255 / 30%), rgb(76 141 255 / 0%) 82%);
+    clip-path: polygon(46px 44px, 100% 0, 100% 100%);
+    pointer-events: none;
+  }
+  .hero .wrap { position: relative; padding-block: 28px 64px; display: grid; gap: 48px; }
+  .brand { display: flex; align-items: center; gap: 12px; font-weight: 600; font-size: 1.1rem; }
+  .brand svg { width: 34px; height: 34px; flex-shrink: 0; }
+  .brand span { color: var(--muted); font-weight: 400; font-size: 0.9rem; margin-left: auto; text-align: right; }
+  .hero__copy { display: grid; gap: 20px; max-width: 40rem; }
+  h1 { font-size: clamp(3.4rem, 11vw, 7rem); }
+  h1 em { font-style: normal; color: var(--accent-2); }
+  .lede { font-size: 1.15rem; color: var(--fg); max-width: 34rem; }
+  .tags { display: flex; flex-wrap: wrap; gap: 8px; padding: 0; list-style: none; }
+  .tags li {
+    font-family: var(--mono);
+    font-size: 0.78rem;
+    padding: 5px 10px;
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    background: var(--sunken);
+    color: var(--muted);
+  }
+
+  /* ---- feature rows ---- */
+  .features { display: grid; gap: 88px; padding-block: 88px; }
+  .row { display: grid; grid-template-columns: minmax(0, 4fr) minmax(0, 7fr); gap: 48px; align-items: center; }
+  .row--flip .row__copy { order: 2; }
+  .row__copy { display: grid; gap: 14px; min-width: 0; }
+  .row__copy h2 { font-size: clamp(2.2rem, 5vw, 3.2rem); }
+  .row__copy p { color: var(--muted); max-width: 26rem; }
+  .row__copy p b { color: var(--fg); font-weight: 500; }
+
+  .extras {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    border-top: 1px solid var(--line);
+    border-bottom: 1px solid var(--line);
+  }
+  .extras div { padding: 26px 22px 28px 0; display: grid; gap: 6px; align-content: start; min-width: 0; }
+  .extras div + div { padding-left: 22px; border-left: 1px solid var(--line); }
+  .extras h3 { margin: 0; font-size: 1rem; font-weight: 600; }
+  .extras p { font-size: 0.93rem; color: var(--muted); }
+  kbd {
+    font-family: var(--mono);
+    font-size: 0.8em;
+    padding: 1px 6px;
+    border: 1px solid var(--line);
+    border-bottom-width: 2px;
+    border-radius: 4px;
+    background: var(--raised);
+    color: var(--fg);
+  }
+
+  /* ---- local band ---- */
+  .local { background: var(--raised); border-block: 1px solid var(--line); }
+  .local .wrap { padding-block: 72px; display: grid; gap: 28px; }
+  .local__words {
+    display: flex; flex-wrap: wrap; gap: 4px 40px;
+    font-family: var(--display); font-weight: 800; text-transform: uppercase;
+    font-size: clamp(2.6rem, 8vw, 5.2rem); line-height: 0.95;
+  }
+  .local__words span:nth-child(2) { color: var(--accent-2); }
+  .local p { color: var(--muted); max-width: 38rem; }
+
+  /* ---- footer ---- */
+  .foot .wrap { padding-block: 48px 64px; display: grid; gap: 28px; }
+  .needs { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 24px; }
+  .needs div { display: grid; gap: 4px; align-content: start; min-width: 0; }
+  .needs p { font-size: 0.95rem; }
+  .small { font-size: 0.82rem; color: var(--muted); }
+
+  /* ---- product shots: everything inside is sized in em off the shot's own width ---- */
+  .shot { container-type: inline-size; min-width: 0; }
+  .ui {
+    font-family: var(--app);
+    font-size: clamp(3.5px, 1.32cqw, 14px);
+    line-height: 1.3;
+    border: 1px solid var(--line);
+    border-radius: 0.8em;
+    overflow: hidden;
+    background: var(--bg);
+    box-shadow: 0 24px 70px rgb(0 0 0 / 60%), 0 0 0 1px rgb(255 255 255 / 3%);
+    user-select: none;
+  }
+  .row .ui { font-size: clamp(3.5px, 1.6cqw, 14px); }
+  .ui svg.ic { width: 1.15em; height: 1.15em; flex-shrink: 0; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+  .ui-bar { display: flex; gap: 0.5em; padding: 0.6em 0.8em; background: var(--raised); border-bottom: 1px solid var(--line); }
+  .ui-bar i { width: 0.75em; height: 0.75em; border-radius: 50%; background: #3a424c; }
+  .ui-head { display: flex; align-items: center; gap: 1em; padding: 0.5em 1em; background: var(--raised); border-bottom: 1px solid var(--line); }
+  .ui-brand { display: flex; align-items: center; gap: 0.5em; font-weight: 600; }
+  .ui-brand svg { width: 1.5em; height: 1.5em; }
+  .ui-nav { display: flex; gap: 0.25em; }
+  .ui-nav span { display: inline-flex; align-items: center; gap: 0.4em; padding: 0.3em 0.7em; border: 1px solid transparent; border-radius: 0.43em; color: var(--muted); }
+  .ui-nav .on { border-color: var(--line); background: var(--sunken); color: var(--fg); }
+  .ui-nav .on svg { color: var(--accent); }
+  .ui-badge { margin-left: auto; display: inline-flex; align-items: center; gap: 0.45em; font-size: 0.85em; color: var(--muted); }
+  .ui-badge::before { content: ''; width: 0.6em; height: 0.6em; border-radius: 50%; background: var(--ok); }
+  .ui-gear { color: var(--muted); display: flex; }
+
+  .ui-live { display: flex; }
+  .ui-side { width: 13em; flex-shrink: 0; display: flex; flex-direction: column; gap: 0.2em; padding: 0.6em; border-right: 1px solid var(--line); background: var(--raised); }
+  .ui-side .cap { color: var(--muted); font-size: 0.75em; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; padding: 0.3em 0.5em 0.6em; }
+  .ui-side .v { display: flex; gap: 0.7em; padding: 0.45em 0.6em; border-radius: 0.43em; border: 1px solid transparent; color: var(--muted); }
+  .ui-side .v b { font-weight: 500; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .ui-side .v.on { background: var(--sunken); border-color: var(--line); color: var(--fg); }
+  .ui-side .v.on b { color: var(--accent); }
+  .ui-side .act { margin-top: auto; display: grid; gap: 0.35em; }
+  .ui-side .act span { display: flex; align-items: center; gap: 0.5em; padding: 0.4em 0.6em; border: 1px solid var(--line); border-radius: 0.43em; }
+
+  .ui-grid { flex: 1; min-width: 0; display: grid; grid-template-columns: repeat(3, 1fr); grid-template-rows: repeat(3, 1fr); gap: 0.3em; padding: 0.3em; aspect-ratio: 16 / 9; background: #000; }
+  .cell { position: relative; overflow: hidden; background: #000; min-width: 0; min-height: 0; }
+  .cell--big { grid-column: span 2; grid-row: span 2; }
+  .cell--solo { aspect-ratio: 16 / 9; }
+  .cell > svg.feed { position: absolute; inset: 0; width: 100%; height: 100%; }
+  .cell::after { content: ''; position: absolute; inset: 0; background: radial-gradient(ellipse at center, rgb(0 0 0 / 0%) 55%, rgb(0 0 0 / 42%)); pointer-events: none; }
+  .cell--hover::before { content: ''; position: absolute; inset: 0 0 auto; height: 6em; background: linear-gradient(rgb(0 0 0 / 55%), rgb(0 0 0 / 0%)); z-index: 1; }
+  .chip { position: absolute; z-index: 2; top: 0.35em; left: 0.35em; height: 2em; display: inline-flex; align-items: center; padding: 0 0.5em; border: 1px solid var(--chip-line); border-radius: 0.43em; background: var(--scrim); font-size: 0.85em; font-weight: 500; white-space: nowrap; }
+  .strip { position: absolute; z-index: 2; top: 0.35em; right: 0.35em; display: flex; gap: 0.35em; }
+  .strip span { height: 2.5em; min-width: 2.5em; display: inline-flex; align-items: center; justify-content: center; gap: 0.4em; padding: 0 0.6em; border: 1px solid var(--chip-line); border-radius: 0.43em; background: var(--scrim); font-size: 0.94em; font-weight: 600; }
+  .strip .q { color: var(--ok); border-color: rgb(63 185 80 / 70%); }
+  .strip .vol { width: 7em; padding: 0 0.7em; }
+  .strip .vol i { flex: 1; height: 0.3em; border-radius: 1em; background: linear-gradient(90deg, var(--fg) 62%, rgb(255 255 255 / 25%) 62%); }
+  .unlock { position: absolute; z-index: 2; left: 50%; bottom: 0.7em; transform: translateX(-50%); display: inline-flex; align-items: center; gap: 0.5em; height: 3em; padding: 0 1.1em; border: 1px solid rgb(210 153 34 / 70%); border-radius: 2em; background: var(--scrim); color: var(--warn); font-weight: 600; white-space: nowrap; }
+  .unlock svg.ic { width: 1.3em; height: 1.3em; }
+  .unlock em { font-style: normal; color: var(--fg); }
+
+  .ui-doors { padding: 1em 1.25em 1.5em; display: grid; gap: 1em; }
+  .ui-doors .top { display: flex; align-items: center; gap: 0.6em; }
+  .ui-doors .top b { font-size: 1.15em; margin-right: auto; }
+  .btn { display: inline-flex; align-items: center; gap: 0.4em; height: 2em; padding: 0 0.8em; border: 1px solid var(--line); border-radius: 0.43em; background: var(--raised); white-space: nowrap; }
+  .btn--danger { border-color: rgb(248 81 73 / 55%); color: var(--error); background: rgb(248 81 73 / 14%); }
+  .btn--primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .doorgrid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1em; }
+  .door { display: grid; gap: 0.7em; align-content: start; padding: 1em; border: 1px solid var(--line); border-radius: 0.6em; background: var(--raised); min-width: 0; }
+  .door .hd { display: flex; justify-content: space-between; gap: 0.5em; font-weight: 600; min-height: 2.2em; }
+  .door .hd svg.ic { width: 1.56em; height: 1.56em; }
+  .locked { color: var(--warn); }
+  .unlocked { color: var(--ok); }
+  .door .hd span { color: var(--fg); }
+  .door .bt { display: flex; gap: 0.5em; }
+  .door .sel { display: flex; gap: 0.5em; }
+  .door .sel span:first-child { flex: 1; min-width: 0; justify-content: space-between; color: var(--muted); background: var(--sunken); }
+  .door .cams { display: grid; gap: 0.5em; padding-top: 0.6em; border-top: 1px solid var(--line); color: var(--muted); font-size: 0.85em; font-weight: 600; }
+  .pill { justify-self: start; display: inline-flex; align-items: center; gap: 0.4em; padding: 0.2em 0.7em; border: 1px solid rgb(76 141 255 / 45%); border-radius: 99em; background: rgb(76 141 255 / 14%); color: var(--accent-2); font-weight: 400; }
+  .pill em { font-style: normal; color: var(--fg); }
+
+  @media (max-width: 820px) {
+    .row { grid-template-columns: minmax(0, 1fr); gap: 24px; }
+    .row--flip .row__copy { order: 0; }
+    .features { gap: 64px; padding-block: 64px; }
+    .extras { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .extras div:nth-child(3) { padding-left: 0; border-left: 0; }
+    .extras div:nth-child(n + 3) { border-top: 1px solid var(--line); }
+    .needs { grid-template-columns: minmax(0, 1fr); }
+    .brand span { display: none; }
+  }
+  @media (max-width: 460px) {
+    .extras { grid-template-columns: minmax(0, 1fr); }
+    .extras div + div { padding-left: 0; border-left: 0; border-top: 1px solid var(--line); }
+  }
+</style>
+
+<!-- Shared artwork: app icon, UI icons, and the six illustrated camera scenes. -->
+<svg class="defs" aria-hidden="true">
+  <defs>
+    <linearGradient id="g-tile" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#1a1f26"/><stop offset="1" stop-color="#0b0d10"/></linearGradient>
+    <linearGradient id="g-beam" gradientUnits="userSpaceOnUse" x1="652" y1="0" x2="940" y2="0"><stop offset="0" stop-color="#6ea2ff" stop-opacity=".6"/><stop offset="1" stop-color="#4c8dff" stop-opacity="0"/></linearGradient>
+    <clipPath id="c-tile"><rect x="100" y="100" width="824" height="824" rx="185"/></clipPath>
+    <linearGradient id="g-sky" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#9db3c6"/><stop offset="1" stop-color="#dfe6ea"/></linearGradient>
+    <linearGradient id="g-dusk" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#34436a"/><stop offset=".7" stop-color="#b9788a"/><stop offset="1" stop-color="#eeb07a"/></linearGradient>
+    <linearGradient id="g-lawn" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#6f8f55"/><stop offset="1" stop-color="#47653a"/></linearGradient>
+    <linearGradient id="g-floor" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#5b5f64"/><stop offset="1" stop-color="#7c8084"/></linearGradient>
+    <radialGradient id="g-lamp" cx=".5" cy=".5" r=".5"><stop offset="0" stop-color="#fff0bd" stop-opacity=".9"/><stop offset="1" stop-color="#fff0bd" stop-opacity="0"/></radialGradient>
+    <radialGradient id="g-ir" cx=".5" cy=".62" r=".6"><stop offset="0" stop-color="#d2d2d2"/><stop offset=".55" stop-color="#7a7a7a"/><stop offset="1" stop-color="#2b2b2b"/></radialGradient>
+    <pattern id="p-fence" width="10" height="40" patternUnits="userSpaceOnUse"><rect width="10" height="40" fill="#8a6a48"/><rect x="9" width="1" height="40" fill="#5f4730"/></pattern>
+    <pattern id="p-siding" width="320" height="9" patternUnits="userSpaceOnUse"><rect width="320" height="9" fill="#b9ab97"/><rect y="8" width="320" height="1" fill="#9c8f7c"/></pattern>
+    <pattern id="p-irfence" width="9" height="40" patternUnits="userSpaceOnUse"><rect width="9" height="40" fill="#5e5e5e"/><rect x="8" width="1" height="40" fill="#333"/></pattern>
+
+    <symbol id="logo" viewBox="100 100 824 824">
+      <rect x="100" y="100" width="824" height="824" rx="185" fill="url(#g-tile)" stroke="#242a31" stroke-width="10"/>
+      <g transform="translate(-24 0)">
+        <g clip-path="url(#c-tile)"><path d="M560 426 L990 280 L990 572 Z" fill="url(#g-beam)"/></g>
+        <g fill="#e6e8eb"><path d="M512 228 L700 360 L324 360 Z"/><rect x="372" y="360" width="280" height="136"/><rect x="336" y="496" width="352" height="40" rx="8"/></g>
+        <rect x="408" y="388" width="208" height="76" rx="6" fill="#4c8dff"/>
+        <g stroke="#e6e8eb" fill="none" stroke-linecap="round"><path d="M392 586 L674 760 M632 586 L350 760" stroke-width="28"/><path d="M404 536 L340 800 M620 536 L684 800" stroke-width="40"/></g>
+      </g>
+    </symbol>
+
+    <symbol id="i-cam" viewBox="0 0 24 24"><rect x="2" y="7" width="13" height="10" rx="2"/><path d="M15 10.5 22 7v10l-7-3.5"/></symbol>
+    <symbol id="i-door" viewBox="0 0 24 24"><path d="M6 21V4a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v17M3 21h18M14 12h.01"/></symbol>
+    <symbol id="i-grid" viewBox="0 0 24 24"><rect x="3" y="3" width="7.5" height="7.5" rx="1"/><rect x="13.5" y="3" width="7.5" height="7.5" rx="1"/><rect x="3" y="13.5" width="7.5" height="7.5" rx="1"/><rect x="13.5" y="13.5" width="7.5" height="7.5" rx="1"/></symbol>
+    <symbol id="i-gear" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3.2"/><path d="M12 2.5v3M12 18.5v3M2.5 12h3M18.5 12h3M5.3 5.3l2.1 2.1M16.6 16.6l2.1 2.1M18.7 5.3l-2.1 2.1M7.4 16.6l-2.1 2.1"/></symbol>
+    <symbol id="i-lock" viewBox="0 0 24 24"><rect x="4.5" y="10.5" width="15" height="10.5" rx="2"/><path d="M8 10.5V7.5a4 4 0 0 1 8 0v3"/></symbol>
+    <symbol id="i-unlock" viewBox="0 0 24 24"><rect x="4.5" y="10.5" width="15" height="10.5" rx="2"/><path d="M8 10.5V7.5a4 4 0 0 1 7.6-1.7"/></symbol>
+    <symbol id="i-vol" viewBox="0 0 24 24"><path d="M4 9.5h3.5L12 5.5v13l-4.5-4H4zM15.5 9a4.2 4.2 0 0 1 0 6M18.3 6.5a8 8 0 0 1 0 11"/></symbol>
+    <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+    <symbol id="i-pen" viewBox="0 0 24 24"><path d="M4 20l1-4.5L16.5 4l3.5 3.5L8.5 19z"/></symbol>
+    <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M20 11a8 8 0 0 0-14.5-4M4 4v4h4M4 13a8 8 0 0 0 14.500 4M20 20v-4h-4"/></symbol>
+    <symbol id="i-down" viewBox="0 0 24 24"><path d="M7 10l5 5 5-5"/></symbol>
+
+    <symbol id="s-drive" viewBox="0 0 320 180">
+      <rect width="320" height="180" fill="url(#g-sky)"/>
+      <path d="M0 58Q20 40 40 54T80 50T120 56T160 46T200 55T240 48T280 56T320 50V72H0Z" fill="#33483a"/>
+      <path d="M212 64V45l24-15 24 15v19Z" fill="#a3a6ab"/><path d="M206 46l30-19 30 19Z" fill="#4b4f57"/><rect x="230" y="50" width="12" height="14" fill="#5b4636"/>
+      <rect y="62" width="320" height="15" fill="#5c6066"/><rect y="77" width="320" height="4" fill="#b0b1ad"/>
+      <rect y="81" width="320" height="99" fill="url(#g-lawn)"/>
+      <path d="M128 81h68l78 99H66Z" fill="#a1a3a4"/><path d="M112 112h110M92 146h156" stroke="#8a8c8e" stroke-width="1"/>
+      <circle cx="44" cy="104" r="15" fill="#3d5a34"/><circle cx="62" cy="110" r="11" fill="#466638"/><circle cx="284" cy="120" r="17" fill="#3d5a34"/>
+      <ellipse cx="170" cy="150" rx="44" ry="7" fill="#000" opacity=".28"/>
+      <rect x="137" y="108" width="66" height="40" rx="9" fill="#27425f"/><rect x="144" y="100" width="52" height="24" rx="7" fill="#1c3149"/>
+      <rect x="148" y="103" width="44" height="13" rx="4" fill="#86a9c6"/><rect x="141" y="132" width="11" height="5" rx="2" fill="#f5edc8"/><rect x="188" y="132" width="11" height="5" rx="2" fill="#f5edc8"/>
+      <rect x="158" y="137" width="24" height="6" rx="1" fill="#d9dcdf"/><rect x="139" y="144" width="12" height="8" rx="2" fill="#15171a"/><rect x="189" y="144" width="12" height="8" rx="2" fill="#15171a"/>
+    </symbol>
+
+    <symbol id="s-porch" viewBox="0 0 320 180">
+      <rect width="320" height="180" fill="url(#p-siding)"/>
+      <rect x="112" y="4" width="112" height="130" fill="#ebe6dc"/>
+      <rect x="120" y="10" width="70" height="124" fill="#3d5f5b"/>
+      <rect x="128" y="18" width="24" height="44" fill="#345450"/><rect x="158" y="18" width="24" height="44" fill="#345450"/><rect x="128" y="70" width="54" height="54" fill="#345450"/>
+      <circle cx="181" cy="78" r="3.5" fill="#dcc57c"/>
+      <rect x="198" y="12" width="18" height="118" fill="#c9d6dc"/><path d="M198 50h18M198 90h18" stroke="#ebe6dc" stroke-width="2"/>
+      <circle cx="92" cy="34" r="30" fill="url(#g-lamp)"/><rect x="88" y="26" width="8" height="14" rx="2" fill="#2b2e33"/>
+      <rect y="134" width="320" height="46" fill="#8c7c6a"/><path d="M0 146h320M0 160h320M0 172h320" stroke="#75675a" stroke-width="1"/>
+      <rect x="116" y="140" width="78" height="18" rx="2" fill="#4a3a2e"/>
+      <ellipse cx="232" cy="158" rx="24" ry="5" fill="#000" opacity=".25"/>
+      <rect x="210" y="128" width="42" height="30" fill="#c99d60"/><rect x="228" y="128" width="6" height="30" fill="#a98049"/><rect x="216" y="136" width="10" height="7" fill="#f1ede4"/>
+      <path d="M44 126h30l-5 34H49Z" fill="#a4573c"/><circle cx="52" cy="112" r="13" fill="#4f7a45"/><circle cx="67" cy="108" r="12" fill="#3f6739"/><circle cx="59" cy="98" r="11" fill="#5a8a4d"/>
+    </symbol>
+
+    <symbol id="s-yard" viewBox="0 0 320 180">
+      <rect width="320" height="180" fill="url(#g-sky)"/>
+      <rect y="44" width="320" height="42" fill="url(#p-fence)"/><rect y="44" width="320" height="3" fill="#5f4730"/>
+      <rect y="86" width="320" height="94" fill="url(#g-lawn)"/>
+      <rect x="22" y="34" width="62" height="54" fill="#6f828e"/><path d="M16 36l37-20 37 20Z" fill="#3e4850"/><rect x="42" y="52" width="22" height="36" fill="#55656f"/>
+      <rect x="250" y="40" width="10" height="64" fill="#5a4330"/><circle cx="255" cy="22" r="34" fill="#35552f"/><circle cx="284" cy="38" r="22" fill="#40653a"/><circle cx="228" cy="40" r="20" fill="#40653a"/>
+      <ellipse cx="256" cy="106" rx="40" ry="6" fill="#000" opacity=".18"/>
+      <path d="M0 138h132l34 42H0Z" fill="#aba79f"/>
+      <circle cx="62" cy="156" r="22" fill="#4d5258"/><circle cx="62" cy="156" r="3" fill="#2a2d31"/>
+      <rect x="18" y="146" width="14" height="18" rx="3" fill="#33373c"/><rect x="92" y="146" width="14" height="18" rx="3" fill="#33373c"/>
+      <circle cx="196" cy="132" r="6" fill="#d1493f"/><ellipse cx="197" cy="139" rx="7" ry="2" fill="#000" opacity=".2"/>
+    </symbol>
+
+    <symbol id="s-garage" viewBox="0 0 320 180">
+      <rect width="320" height="180" fill="#3c4148"/>
+      <rect y="100" width="320" height="80" fill="url(#g-floor)"/>
+      <rect x="72" y="12" width="178" height="88" fill="#848a92"/><path d="M72 34h178M72 56h178M72 78h178" stroke="#6a7078" stroke-width="2"/>
+      <rect x="8" y="18" width="48" height="84" fill="#24272c"/><path d="M8 46h48M8 74h48" stroke="#4a4f57" stroke-width="2"/>
+      <rect x="13" y="28" width="16" height="17" fill="#b58a4d"/><rect x="33" y="33" width="18" height="12" fill="#4e7fb0"/><rect x="14" y="58" width="22" height="15" fill="#8d4a43"/><rect x="40" y="62" width="11" height="11" fill="#c9b458"/><rect x="16" y="84" width="30" height="16" fill="#5d6a58"/>
+      <rect x="270" y="40" width="5" height="62" fill="#9a6b3a"/><rect x="282" y="34" width="5" height="68" fill="#70757c"/><path d="M262 40h20v12h-20Z" fill="#5a5f66"/>
+      <ellipse cx="160" cy="18" rx="80" ry="34" fill="url(#g-lamp)" opacity=".6"/>
+      <ellipse cx="164" cy="152" rx="70" ry="8" fill="#000" opacity=".35"/>
+      <rect x="106" y="90" width="116" height="60" rx="12" fill="#7d2c2c"/><rect x="118" y="74" width="92" height="34" rx="9" fill="#6a2424"/><rect x="125" y="79" width="78" height="22" rx="5" fill="#1a1e24"/>
+      <rect x="110" y="114" width="22" height="9" rx="3" fill="#ff5a4f"/><rect x="196" y="114" width="22" height="9" rx="3" fill="#ff5a4f"/><rect x="148" y="124" width="32" height="11" rx="1" fill="#e8e8e2"/>
+      <rect x="112" y="144" width="18" height="12" rx="3" fill="#111315"/><rect x="198" y="144" width="18" height="12" rx="3" fill="#111315"/>
+    </symbol>
+
+    <symbol id="s-gate" viewBox="0 0 320 180">
+      <rect width="320" height="180" fill="#1b1b1b"/>
+      <path d="M96 60h128l96 120H0Z" fill="url(#g-ir)"/>
+      <path d="M0 0l100 34v40L0 180Z" fill="url(#p-irfence)"/><path d="M320 0L220 34v40l100 106Z" fill="url(#p-irfence)"/>
+      <rect x="100" y="20" width="120" height="54" fill="#6f6f6f"/><path d="M112 20v54M124 20v54M136 20v54M148 20v54M160 20v54M172 20v54M184 20v54M196 20v54M208 20v54" stroke="#3d3d3d" stroke-width="2"/><rect x="100" y="38" width="120" height="4" fill="#4a4a4a"/>
+      <ellipse cx="160" cy="92" rx="20" ry="5" fill="#e4e4e4"/><ellipse cx="150" cy="118" rx="27" ry="7" fill="#e9e9e9"/><ellipse cx="172" cy="150" rx="36" ry="9" fill="#f0f0f0"/>
+      <rect x="40" y="92" width="26" height="40" rx="3" fill="#8e8e8e"/><rect x="38" y="88" width="30" height="6" rx="2" fill="#a5a5a5"/><rect x="70" y="84" width="22" height="34" rx="3" fill="#777"/><rect x="68" y="80" width="26" height="6" rx="2" fill="#909090"/>
+      <ellipse cx="238" cy="130" rx="15" ry="8" fill="#3a3a3a"/><circle cx="224" cy="122" r="7" fill="#3a3a3a"/><path d="M218 118l1-8 5 5ZM226 115l5-6 1 8Z" fill="#3a3a3a"/><path d="M252 128q10-6 6-18" stroke="#3a3a3a" stroke-width="3" fill="none" stroke-linecap="round"/>
+      <circle cx="221.500" cy="122" r="1.600" fill="#fff"/><circle cx="227" cy="122" r="1.600" fill="#fff"/>
+    </symbol>
+
+    <symbol id="s-street" viewBox="0 0 320 180">
+      <rect width="320" height="180" fill="url(#g-dusk)"/>
+      <path d="M0 78Q40 60 80 74T170 68T250 74T320 66V92H0Z" fill="#26323a"/>
+      <rect x="24" y="56" width="62" height="36" fill="#58616f"/><path d="M18 58l37-24 37 24Z" fill="#2c323c"/><rect x="34" y="66" width="12" height="12" fill="#ffd98a"/><rect x="62" y="66" width="12" height="26" fill="#3b424d"/>
+      <rect x="128" y="50" width="70" height="42" fill="#6a6470"/><path d="M122 52l41-26 41 26Z" fill="#332f3a"/><rect x="140" y="62" width="14" height="12" fill="#ffd98a"/><rect x="172" y="62" width="14" height="12" fill="#3f3b47"/>
+      <rect x="236" y="58" width="60" height="34" fill="#525a66"/><path d="M230 60l36-22 36 22Z" fill="#2a2f38"/><rect x="270" y="68" width="12" height="11" fill="#ffd98a"/>
+      <rect y="92" width="320" height="6" fill="#8f8f8c"/><rect y="98" width="320" height="46" fill="#4b4e54"/>
+      <path d="M0 121h320" stroke="#d9c873" stroke-width="2" stroke-dasharray="22 16"/>
+      <rect y="144" width="320" height="9" fill="#a7a7a2"/><rect y="153" width="320" height="27" fill="#415c38"/>
+      <ellipse cx="216" cy="118" rx="52" ry="5" fill="#000" opacity=".3"/>
+      <path d="M186 100l13-14h38l13 14Z" fill="#c3c8ce"/><rect x="168" y="100" width="96" height="18" rx="6" fill="#c3c8ce"/><path d="M194 99l8-9h14v9ZM220 90h14l9 9h-23Z" fill="#2b3038"/>
+      <circle cx="190" cy="118" r="8" fill="#17191c"/><circle cx="244" cy="118" r="8" fill="#17191c"/><rect x="258" y="104" width="6" height="5" rx="1" fill="#ff6a5c"/>
+      <rect x="60" y="130" width="4" height="34" fill="#3b2f25"/><rect x="50" y="120" width="24" height="13" rx="5" fill="#22262c"/><rect x="72" y="116" width="2" height="10" fill="#d1493f"/><rect x="72" y="116" width="7" height="5" fill="#d1493f"/>
+    </symbol>
+  </defs>
+</svg>
+
+<header class="hero">
+  <div class="beam"></div>
+  <div class="wrap">
+    <div class="brand">
+      <svg aria-hidden="true"><use href="#logo"/></svg>
+      OverWatch
+      <span>for UniFi Protect</span>
+    </div>
+
+    <div class="hero__copy">
+      <h1>Every camera.<br><em>One wall.</em></h1>
+      <p class="lede">A desktop app that shows your UniFi Protect cameras live, in grids you lay out yourself.</p>
+      <ul class="tags">
+        <li>macOS</li>
+        <li>Windows</li>
+        <li>Local network only</li>
+      </ul>
+    </div>
+
+    <figure class="shot" role="img" aria-label="The OverWatch Live screen: a list of Views beside a grid of six cameras, with the driveway camera spanning four cells.">
+      <div class="ui">
+        <div class="ui-bar"><i></i><i></i><i></i></div>
+        <div class="ui-head">
+          <span class="ui-brand"><svg><use href="#logo"/></svg>OverWatch</span>
+          <span class="ui-nav">
+            <span><svg class="ic"><use href="#i-cam"/></svg>Cameras</span>
+            <span><svg class="ic"><use href="#i-door"/></svg>Doors</span>
+            <span class="on"><svg class="ic"><use href="#i-grid"/></svg>Live</span>
+          </span>
+          <span class="ui-badge">Connected</span>
+          <span class="ui-gear"><svg class="ic"><use href="#i-gear"/></svg></span>
+        </div>
+        <div class="ui-live">
+          <div class="ui-side">
+            <span class="cap">Views</span>
+            <span class="v on"><b>1</b>Perimeter</span>
+            <span class="v"><b>2</b>Front of house</span>
+            <span class="v"><b>3</b>Night watch</span>
+            <span class="v"><b>4</b>Garage &amp; shop</span>
+            <div class="act">
+              <span><svg class="ic"><use href="#i-plus"/></svg>New View</span>
+              <span><svg class="ic"><use href="#i-pen"/></svg>Edit View</span>
+            </div>
+          </div>
+          <div class="ui-grid">
+            <div class="cell cell--big"><svg class="feed" viewBox="0 0 320 180" preserveAspectRatio="xMidYMid slice"><use href="#s-drive"/></svg><span class="chip">Driveway</span></div>
+            <div class="cell"><svg class="feed" viewBox="0 0 320 180" preserveAspectRatio="xMidYMid slice"><use href="#s-porch"/></svg><span class="chip">Front Door</span></div>
+            <div class="cell"><svg class="feed" viewBox="0 0 320 180" preserveAspectRatio="xMidYMid slice"><use href="#s-yard"/></svg><span class="chip">Backyard</span></div>
+            <div class="cell"><svg class="feed" viewBox="0 0 320 180" preserveAspectRatio="xMidYMid slice"><use href="#s-garage"/></svg><span class="chip">Garage</span></div>
+            <div class="cell"><svg class="feed" viewBox="0 0 320 180" preserveAspectRatio="xMidYMid slice"><use href="#s-gate"/></svg><span class="chip">Side Gate</span></div>
+            <div class="cell"><svg class="feed" viewBox="0 0 320 180" preserveAspectRatio="xMidYMid slice"><use href="#s-street"/></svg><span class="chip">Street</span></div>
+          </div>
+        </div>
+      </div>
+    </figure>
+  </div>
+</header>
+
+<main class="wrap features">
+  <section class="row">
+    <div class="row__copy">
+      <p class="label">Views</p>
+      <h2>Lay it out your way</h2>
+      <p>Build as many named Views as you like. <b>Give the cameras that matter more room</b>, and switch Views with the <kbd>1</kbd>–<kbd>9</kbd> keys.</p>
+    </div>
+    <figure class="shot" role="img" aria-label="A View with the street camera across the top and three cameras below it.">
+      <div class="ui">
+        <div class="ui-grid" style="grid-template-rows: 2fr 1fr">
+          <div class="cell" style="grid-column: span 3"><svg class="feed" viewBox="0 0 320 180" preserveAspectRatio="xMidYMid slice"><use href="#s-street"/></svg><span class="chip">Street</span></div>
+          <div class="cell"><svg class="feed" viewBox="0 0 320 180" preserveAspectRatio="xMidYMid slice"><use href="#s-drive"/></svg><span class="chip">Driveway</span></div>
+          <div class="cell"><svg class="feed" viewBox="0 0 320 180" preserveAspectRatio="xMidYMid slice"><use href="#s-yard"/></svg><span class="chip">Backyard</span></div>
+          <div class="cell"><svg class="feed" viewBox="0 0 320 180" preserveAspectRatio="xMidYMid slice"><use href="#s-gate"/></svg><span class="chip">Side Gate</span></div>
+        </div>
+      </div>
+    </figure>
+  </section>
+
+  <section class="row row--flip">
+    <div class="row__copy">
+      <p class="label">Fill and zoom</p>
+      <h2>Look closer</h2>
+      <p>Click any camera to fill the window, then zoom in. <b>Hold one button to unlock the door</b> that camera watches.</p>
+    </div>
+    <figure class="shot" role="img" aria-label="The front door camera filling the window, with zoom, audio and quality controls and an unlock button.">
+      <div class="ui">
+        <div class="cell cell--solo cell--hover">
+          <svg class="feed" viewBox="0 0 320 180" preserveAspectRatio="xMidYMid slice"><use href="#s-porch"/></svg>
+          <span class="chip">Front Door</span>
+          <span class="strip">
+            <span>100%</span>
+            <span><svg class="ic"><use href="#i-grid"/></svg></span>
+            <span><svg class="ic"><use href="#i-vol"/></svg></span>
+            <span class="vol"><i></i></span>
+            <span class="q">High<svg class="ic"><use href="#i-down"/></svg></span>
+          </span>
+          <span class="unlock"><svg class="ic"><use href="#i-lock"/></svg><em>Hold to unlock</em></span>
+        </div>
+      </div>
+    </figure>
+  </section>
+
+  <section class="row">
+    <div class="row__copy">
+      <p class="label">Doors · with UniFi Access</p>
+      <h2>Every lock at a glance</h2>
+      <p>See which doors are locked, lock or unlock any of them, and <b>start a lockdown or evacuation</b> from one screen.</p>
+    </div>
+    <figure class="shot" role="img" aria-label="The Doors screen: three door cards showing lock state, with Lockdown and Evacuation buttons above.">
+      <div class="ui">
+        <div class="ui-doors">
+          <div class="top">
+            <b>Doors</b>
+            <span class="btn btn--danger">Lockdown</span>
+            <span class="btn btn--danger">Evacuation</span>
+            <span class="btn"><svg class="ic"><use href="#i-refresh"/></svg>Refresh</span>
+          </div>
+          <div class="doorgrid">
+            <div class="door">
+              <div class="hd locked"><span>Front Door</span><svg class="ic"><use href="#i-lock"/></svg></div>
+              <div class="bt"><span class="btn btn--primary">Unlock</span><span class="btn">Lock</span></div>
+              <div class="sel"><span class="btn">Set a rule<svg class="ic"><use href="#i-down"/></svg></span><span class="btn">Apply</span></div>
+              <div class="cams">Cameras<span class="pill"><svg class="ic"><use href="#i-cam"/></svg><em>Front Door</em></span></div>
+            </div>
+            <div class="door">
+              <div class="hd unlocked"><span>Garage Side Door</span><svg class="ic"><use href="#i-unlock"/></svg></div>
+              <div class="bt"><span class="btn btn--primary">Unlock</span><span class="btn">Lock</span></div>
+              <div class="sel"><span class="btn">Set a rule<svg class="ic"><use href="#i-down"/></svg></span><span class="btn">Apply</span></div>
+              <div class="cams">Cameras<span class="pill"><svg class="ic"><use href="#i-cam"/></svg><em>Garage</em></span></div>
+            </div>
+            <div class="door">
+              <div class="hd locked"><span>Office</span><svg class="ic"><use href="#i-lock"/></svg></div>
+              <div class="bt"><span class="btn btn--primary">Unlock</span><span class="btn">Lock</span></div>
+              <div class="sel"><span class="btn">Set a rule<svg class="ic"><use href="#i-down"/></svg></span><span class="btn">Apply</span></div>
+              <div class="cams">Cameras<span class="pill"><svg class="ic"><use href="#i-cam"/></svg><em>Side Gate</em></span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </figure>
+  </section>
+
+  <section class="extras" aria-label="More features">
+    <div><h3>Rotating cells</h3><p>One cell cycles through several cameras, or jumps to the one that sees motion.</p></div>
+    <div><h3>Quality per camera</h3><p>High where you need detail, low where you don't.</p></div>
+    <div><h3>Audio</h3><p>Listen to one camera at a time.</p></div>
+    <div><h3>Focus mode</h3><p>Hide everything but the video.</p></div>
+  </section>
+</main>
+
+<section class="local">
+  <div class="wrap">
+    <p class="label">Stays on your network</p>
+    <div class="local__words"><span>No cloud.</span><span>No account.</span><span>No telemetry.</span></div>
+    <p>OverWatch talks only to your own UniFi console, using Ubiquiti's official API. Your API key is encrypted by your computer's keystore.</p>
+  </div>
+</section>
+
+<footer class="foot">
+  <div class="wrap">
+    <div class="needs">
+      <div><p class="label">Mac</p><p>macOS 12 (Monterey) or later.</p></div>
+      <div><p class="label">Windows</p><p>Windows 10 or 11.</p></div>
+      <div><p class="label">You'll need</p><p>A UniFi Protect console on your network or VPN. UniFi Access for doors.</p></div>
+    </div>
+    <p class="small">OverWatch is a personal project, not a Ubiquiti product. Screens shown are illustrations of the app with example cameras.</p>
+  </div>
+</footer>
+</html>

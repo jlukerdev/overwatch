@@ -1,0 +1,260 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>body{margin:0}img{max-width:100%}</style>
+<title>OverWatch User Guide</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Big+Shoulders+Display:wght@700;800&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<style>
+  /* Layout: one reading column of numbered steps; each step is a short note beside or above a
+     real screen from the app. Same dark look and type as the app and its brochure. */
+  :root {
+    color-scheme: dark;
+    --bg: #0b0d10;
+    --raised: #14181d;
+    --sunken: #090b0e;
+    --line: #242a31;
+    --fg: #e6e8eb;
+    --muted: #9aa1ab;
+    --accent: #4c8dff;
+    --accent-2: #6ea2ff;
+    --display: 'Big Shoulders Display', 'Arial Narrow', 'Helvetica Neue', sans-serif;
+    --body: 'IBM Plex Sans', system-ui, -apple-system, 'Segoe UI', sans-serif;
+    --mono: 'IBM Plex Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+  }
+  *, *::before, *::after { box-sizing: border-box; }
+  body { background: var(--bg); color: var(--fg); font-family: var(--body); font-size: 17px; line-height: 1.55; }
+  .wrap {
+    max-width: 940px;
+    margin-inline: auto;
+    padding-left: max(20px, env(safe-area-inset-left, 0px));
+    padding-right: max(20px, env(safe-area-inset-right, 0px));
+  }
+  h1, h2, h3, p, ul, ol, figure { margin: 0; }
+  h1, h2 { font-family: var(--display); font-weight: 800; text-transform: uppercase; letter-spacing: 0.01em; line-height: 0.96; text-wrap: balance; }
+  a { color: var(--accent-2); text-underline-offset: 3px; }
+  a:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; border-radius: 3px; }
+  b { font-weight: 600; color: var(--fg); }
+  kbd {
+    font-family: var(--mono); font-size: 0.82em; padding: 1px 7px;
+    border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 4px;
+    background: var(--raised); color: var(--fg); white-space: nowrap;
+  }
+
+  .top { border-bottom: 1px solid var(--line); background: var(--raised); }
+  .top .wrap { padding-block: 40px 36px; display: grid; gap: 18px; }
+  .kicker { font-family: var(--mono); font-size: 0.76rem; letter-spacing: 0.12em; text-transform: uppercase; color: var(--accent-2); }
+  h1 { font-size: clamp(2.8rem, 8vw, 4.6rem); }
+  .top p { color: var(--muted); max-width: 36rem; }
+  .toc { display: flex; flex-wrap: wrap; gap: 8px; padding: 0; list-style: none; counter-reset: toc; }
+  .toc a {
+    display: inline-flex; gap: 8px; align-items: baseline; padding: 6px 12px;
+    border: 1px solid var(--line); border-radius: 6px; background: var(--bg);
+    color: var(--fg); text-decoration: none; font-size: 0.92rem;
+  }
+  .toc a::before { counter-increment: toc; content: counter(toc); font-family: var(--mono); font-size: 0.8em; color: var(--accent-2); }
+  .toc a:hover { border-color: var(--accent); }
+
+  main.wrap { padding-block: 56px 40px; display: grid; gap: 72px; counter-reset: step; }
+  .step { display: grid; gap: 22px; scroll-margin-top: 20px; }
+  .step__head { display: grid; grid-template-columns: auto minmax(0, 1fr); column-gap: 18px; row-gap: 10px; align-items: start; }
+  .step__head::before {
+    counter-increment: step; content: counter(step);
+    grid-row: span 2;
+    font-family: var(--display); font-weight: 800; font-size: 3.4rem; line-height: 0.82;
+    color: var(--accent-2); min-width: 1.1ch;
+  }
+  .step h2 { font-size: clamp(1.9rem, 4.5vw, 2.5rem); }
+  .step__head p, .step__head ul { color: var(--muted); max-width: 40rem; }
+  .step__head ul { padding-left: 1.1em; display: grid; gap: 4px; }
+  .step__head div { display: grid; gap: 10px; min-width: 0; }
+
+  .shot { display: grid; gap: 8px; min-width: 0; }
+  .shot img {
+    display: block; width: 100%; height: auto;
+    border: 1px solid var(--line); border-radius: 10px;
+    box-shadow: 0 18px 50px rgb(0 0 0 / 55%);
+    background: var(--sunken);
+  }
+  .shot figcaption { font-size: 0.86rem; color: var(--muted); }
+  .pair { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 20px; align-items: start; }
+  .pair--uneven { grid-template-columns: minmax(0, 2fr) minmax(0, 1fr); }
+
+  .keys { border-top: 1px solid var(--line); }
+  .keys .wrap { padding-block: 44px 64px; display: grid; gap: 22px; }
+  .keys h2 { font-size: 2rem; }
+  .keys dl { margin: 0; display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 12px 22px; align-items: baseline; max-width: 34rem; }
+  .keys dt { white-space: nowrap; }
+  .keys dd { margin: 0; color: var(--muted); }
+  .small { font-size: 0.84rem; color: var(--muted); max-width: 44rem; }
+
+  @media (max-width: 640px) {
+    .pair, .pair--uneven { grid-template-columns: minmax(0, 1fr); }
+    .step__head::before { font-size: 2.6rem; }
+    main.wrap { gap: 56px; }
+  }
+</style>
+
+<header class="top">
+  <div class="wrap">
+    <p class="kicker">OverWatch · User guide</p>
+    <h1>Up and watching in seven steps</h1>
+    <p>A quick tour of the main features, in the order you'll meet them.</p>
+    <ol class="toc">
+      <li><a href="#connect">Connect</a></li>
+      <li><a href="#cameras">Cameras</a></li>
+      <li><a href="#views">Build a View</a></li>
+      <li><a href="#live">Watch live</a></li>
+      <li><a href="#closer">Look closer</a></li>
+      <li><a href="#rotate">Rotating cells</a></li>
+      <li><a href="#doors">Doors</a></li>
+    </ol>
+  </div>
+</header>
+
+<main class="wrap">
+  <section class="step" id="connect">
+    <div class="step__head">
+      <h2>Connect to your console</h2>
+      <div>
+        <p>OverWatch opens on <b>Settings</b> the first time. Later, the gear at the top right brings you back.</p>
+        <ul>
+          <li>Enter your console's address and a Protect API key. Create the key in Protect under <b>Integrations</b>.</li>
+          <li>Accept the console's certificate, then press <b>Connect</b>.</li>
+        </ul>
+      </div>
+    </div>
+    <figure class="shot">
+      <img src="guide-img/settings.png" width="1800" height="556" alt="The Settings screen with the console address and a saved Protect API key.">
+      <figcaption>Once saved, a key is never shown again. The badges at the top show whether you're connected.</figcaption>
+    </figure>
+  </section>
+
+  <section class="step" id="cameras">
+    <div class="step__head">
+      <h2>Check your cameras</h2>
+      <div><p><b>Cameras</b> lists every camera on the console, with whether it's online and which stream qualities it offers.</p></div>
+    </div>
+    <figure class="shot">
+      <img src="guide-img/cameras.png" width="2240" height="1400" alt="The Cameras screen: a card per camera with a thumbnail, status, model and quality badges.">
+    </figure>
+  </section>
+
+  <section class="step" id="views">
+    <div class="step__head">
+      <h2>Build a View</h2>
+      <div>
+        <p>A View is a named grid of cameras. On <b>Live</b>, press <b>New View</b>.</p>
+        <ul>
+          <li>Pick a layout, or set the columns and rows yourself.</li>
+          <li>Drag cameras from the list onto cells.</li>
+          <li>Select neighbouring cells and press <b>Merge</b> to give one camera more room.</li>
+          <li>Press <b>Save</b>, then <b>Close</b>.</li>
+        </ul>
+      </div>
+    </div>
+    <figure class="shot">
+      <img src="guide-img/editor.png" width="2240" height="1400" alt="The View editor: the grid in the middle, display and quality options and the camera list on the right.">
+      <figcaption>The right-hand panel sets the View's shape, the gap between cells and its stream quality.</figcaption>
+    </figure>
+  </section>
+
+  <section class="step" id="live">
+    <div class="step__head">
+      <h2>Watch live</h2>
+      <div>
+        <p>Pick a View from the list, or press its number, <kbd>1</kbd> to <kbd>9</kbd>. OverWatch reopens on the View you used last.</p>
+        <p>Press <kbd>F</kbd> for <b>focus mode</b>, which hides everything but the video. Press it again to come back.</p>
+      </div>
+    </div>
+    <div class="pair">
+      <figure class="shot">
+        <img src="guide-img/live.png" width="2240" height="1400" alt="The Live screen showing the Perimeter View: six cameras, with the front door camera largest.">
+        <figcaption>A View on the Live screen.</figcaption>
+      </figure>
+      <figure class="shot">
+        <img src="guide-img/focus.png" width="2240" height="1400" alt="Focus mode: four cameras fill the whole window with no header or View list.">
+        <figcaption>Another View in focus mode.</figcaption>
+      </figure>
+    </div>
+  </section>
+
+  <section class="step" id="closer">
+    <div class="step__head">
+      <h2>Look closer</h2>
+      <div>
+        <p><b>Click a camera</b> to fill the window, and <b>scroll</b> to zoom in. Move the pointer to show the controls at the top right:</p>
+        <ul>
+          <li>Reset the zoom, or go back to the grid.</li>
+          <li>Unmute and set the volume. You hear one camera at a time.</li>
+          <li>Choose the stream quality: High, Medium or Low.</li>
+        </ul>
+      </div>
+    </div>
+    <figure class="shot">
+      <img src="guide-img/fill.png" width="2240" height="1400" alt="The front door camera filling the window, with zoom, grid, mute, volume and quality controls at the top right.">
+      <figcaption>In the grid, each cell has its own mute button and quality picker too.</figcaption>
+    </figure>
+  </section>
+
+  <section class="step" id="rotate">
+    <div class="step__head">
+      <h2>Rotate cameras in one cell</h2>
+      <div>
+        <p>A cell can hold several cameras. In the View editor, select the cell, open the <b>Cell</b> tab and add more cameras to it.</p>
+        <ul>
+          <li><b>Rotate every</b> cycles through them on a timer.</li>
+          <li><b>Switch on events</b> jumps to a camera when it sees motion.</li>
+        </ul>
+      </div>
+    </div>
+    <div class="pair pair--uneven">
+      <figure class="shot">
+        <img src="guide-img/editor-cell.png" width="2240" height="1400" alt="The View editor with one cell selected; the Cell tab lists its three cameras and the rotation options.">
+      </figure>
+      <figure class="shot">
+        <img src="guide-img/rotate.png" width="624" height="351" alt="A live cell showing previous and next arrows and the position 3/3.">
+        <figcaption>On the Live screen, the arrows step through a cell's cameras by hand.</figcaption>
+      </figure>
+    </div>
+  </section>
+
+  <section class="step" id="doors">
+    <div class="step__head">
+      <h2>Unlock doors</h2>
+      <div>
+        <p>This part is optional and needs UniFi Access. Turn on <b>Enable UniFi Access</b> in Settings and add an Access API token.</p>
+        <ul>
+          <li>On <b>Doors</b>, link each door to the cameras that watch it.</li>
+          <li>A linked camera shows a door button on the Live screen. <b>Hold it</b> to unlock the door.</li>
+          <li>The Doors screen can also lock or unlock any door, set a rule, or start a <b>lockdown</b> or <b>evacuation</b>. It asks you to confirm each one.</li>
+        </ul>
+      </div>
+    </div>
+    <div class="pair">
+      <figure class="shot">
+        <img src="guide-img/doors.png" width="2240" height="1400" alt="The Doors screen: a card per door with its lock state, actions and linked cameras.">
+        <figcaption>The padlock shows each door's lock state.</figcaption>
+      </figure>
+      <figure class="shot">
+        <img src="guide-img/hover.png" width="1264" height="718" alt="The front door camera in the grid, with the door button at the bottom centre.">
+        <figcaption>The door button sits at the bottom of a linked camera.</figcaption>
+      </figure>
+    </div>
+  </section>
+</main>
+
+<footer class="keys">
+  <div class="wrap">
+    <h2>Keys to remember</h2>
+    <dl>
+      <dt><kbd>1</kbd> – <kbd>9</kbd></dt><dd>Switch to that View</dd>
+      <dt><kbd>F</kbd></dt><dd>Focus mode on and off</dd>
+      <dt><kbd>M</kbd></dt><dd>Mute everything</dd>
+      <dt><kbd>Esc</kbd></dt><dd>Leave a filled camera and go back to the grid</dd>
+    </dl>
+    <p class="small">Something not working? <b>Help → Show Log Files</b> opens the folder with OverWatch's logs.</p>
+    <p class="small">Screens are from the running app. The camera pictures are illustrations, and the doors come from a test console.</p>
+  </div>
+</footer>
+</html>

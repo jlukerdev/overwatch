@@ -50,14 +50,6 @@ A full getting-started guide is coming.
 - OverWatch connects only to your console. Video is relayed by a bundled [go2rtc](https://github.com/AlexxIT/go2rtc) that listens on this computer only.
 - Every door unlock needs you to press a button, and each attempt is written to a local log.
 
-## Upgrading from View Protect
-
-OverWatch used to be called View Protect.
-
-- Your Views and settings carry over, because the data folder keeps its old name, `View Protect`. Don't delete it.
-- Uninstall the old "View Protect" app.
-- **macOS:** enter your Protect API key (and Access token) once more in Settings, because the app can't read the keys the old version saved. Afterwards you can delete the old "View Protect Safe Storage" item in Keychain Access.
-
 ## Building from source
 
 You need Node 24 or later.

@@ -63,7 +63,7 @@ app.setName(APP_NAME)
 // caches, Local State) follows `userData` because it is set before `ready`. A `--user-data-dir`
 // on the command line wins, so the blank-profile checks still get a blank profile (CLAUDE.md).
 // What does change on macOS is the keychain entry `safeStorage` uses, "<name> Safe Storage": the
-// stored API key and token become unreadable once and are re-entered in Settings (README).
+// stored API key and token become unreadable once and are re-entered in Settings (SPEC BRAND-5).
 const userDataDir = userDataOverride({
   appData: app.getPath('appData'),
   hasUserDataDirSwitch: app.commandLine.hasSwitch('user-data-dir'),

@@ -190,6 +190,15 @@ Things that can only be checked where the real Access hardware is. Run these bef
 
 ---
 
+## Phase 7 — v1.0.1
+Two small requests after v1.0.0 (user request 2026-11-19), shipped as **one task and one PR** (user decision 2026-11-19), with `package.json` at `1.0.1`.
+
+| # | Task |
+|---|---|
+| P7.1 | **v1.0.1: window recall + collapsible editor groups.** (1) **WIN-1:** the main window opens at the size and position it had when last closed. Size and position only: never reopened maximized or full screen (the normal bounds are what is kept); a saved spot no longer on a connected display falls back to the default (user decisions 2026-11-19). (2) **VIEW-3:** in the View editor's View tab, the Display and Quality groups each fold away with their own toggle, so the camera palette gets the room; both start expanded each time the editor opens (not remembered). Version `1.0.1` (BRAND-3) |
+
+---
+
 ## Future enhancements (after v1.0.0)
 Code signing + notarization · import Protect Live Views · Cloud Connector remote control/unlock · badge-in camera pop-up · auto-update (electron-updater) · two-way talk · multi-monitor / kiosk / launch at login · view import/export · door-link auto-suggest · PTZ · smart-detect type filters for auto-switch (person/vehicle only) · motion badge on cells · pre-warm when rotating off a missing camera's placeholder (P4.4 review, user decision 2026-11-16).
 

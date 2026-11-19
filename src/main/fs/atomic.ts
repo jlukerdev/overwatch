@@ -1,7 +1,10 @@
 // Crash-safe file writes for the main process. Shared by config/store.ts (config.json) and
 // secrets/secrets.ts (secrets.bin): both hold data whose loss costs the user real work — every
-// View (VIEW-6) or the API key they have to go and re-create (CON-1).
+// View (VIEW-6) or the API key they have to go and re-create (CON-1). The synchronous twin,
+// `writeFileAtomicSync`, is for the window's size and place (windowState.ts, P7.1), whose last save
+// runs from the window's `close` event and must be on disk before the process can exit.
 import { randomUUID } from 'node:crypto'
+import { closeSync, fsyncSync, openSync, renameSync, unlinkSync, writeFileSync } from 'node:fs'
 import { open, rename, unlink } from 'node:fs/promises'
 
 /**
@@ -31,6 +34,36 @@ export async function writeFileAtomic(
     await rename(tmp, target)
   } catch (err) {
     await removeQuietly(tmp)
+    throw err
+  }
+}
+
+/**
+ * `writeFileAtomic`, synchronously: the same temp-file-and-rename in the same directory, for a
+ * small file that has to be written before the caller returns (a save during shutdown, where a
+ * pending promise may never settle).
+ */
+export function writeFileAtomicSync(
+  target: string,
+  data: string | Uint8Array,
+  mode?: number,
+): void {
+  const tmp = `${target}.tmp-${randomUUID()}`
+  try {
+    const fd = openSync(tmp, 'wx', mode)
+    try {
+      writeFileSync(fd, data)
+      fsyncSync(fd)
+    } finally {
+      closeSync(fd)
+    }
+    renameSync(tmp, target)
+  } catch (err) {
+    try {
+      unlinkSync(tmp)
+    } catch {
+      // Already gone, or never created.
+    }
     throw err
   }
 }

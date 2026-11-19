@@ -361,7 +361,8 @@
 
 /*
  * The open tab's panel: as tall as its content, up to a little over half the column, then it
- * scrolls, so the palette under it always keeps room. Both panels stay mounted; `hidden` must
+ * scrolls, so the palette under it always keeps room (and takes what a folded View group gives
+ * back, P7.1). Both panels stay mounted; `hidden` must
  * beat the `display` below.
  */
 .viewEditor__tabPanel {
@@ -391,8 +392,26 @@
   gap: 1.1rem;
 }
 
-/* A `fieldset` drawn as a plain section: the caption, then one control per line. */
+/* One foldable group (P7.1): the caption button, then (while open) its controls. */
 .viewEditor__section {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  min-width: 0;
+}
+
+/* The caption's `.disclosure` button (styles.css), its padding pulled back out so the text still
+   lines up with the controls under it. Scoped, so it beats `.disclosure`'s width whatever order
+   the stylesheets load in. */
+.viewEditor__section .viewEditor__sectionToggle {
+  width: calc(100% + 0.8rem);
+  min-height: 1.9rem;
+  margin: -0.35rem -0.4rem;
+  padding: 0.35rem 0.4rem;
+}
+
+/* The group's `fieldset`, drawn as plain lines: one control per line. */
+.viewEditor__sectionBody {
   display: flex;
   flex-direction: column;
   gap: 0.6rem;
@@ -400,11 +419,6 @@
   margin: 0;
   padding: 0;
   border: 0;
-}
-
-.viewEditor__section > legend {
-  margin-bottom: 0.5rem;
-  padding: 0;
 }
 
 /* A control with companions on its line: the aspect select and its w:h pair, the gap slider and

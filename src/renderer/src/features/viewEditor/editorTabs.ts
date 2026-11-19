@@ -46,3 +46,23 @@ export function tabForKey(current: EditorTab, key: string): EditorTab | null {
 export function tabAfterSelect(current: EditorTab, hadSelection: boolean): EditorTab {
   return hadSelection ? current : 'cell'
 }
+
+/**
+ * The View tab's two groups (P7.1, user request 2026-11-19): each folds away on its own, so the
+ * camera palette under the tab gets the room. Not remembered: the editor starts with both open
+ * (`ALL_GROUPS_OPEN`) every time it opens, and keeps the choice while it stays open (across the
+ * View | Cell tabs, a Discard and a switch of View).
+ */
+export const VIEW_SETTINGS_GROUPS = ['display', 'quality'] as const
+
+export type ViewSettingsGroup = (typeof VIEW_SETTINGS_GROUPS)[number]
+
+/** Which of the View tab's groups are open. */
+export type OpenGroups = Readonly<Record<ViewSettingsGroup, boolean>>
+
+export const ALL_GROUPS_OPEN: OpenGroups = { display: true, quality: true }
+
+/** `open` with `group` folded if it was open, or opened if it was folded; the other untouched. */
+export function toggleGroup(open: OpenGroups, group: ViewSettingsGroup): OpenGroups {
+  return { ...open, [group]: !open[group] }
+}

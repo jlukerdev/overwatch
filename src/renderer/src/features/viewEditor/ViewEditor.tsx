@@ -86,7 +86,14 @@ import { isTextEntryTarget, keyEventTarget } from '../viewSwitcher/viewShortcut'
 import { StatusLine } from '../../ui/StatusLine'
 import { EditorCanvas } from './EditorCanvas'
 import { editorPanelId, EditorTabList, editorTabId } from './EditorTabList'
-import { tabAfterSelect, type EditorTab } from './editorTabs'
+import {
+  ALL_GROUPS_OPEN,
+  tabAfterSelect,
+  toggleGroup,
+  type EditorTab,
+  type OpenGroups,
+  type ViewSettingsGroup,
+} from './editorTabs'
 import {
   cellSnapshot,
   editorRetryPlan,
@@ -139,6 +146,9 @@ export function ViewEditor({ viewId, onOpen, onClose }: ViewEditorProps): JSX.El
   const cameras = useAppStore((s) => s.cameras)
   // A failed Delete, shown by the editor it moved back to (`initialError`).
   const [deleteError, setDeleteError] = useState<string | null>(null)
+  // Which of the View tab's groups are open (P7.1, ./editorTabs). Held here, above the per-View
+  // DraftEditor, so it lasts while the editor stays open and starts with both open when it opens.
+  const [openGroups, setOpenGroups] = useState<OpenGroups>(ALL_GROUPS_OPEN)
   const mounted = useRef(true)
   useEffect(() => {
     mounted.current = true
@@ -179,6 +189,10 @@ export function ViewEditor({ viewId, onOpen, onClose }: ViewEditorProps): JSX.El
       views={views}
       cameras={cameras}
       initialError={deleteError}
+      openGroups={openGroups}
+      onToggleGroup={(group) => {
+        setOpenGroups((current) => toggleGroup(current, group))
+      }}
       onOpen={open}
       onDelete={remove}
       onClose={onClose}
@@ -258,6 +272,9 @@ interface DraftEditorProps {
   readonly cameras: readonly Camera[]
   /** An error to open with (a failed Delete of this View). */
   readonly initialError: string | null
+  /** Which of the View tab's groups are open, and how to fold one (kept by ViewEditor). */
+  readonly openGroups: OpenGroups
+  readonly onToggleGroup: (group: ViewSettingsGroup) => void
   /** Switch the editor to another View (no questions asked; the caller already asked). */
   readonly onOpen: (id: string) => void
   /** Delete this View (already confirmed); the caller moves the editor and reports a refusal. */
@@ -276,6 +293,8 @@ function DraftEditor({
   views,
   cameras,
   initialError,
+  openGroups,
+  onToggleGroup,
   onOpen,
   onDelete,
   onClose,
@@ -781,7 +800,13 @@ function DraftEditor({
           aria-labelledby={editorTabId(panelId, 'view')}
           hidden={tab !== 'view'}
         >
-          <EditorViewSettings key={resetCount} draft={draft} onEdit={edit} />
+          <EditorViewSettings
+            key={resetCount}
+            draft={draft}
+            onEdit={edit}
+            openGroups={openGroups}
+            onToggleGroup={onToggleGroup}
+          />
         </div>
         <div
           className="viewEditor__tabPanel"

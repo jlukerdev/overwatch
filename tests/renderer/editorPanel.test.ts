@@ -5,14 +5,17 @@
 // What these tests protect: the arrow keys walk the View | Cell tabs and wrap; only the first pick
 // of a cell brings the Cell tab forward, so the user is never yanked off the View tab afterwards;
 // the palette draws a thumbnail only from what the cache already holds, for a camera that can have
-// one; and a toolbar button that cannot act on the selection says why.
+// one; a toolbar button that cannot act on the selection says why; and the View tab's Display and
+// Quality groups start open and fold independently (P7.1).
 import type { Camera } from '@shared/ipc'
 import { describe, expect, it } from 'vitest'
 import type { ThumbnailEntry } from '../../src/renderer/src/state/camerasStore'
 import {
+  ALL_GROUPS_OPEN,
   EDITOR_TABS,
   tabAfterSelect,
   tabForKey,
+  toggleGroup,
 } from '../../src/renderer/src/features/viewEditor/editorTabs'
 import {
   paletteSnapshots,
@@ -72,6 +75,24 @@ describe('tabAfterSelect', () => {
   it('leaves the tab alone when something was selected already', () => {
     expect(tabAfterSelect('view', true)).toBe('view')
     expect(tabAfterSelect('cell', true)).toBe('cell')
+  })
+})
+
+describe('toggleGroup (P7.1)', () => {
+  it('starts with both groups open', () => {
+    expect(ALL_GROUPS_OPEN).toEqual({ display: true, quality: true })
+  })
+
+  it('folds one group and leaves the other alone', () => {
+    const folded = toggleGroup(ALL_GROUPS_OPEN, 'display')
+    expect(folded).toEqual({ display: false, quality: true })
+    expect(toggleGroup(folded, 'quality')).toEqual({ display: false, quality: false })
+  })
+
+  it('opens a folded group again, without changing what it was given', () => {
+    const folded = toggleGroup(ALL_GROUPS_OPEN, 'quality')
+    expect(toggleGroup(folded, 'quality')).toEqual(ALL_GROUPS_OPEN)
+    expect(ALL_GROUPS_OPEN).toEqual({ display: true, quality: true })
   })
 })
 

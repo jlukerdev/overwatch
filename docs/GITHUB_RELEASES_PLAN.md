@@ -10,7 +10,7 @@ Notes for moving OverWatch (View Protect) to its own public GitHub repo and buil
   - None are signed with a certificate. The macOS apps are ad-hoc signed.
 - **Checks:** `npm run lint`, `npm run format:check`, `npm run typecheck` (run inside `npm run build`), `npm test` (Vitest).
 - **Node:** 24, from `.nvmrc`. The scripts run `.ts` files directly, so the Node version matters.
-- **Version:** `package.json` is `1.0.0`. electron-builder takes the installer version from it.
+- **Version:** `package.json` is `1.0.1`. electron-builder takes the installer version from it.
 - **README:** already tells users to download from the releases and explains the Gatekeeper/SmartScreen first-launch steps.
 
 ## 1. Before the move

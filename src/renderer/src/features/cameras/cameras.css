@@ -279,24 +279,9 @@
 }
 
 /*
- * QUAL-1's two selects in the Settings bar (./StreamsSettings.tsx; the bar itself is the shared
- * `.settingsBar`): side by side, one column when there is no room for two.
+ * QUAL-1's two selects in the Settings bar (./StreamsSettings.tsx): rows of the shared
+ * `.settingsBar__row`, as the Doors screen's polling. As wide as the longest option.
  */
-.cameras__streamsGrid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 0 1rem;
-  max-width: 32rem;
-}
-
-@media (width <= 40rem) {
-  .cameras__streamsGrid {
-    grid-template-columns: 1fr;
-  }
-}
-
-/* As wide as their longest option, not the whole column. */
 .cameras__streamsSelect {
-  align-self: flex-start;
-  min-width: 10rem;
+  width: 9rem;
 }

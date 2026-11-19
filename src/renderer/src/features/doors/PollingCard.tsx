@@ -73,13 +73,13 @@ export function PollingCard({ polling }: { polling: AccessPolling }): JSX.Elemen
         }}
       >
         {POLLING_GROUPS.map((group) => (
-          <fieldset key={group.title} className="doors__pollingGroup">
-            <legend className="doors__pollingLegend">{group.title}</legend>
+          <fieldset key={group.title} className="settingsBar__group">
+            <legend className="settingsBar__legend">{group.title}</legend>
             {group.fields.map((field) => {
               const id = `doors-polling-${field}`
               const error = pollingFieldError(field, draft[field])
               return (
-                <div key={field} className="doors__pollingRow">
+                <div key={field} className="settingsBar__row">
                   <label className="field__label" htmlFor={id}>
                     {POLLING_LABELS[field]}
                   </label>

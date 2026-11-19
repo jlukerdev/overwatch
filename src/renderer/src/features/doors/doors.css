@@ -213,42 +213,10 @@
 }
 
 /*
- * The Polling card's body, inside the shared `.settingsBar` (styles.css, ui/SettingsBar.tsx): a
- * column of rows, each a label, its seconds input and one line of help to the
- * right (user decision 2026-11-19). The three lock-state intervals share one group and its title.
+ * The Polling card's body is the shared `.settingsBar__group` / `__legend` / `__row` (styles.css):
+ * a column of rows, each a label, its seconds input and one line of help to the right (user
+ * decision 2026-11-19). The three lock-state intervals share one group and its title.
  */
-.doors__pollingGroup {
-  min-width: 0;
-  margin: 0 0 0.75rem;
-  padding: 0;
-  border: 0;
-}
-
-.doors__pollingLegend {
-  margin-bottom: 0.4rem;
-  padding: 0;
-  font-weight: 600;
-}
-
-.doors__pollingRow {
-  display: grid;
-  grid-template-columns: minmax(0, 15rem) 5rem minmax(0, 1fr);
-  align-items: center;
-  gap: 0.25rem 0.75rem;
-  margin-bottom: 0.4rem;
-}
-
-/* Too narrow for three columns: the help goes under the input. */
-@media (width <= 40rem) {
-  .doors__pollingRow {
-    grid-template-columns: minmax(0, 1fr) 5rem;
-  }
-
-  .doors__pollingRow > :last-child {
-    grid-column: 1 / -1;
-  }
-}
-
 .doors__pollingInput {
   width: 5rem;
 }

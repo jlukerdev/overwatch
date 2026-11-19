@@ -845,6 +845,43 @@ body,
   overflow: auto;
 }
 
+/*
+ * Inside the body: a column of rows, each a label, its control and one line of help (or the
+ * row's error) to the right (user decision 2026-11-19), in titled groups where a screen needs them.
+ * The control column is as wide as the screen's control (`auto`).
+ */
+.settingsBar__group {
+  min-width: 0;
+  margin: 0 0 0.75rem;
+  padding: 0;
+  border: 0;
+}
+
+.settingsBar__legend {
+  margin-bottom: 0.4rem;
+  padding: 0;
+  font-weight: 600;
+}
+
+.settingsBar__row {
+  display: grid;
+  grid-template-columns: minmax(0, 15rem) auto minmax(0, 1fr);
+  align-items: center;
+  gap: 0.25rem 0.75rem;
+  margin-bottom: 0.4rem;
+}
+
+/* Too narrow for three columns: the help goes under the control. */
+@media (width <= 40rem) {
+  .settingsBar__row {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .settingsBar__row > :last-child {
+    grid-column: 1 / -1;
+  }
+}
+
 /* --- dialog (ui/ConfirmDialog.tsx) -------------------------------------------------------------- */
 
 .dialog {

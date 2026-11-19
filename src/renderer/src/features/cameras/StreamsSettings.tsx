@@ -48,6 +48,7 @@ export function StreamsSettings({ streams }: { streams: Settings['streams'] }): 
       value={streams[field]}
       field={field}
       label={label}
+      help={STREAMS_HELP[field]}
       disabled={saving}
       error={saveError?.field === field ? saveError.error : null}
       onChange={(value) => {
@@ -58,27 +59,33 @@ export function StreamsSettings({ streams }: { streams: Settings['streams'] }): 
 
   return (
     <SettingsBar id="cameras-settings">
-      <p className="card__hint">
-        Streams: the default quality in the grid and when a camera fills the window. A View can set
-        its own, and a cell its own grid quality.
-      </p>
-      <div className="cameras__streamsGrid">
+      <p className="card__hint">Streams: the quality cameras play at unless a View sets its own.</p>
+      <fieldset className="settingsBar__group">
+        <legend className="settingsBar__legend">Default quality</legend>
         {select('defaultGridQuality', 'Grid quality')}
         {select('defaultFillQuality', 'Fill quality')}
-      </div>
+      </fieldset>
     </SettingsBar>
   )
 }
 
+/** One short line to the right of a row's select, as the Doors screen's polling rows. */
+const STREAMS_HELP: Readonly<Record<StreamsField, string>> = {
+  defaultGridQuality: 'Each camera in the grid. A cell can also set its own.',
+  defaultFillQuality: 'A camera that fills the window.',
+}
+
 /**
- * One QUAL-1 default. Controlled by the stored value, not by a draft: the select shows what main
- * holds, so a failed save snaps back to the stored quality and says why underneath. The saving
+ * One QUAL-1 default, as a row of the shared `.settingsBar__row`: label, select, then its help or,
+ * after a failed save, the error in its place. Controlled by the stored value, not by a draft: the select shows what main
+ * holds, so a failed save snaps back to the stored quality and says why beside it. The saving
  * itself is `StreamsSettings`', which serialises the two selects.
  */
 function QualitySelect({
   value,
   field,
   label,
+  help,
   disabled,
   error,
   onChange,
@@ -86,13 +93,14 @@ function QualitySelect({
   value: Settings['streams'][StreamsField]
   field: StreamsField
   label: string
+  help: string
   disabled: boolean
   error: IpcError | null
   onChange: (value: string) => void
 }): JSX.Element {
   const id = `cameras-streams-${field}`
   return (
-    <div className="field">
+    <div className="settingsBar__row">
       <label className="field__label" htmlFor={id}>
         {label}
       </label>
@@ -108,7 +116,9 @@ function QualitySelect({
       >
         <QualityOptions />
       </select>
-      {error === null ? null : (
+      {error === null ? (
+        <span className="field__hint">{help}</span>
+      ) : (
         <StatusLine kind="error" role="alert">
           {error.message}
         </StatusLine>

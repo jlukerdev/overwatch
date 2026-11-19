@@ -33,8 +33,8 @@
 //
 // A screen with no grid (first load, setup missing, not connected, no cameras) is the shared
 // centred `.emptyState` (styles.css), the setup one with a checklist of what is done and what is
-// missing (../../state/setupChecklist.ts). There is no Settings button in the header: the app nav has one,
-// and every state that needs Settings offers "Open settings" itself.
+// missing (../../state/setupChecklist.ts). There is no Settings button in this screen's header: the app header
+// ends with one (the gear, P5.8), and every state that needs Settings offers "Open settings" itself.
 //
 // At the bottom of every state but "Checking the console…", the screen's own Settings bar
 // (./StreamsSettings, P5.7): QUAL-1's app-wide grid and fill quality, closed by default.

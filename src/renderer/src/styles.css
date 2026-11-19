@@ -167,6 +167,19 @@ body,
   color: var(--fg);
 }
 
+/*
+ * An icon-only header button (the Settings gear at the header's end, P5.8): a square the height
+ * of a nav button, with the same states and the same active look.
+ */
+.app__navButton--icon {
+  flex-shrink: 0;
+  justify-content: center;
+  /* One text line plus the nav button's padding and border, so it matches a labelled one. */
+  width: calc(1lh + 0.6rem + 2px);
+  height: calc(1lh + 0.6rem + 2px);
+  padding: 0;
+}
+
 /* The active screen's icon takes the accent, so where you are reads at a glance. */
 .app__navButton--active .icon {
   color: var(--accent);

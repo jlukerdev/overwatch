@@ -11,9 +11,10 @@
  */
 
 /*
- * One centred column of readable width (P5.8): the keystore warning when there is no keystore,
- * the Console group, and the app version at the foot. It scrolls with `.app__body`, as the other
- * screens do; with a single group there is no section sidebar.
+ * One left-aligned column of readable width (P5.8): the keystore warning when there is no
+ * keystore, the Console group's controls straight on the screen (no card around them, user
+ * feedback 2026-11-19), and the app version at the foot. It scrolls with `.app__body`, as the
+ * other screens do; with a single group there is no section sidebar.
  */
 .settings {
   display: flex;
@@ -21,7 +22,6 @@
   gap: 1.25rem;
   width: 100%;
   max-width: 64rem;
-  margin: 0 auto;
   padding: var(--screen-pad-top) var(--screen-pad-x) var(--screen-pad-bottom);
 }
 

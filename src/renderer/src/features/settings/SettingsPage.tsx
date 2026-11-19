@@ -22,7 +22,7 @@
 // (features/doors/), each door's cameras on the door's own card. The form's unsaved Access checkbox
 // reveals the token and API-root fields, but nothing that would make an Access call (DOOR-0).
 //
-// Layout (P5.8): one centred column of readable width, scrolling with the app body like the other
+// Layout (P5.8): one left-aligned column of readable width, the Console controls straight on the screen with no card (user feedback 2026-11-19), scrolling with the app body like the other
 // screens — the keystore warning (only without a keystore), then **Console** (address and
 // credentials, then Certificate, then Connection), and the app version quietly at the foot. With one
 // group there is no section sidebar (the P5.3 cleanup's sidebar went in P5.8), and the screen is
@@ -154,7 +154,7 @@ function ConsoleCard({
   const dirty = isConsoleDirty(draft, settings)
 
   return (
-    <section className="card" aria-labelledby="settings-console-title">
+    <section aria-labelledby="settings-console-title">
       <h2 className="card__title settings__groupTitle" id="settings-console-title">
         Console
       </h2>

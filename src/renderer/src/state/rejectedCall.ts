@@ -6,7 +6,7 @@ import type { IpcError } from '@shared/ipc'
 export function rejectedCall(err: unknown): IpcError {
   return {
     kind: 'internal',
-    message: err instanceof Error ? err.message : 'An unexpected error occurred in View Protect.',
+    message: err instanceof Error ? err.message : 'An unexpected error occurred in OverWatch.',
     endpoint: null,
     retryable: true,
   }

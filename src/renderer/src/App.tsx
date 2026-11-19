@@ -44,7 +44,15 @@ import { navClass } from './navClass'
 import { useAppStore } from './state/appStore'
 import { blockUnload, confirmLeave } from './state/unsavedGuard'
 import { ConfirmHost, confirmDialog } from './ui/ConfirmDialog'
-import { AlertIcon, CameraIcon, DoorIcon, GearIcon, GridIcon, RefreshIcon } from './ui/icons'
+import {
+  AlertIcon,
+  AppIcon,
+  CameraIcon,
+  DoorIcon,
+  GearIcon,
+  GridIcon,
+  RefreshIcon,
+} from './ui/icons'
 import { ToastHost } from './ui/Toast'
 
 export function App(): JSX.Element {
@@ -130,7 +138,7 @@ export function App(): JSX.Element {
           <span className="emptyState__icon emptyState__icon--error">
             <AlertIcon />
           </span>
-          <h1 className="app__title">View Protect could not start</h1>
+          <h1 className="app__title">OverWatch could not start</h1>
           <p className="emptyState__hint" role="alert">
             {loadError?.message ?? 'The app could not read its own state from the main process.'}
           </p>
@@ -150,7 +158,10 @@ export function App(): JSX.Element {
       {/* Focus mode: no header at all, so nothing hidden is still reachable by Tab. */}
       {focusMode ? null : (
         <header className="app__header">
-          <h1 className="app__brand">View Protect</h1>
+          <h1 className="app__brand">
+            <AppIcon />
+            OverWatch
+          </h1>
           <nav className="app__nav">
             <button
               type="button"

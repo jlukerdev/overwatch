@@ -204,7 +204,7 @@ describe('describeRenameError', () => {
     const err = describeRenameError(original, binPath)
     expect(err).toBeInstanceOf(Error)
     expect((err as Error).message).toMatch(/probably in use/)
-    expect((err as Error).message).toMatch(/Quit View Protect/)
+    expect((err as Error).message).toMatch(/Quit OverWatch/)
     expect((err as Error).message).toContain(code)
     expect((err as Error).cause).toBe(original)
   })

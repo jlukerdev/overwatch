@@ -110,10 +110,50 @@ body,
 }
 
 .app__brand {
+  display: flex;
   flex-shrink: 0;
+  align-items: center;
+  gap: 0.5rem;
   margin: 0;
   font-size: var(--font-md);
   font-weight: 600;
+}
+
+/* The app icon (ui/icons.tsx AppIcon), coloured from tokens like resources/icons/icon.svg. */
+.appIcon {
+  flex-shrink: 0;
+  width: 1.5rem;
+  height: 1.5rem;
+}
+
+.appIcon__tile {
+  fill: var(--bg);
+  stroke: var(--border);
+  stroke-width: 12;
+}
+
+.appIcon__tower {
+  fill: var(--fg);
+}
+
+.appIcon__legs {
+  fill: none;
+  stroke: var(--fg);
+  stroke-linecap: round;
+}
+
+.appIcon__window {
+  fill: var(--accent);
+}
+
+.appIcon__beamStart {
+  stop-color: var(--accent-hover);
+  stop-opacity: 0.6;
+}
+
+.appIcon__beamEnd {
+  stop-color: var(--accent);
+  stop-opacity: 0;
 }
 
 .app__nav {

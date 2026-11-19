@@ -126,7 +126,7 @@ export function toIpcError(err: unknown, fallback: { endpoint?: string | null } 
   // but the stack and the cause chain stay in main's log, where they cannot leak a path to the UI.
   return {
     kind: 'internal',
-    message: err instanceof Error ? err.message : 'An unexpected error occurred in View Protect.',
+    message: err instanceof Error ? err.message : 'An unexpected error occurred in OverWatch.',
     endpoint: where,
     retryable: false,
   }

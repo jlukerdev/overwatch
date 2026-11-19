@@ -168,7 +168,7 @@ export function createStreamRegistry(options: StreamRegistryOptions): StreamRegi
     const camera = options.cameras().find((c) => c.id === cameraId)
     if (camera === undefined) {
       throw new StreamRegistryError(
-        `No camera with id ${cameraId} is in View Protect's camera list, so there is no stream to ` +
+        `No camera with id ${cameraId} is in OverWatch's camera list, so there is no stream to ` +
           'open. Reconnect to the console to re-read the cameras.',
         // Retryable: the inventory may simply not have been read yet (CAM-1).
         { kind: 'not-found', retryable: true },
@@ -216,7 +216,7 @@ export function createStreamRegistry(options: StreamRegistryOptions): StreamRegi
     const host = options.consoleHost()
     if (host === null) {
       throw new StreamRegistryError(
-        'No console address is configured, so View Protect cannot open a stream. Enter the ' +
+        'No console address is configured, so OverWatch cannot open a stream. Enter the ' +
           "console's address in Settings (CON-1).",
         { kind: 'not-configured' },
       )
@@ -237,7 +237,7 @@ export function createStreamRegistry(options: StreamRegistryOptions): StreamRegi
       // The URL itself is never quoted: it is a credential (CON-2, NFR-9).
       throw new StreamRegistryError(
         `The stream URL the console returned for ${describe(cameraId, quality)} does not point at ` +
-          `the pinned console host (${host}), so View Protect will not open it (R4).`,
+          `the pinned console host (${host}), so OverWatch will not open it (R4).`,
         { kind: 'invalid-response' },
       )
     }
@@ -251,7 +251,7 @@ export function createStreamRegistry(options: StreamRegistryOptions): StreamRegi
     } catch (err) {
       log(`go2rtc could not be started: ${err instanceof Error ? err.message : String(err)}`)
       throw new StreamRegistryError(
-        'The local video gateway (go2rtc) is not running, so there is no video yet. View Protect ' +
+        'The local video gateway (go2rtc) is not running, so there is no video yet. OverWatch ' +
           'keeps trying to start it.',
         { kind: 'gateway-down', retryable: true },
       )
@@ -294,7 +294,7 @@ export function createStreamRegistry(options: StreamRegistryOptions): StreamRegi
       log(`go2rtc rejected stream ${name}: ${err instanceof Error ? err.message : String(err)}`)
       throw new StreamRegistryError(
         'The local video gateway (go2rtc) did not accept the stream, so there is no video yet. ' +
-          'View Protect will try again.',
+          'OverWatch will try again.',
         { kind: 'gateway-down', retryable: true },
       )
     }

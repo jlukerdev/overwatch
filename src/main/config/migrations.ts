@@ -131,7 +131,7 @@ export function migrateConfig(
       ok: false,
       reason: 'newer-version',
       message:
-        `config was written by a newer version of View Protect (schemaVersion ${String(fromVersion)}, ` +
+        `config was written by a newer version of OverWatch (schemaVersion ${String(fromVersion)}, ` +
         `this build knows ${String(targetVersion)}). Migrating it down would discard its newer fields.`,
     }
   }

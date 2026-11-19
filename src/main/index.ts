@@ -1,11 +1,14 @@
 // App entry: window creation, single-instance lock, lifecycle, and the one place where the
 // main-process services are assembled from their parts (config, secrets, TLS pins, the shared
 // Protect request throttle and the two API clients).
+import { existsSync } from 'node:fs'
 import { basename, join } from 'node:path'
-import { app, BrowserWindow, dialog, ipcMain, safeStorage, session } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, Menu, safeStorage, session } from 'electron'
 import { IPC_EVENTS } from '@shared/ipc'
 import type { View } from '@shared/models'
 import { STREAM_RUNTIME_DOWN, type StreamRuntime } from '@shared/streams'
+import { buildAppMenuTemplate } from './appMenu'
+import { APP_NAME, appIconPath, userDataOverride } from './branding'
 import { createAccessClient, type AccessClient } from './access/client'
 import type { DoorNotificationHandlers } from './access/doorStateMonitor'
 import { accessNotificationsUrl, createAccessNotifications } from './access/notifications'
@@ -42,11 +45,30 @@ import { createPinRegistry, type PinRegistry } from './tls/pinning'
 // dev` strips it (scripts/electron-vite.ts) — this catches a direct `electron .` launch.
 if (process.env.ELECTRON_RUN_AS_NODE !== undefined && process.env.ELECTRON_RUN_AS_NODE !== '') {
   console.error(
-    'View Protect is being run as a Node script, not as an Electron app, because ' +
+    'OverWatch is being run as a Node script, not as an Electron app, because ' +
       'ELECTRON_RUN_AS_NODE is set in this environment. Unset it and start the app again.',
   )
   process.exit(1)
 }
+
+// P6.1 branding (BRAND-1, BRAND-5), before anything reads a path and before `ready`. The name is set
+// here rather than left to package.json's `productName` so an unpackaged run (`electron .`, which
+// also reads it) and the packaged app agree, and so the menus, the About panel and `app.getName()`
+// say OverWatch from the first line on.
+app.setName(APP_NAME)
+// The rename must not move the user's data. Electron's default `userData` is `<appData>/<productName>`,
+// which is now `<appData>/OverWatch`; pointing it back at `<appData>/View Protect` keeps the Views,
+// settings, accepted certificate pins, `secrets.bin` and — on Windows — the DPAPI-protected key in
+// Chromium's `Local State` that decrypts it (the G6 "data kept" check). `sessionData` (Chromium's
+// caches, Local State) follows `userData` because it is set before `ready`. A `--user-data-dir`
+// on the command line wins, so the blank-profile checks still get a blank profile (CLAUDE.md).
+// What does change on macOS is the keychain entry `safeStorage` uses, "<name> Safe Storage": the
+// stored API key and token become unreadable once and are re-entered in Settings (SPEC BRAND-5).
+const userDataDir = userDataOverride({
+  appData: app.getPath('appData'),
+  hasUserDataDirSwitch: app.commandLine.hasSwitch('user-data-dir'),
+})
+if (userDataDir !== null) app.setPath('userData', userDataDir)
 
 // P2.5 perf harness (`npm run perf`): on only with VP_PERF_QUALITY set in an unpackaged build. It
 // overrides the grid quality and the Views the renderer is shown (in memory, never saved) and
@@ -512,7 +534,55 @@ const navigationOptions = { devUrl: rendererDevUrl, rendererIndexPath }
 /** Chromium net error for a load that was aborted (e.g. superseded by another navigation). */
 const ERR_ABORTED = -3
 
+/**
+ * The PNG app icon (BRAND-4), or `undefined` if it is missing from this build. Resolved once, in
+ * `applyBranding`, and reused by every window.
+ */
+let appIcon: string | undefined
+
+function resolveAppIcon(): string | undefined {
+  const path = appIconPath({
+    isPackaged: app.isPackaged,
+    mainDir: __dirname,
+    resourcesPath: process.resourcesPath,
+  })
+  if (existsSync(path)) return path
+  console.warn(`[branding] App icon not found at ${path}; using Electron's.`)
+  return undefined
+}
+
+/**
+ * BRAND-2/3: OverWatch's own menu instead of Electron's default, and the About panel (name and
+ * version, no copyright). Called once, at `ready`, before the window opens.
+ */
+function applyBranding(): void {
+  const isMac = process.platform === 'darwin'
+  Menu.setApplicationMenu(
+    Menu.buildFromTemplate(
+      buildAppMenuTemplate({ isMac, isPackaged: app.isPackaged, appName: APP_NAME }),
+    ),
+  )
+  appIcon = resolveAppIcon()
+  const icon = appIcon
+  app.setAboutPanelOptions({
+    applicationName: APP_NAME,
+    applicationVersion: app.getVersion(),
+    // macOS shows `version` in brackets after the version as the build number. Unpackaged that is
+    // Electron's own CFBundleVersion (e.g. "45.3.1"), which reads like a second app version; empty
+    // leaves just "Version 1.0.0".
+    version: '',
+    // BRAND-3: no copyright line. Explicitly empty, because macOS otherwise falls back to the
+    // bundle's NSHumanReadableCopyright, which electron-builder fills in by default.
+    copyright: '',
+    // Windows/Linux only; macOS takes the bundle's icon.
+    ...(icon === undefined || isMac ? {} : { iconPath: icon }),
+  })
+  // A packaged macOS app shows the bundle's .icns; an unpackaged run would show Electron's.
+  if (isMac && !app.isPackaged && icon !== undefined) app.dock?.setIcon(icon)
+}
+
 function createWindow(): void {
+  const icon = process.platform === 'darwin' ? undefined : appIcon
   const win = new BrowserWindow({
     width: 1280,
     height: 800,
@@ -520,7 +590,9 @@ function createWindow(): void {
     minHeight: 400,
     show: false,
     backgroundColor: '#0b0d10',
-    title: 'View Protect',
+    title: APP_NAME,
+    // Windows/Linux window and taskbar icon (BRAND-4); macOS uses the app's own.
+    ...(icon === undefined ? {} : { icon }),
     autoHideMenuBar: true,
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
@@ -664,6 +736,12 @@ if (!app.requestSingleInstanceLock()) {
   app
     .whenReady()
     .then(async () => {
+      // A branding failure (menu, About panel, Dock icon) is cosmetic: log it and open the window.
+      try {
+        applyBranding()
+      } catch (err: unknown) {
+        console.error('[branding] Failed to apply:', err)
+      }
       // Before the window, so a recovered config or an unavailable keystore is reported at launch.
       // A failure here must not stop the app: the user needs Settings to fix whatever it was.
       await startServices().catch((err: unknown) => {

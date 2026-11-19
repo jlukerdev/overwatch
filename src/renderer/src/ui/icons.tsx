@@ -5,7 +5,7 @@
 // visible text or, for an icon-only button, an `aria-label`. An icon adds no text node, so a
 // button's `textContent` is still exactly its label (the P2.5 perf harness clicks nav buttons by
 // text).
-import type { JSX, ReactNode } from 'react'
+import { useId, type JSX, type ReactNode } from 'react'
 
 interface IconProps {
   /** Extra classes after `icon`. */
@@ -170,6 +170,52 @@ export function GearIcon(props: IconProps): JSX.Element {
       <path d="M6.21 3.33L6.48 1.42H9.52L9.79 3.33A5 5 0 0 1 11.15 4.11L12.94 3.4L14.46 6.03L12.94 7.22A5 5 0 0 1 12.94 8.78L14.46 9.97L12.94 12.6L11.15 11.89A5 5 0 0 1 9.79 12.67L9.52 14.58H6.48L6.21 12.67A5 5 0 0 1 4.85 11.89L3.06 12.6L1.54 9.97L3.06 8.78A5 5 0 0 1 3.06 7.22L1.54 6.03L3.06 3.4L4.85 4.11A5 5 0 0 1 6.21 3.33Z" />
       <circle cx="8" cy="8" r="2" />
     </Svg>
+  )
+}
+
+/**
+ * The OverWatch app icon (BRAND-4), beside the header's name (user feedback 2026-11-19). The one
+ * exception to the 16×16 `currentColor` set: it is the app icon itself, so it is drawn from
+ * `resources/icons/icon.svg`'s geometry (cropped to its tile), coloured by tokens via `.appIcon__*`
+ * in styles.css. Keep the two in step if the icon changes.
+ */
+export function AppIcon({ className }: IconProps): JSX.Element {
+  const id = useId()
+  const clipId = `${id}-clip`
+  const beamId = `${id}-beam`
+  return (
+    <svg
+      className={className === undefined ? 'appIcon' : `appIcon ${className}`}
+      viewBox="100 100 824 824"
+      aria-hidden="true"
+      focusable="false"
+    >
+      <defs>
+        <clipPath id={clipId}>
+          <rect x="124" y="100" width="824" height="824" rx="185" />
+        </clipPath>
+        <linearGradient id={beamId} gradientUnits="userSpaceOnUse" x1="652" y1="0" x2="940" y2="0">
+          <stop offset="0" className="appIcon__beamStart" />
+          <stop offset="1" className="appIcon__beamEnd" />
+        </linearGradient>
+      </defs>
+      <rect className="appIcon__tile" x="106" y="106" width="812" height="812" rx="179" />
+      <g transform="translate(-24 0)">
+        <g clipPath={`url(#${clipId})`}>
+          <path d="M560 426 L990 280 L990 572 Z" fill={`url(#${beamId})`} />
+        </g>
+        <g className="appIcon__tower">
+          <path d="M512 228 L700 360 L324 360 Z" />
+          <rect x="372" y="360" width="280" height="136" />
+          <rect x="336" y="496" width="352" height="40" rx="8" />
+        </g>
+        <rect className="appIcon__window" x="408" y="388" width="208" height="76" rx="6" />
+        <g className="appIcon__legs">
+          <path d="M392 586 L674 760 M632 586 L350 760" strokeWidth="28" />
+          <path d="M404 536 L340 800 M620 536 L684 800" strokeWidth="40" />
+        </g>
+      </g>
+    </svg>
   )
 }
 

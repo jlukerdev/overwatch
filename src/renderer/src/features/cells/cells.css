@@ -10,7 +10,8 @@
  * pointer.
  *
  * One chip look (UX polish). Everything drawn over the picture — the name, the position text, every
- * button, the volume's backing, the selects, the badge — is the same chip: `--chip-size` tall, on
+ * button, the volume's backing, the selects, the badge — is the same chip: `--chip-size` tall (the
+ * strip's controls and the badge `--control-size`, 25% larger), on
  * `--scrim` (styles.css), one hairline border, one radius, `--font-xs` text (the name `--font-sm`).
  * The quality colours (QUAL-7) are accents on that chip, text and border, never its backing. While
  * the strip is shown a soft gradient darkens the top of the picture under the chips
@@ -51,8 +52,15 @@
 }
 
 .cellOverlay {
-  /* Buttons and selects are at least 28 × 28 CSS px to press; the icons inside stay small. */
+  /*
+   * Text chips (the name) are 28 px tall. The strip's controls — buttons, selects, the volume, the
+   * position and the badge beside them — are 25% larger (user request 2026-11-19): 35 × 35 px at
+   * least, with their text, icons and padding scaled to match.
+   */
   --chip-size: 28px;
+  --control-scale: 1.25;
+  --control-size: calc(var(--chip-size) * var(--control-scale));
+  --control-font: calc(var(--font-xs) * var(--control-scale));
   --chip-border: rgb(255 255 255 / 14%);
   --chip-border-hover: rgb(255 255 255 / 34%);
   --chip-bg-hover: color-mix(in srgb, var(--fg) 14%, var(--scrim));
@@ -124,12 +132,27 @@
   font-weight: 600;
 }
 
+/* The strip's controls (and the badge beside them): the chip, 25% larger (see `.cellOverlay`). */
+.cellOverlay__badge,
+.cellOverlay__positionText,
+.cellOverlay__back,
+.cellOverlay__select,
+.cellOverlay__volume {
+  height: var(--control-size);
+  font-size: var(--control-font);
+}
+
 /* Text chips: one line, centred in the chip's height (its box less the two borders). */
 .cellOverlay__name,
 .cellOverlay__badge,
 .cellOverlay__positionText {
   line-height: calc(var(--chip-size) - 2px);
   white-space: nowrap;
+}
+
+.cellOverlay__badge,
+.cellOverlay__positionText {
+  line-height: calc(var(--control-size) - 2px);
 }
 
 /*
@@ -222,7 +245,7 @@
   --quality-colour: var(--muted);
 
   flex-shrink: 0;
-  padding: 0 0.45rem;
+  padding: 0 calc(0.45rem * var(--control-scale));
   border-color: color-mix(in srgb, var(--quality-colour) 70%, transparent);
   color: var(--quality-colour);
   font-variant-numeric: tabular-nums;
@@ -256,28 +279,28 @@
  */
 .cellOverlay__back {
   flex-shrink: 0;
-  min-width: var(--chip-size);
-  padding: 0 0.5rem;
+  min-width: var(--control-size);
+  padding: 0 calc(0.5rem * var(--control-scale));
   cursor: pointer;
   transition:
     background-color 120ms ease,
     border-color 120ms ease;
 }
 
-/* A chip button holding only an icon: a square, at least 28 × 28 to press. */
+/* A chip button holding only an icon: a square, at least 35 × 35 to press. */
 .cellOverlay__iconButton {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: var(--chip-size);
+  width: var(--control-size);
   padding: 0;
   line-height: 0;
 }
 
-/* The overlay's icons (ui/icons.tsx) at a fixed 15 px, whatever the chip's size or font. */
+/* The overlay's icons (ui/icons.tsx) at a fixed 19 px (15 px × 1.25), whatever the chip's font. */
 .cellOverlay__icon {
-  width: 15px;
-  height: 15px;
+  width: 19px;
+  height: 19px;
 }
 
 .cellOverlay__back:hover:not(:disabled) {
@@ -321,10 +344,10 @@
  */
 .cellOverlay__volume {
   flex-shrink: 1;
-  width: 6rem;
-  min-width: 3.5rem;
+  width: calc(6rem * var(--control-scale));
+  min-width: calc(3.5rem * var(--control-scale));
   margin: 0;
-  padding: 0 0.45rem;
+  padding: 0 calc(0.45rem * var(--control-scale));
   accent-color: var(--accent);
   cursor: pointer;
 }
@@ -338,22 +361,22 @@
   display: flex;
   flex-shrink: 0;
   align-items: center;
-  gap: 0.2rem;
+  gap: calc(0.2rem * var(--control-scale));
 }
 
 .cellOverlay__positionText {
-  padding: 0 0.45rem;
+  padding: 0 calc(0.45rem * var(--control-scale));
   font-variant-numeric: tabular-nums;
 }
 
 /*
  * QUAL-4/5's quality picker (P3.7): a native select dressed as a chip (the dropdown itself follows
- * the app's `color-scheme: dark`, styles.css), at least 28 px tall to press.
+ * the app's `color-scheme: dark`, styles.css), at least 35 px tall to press.
  */
 .cellOverlay__select {
   min-width: 0;
-  max-width: 11rem;
-  padding: 0 0.35rem;
+  max-width: calc(11rem * var(--control-scale));
+  padding: 0 calc(0.35rem * var(--control-scale));
   cursor: pointer;
   transition:
     background-color 120ms ease,

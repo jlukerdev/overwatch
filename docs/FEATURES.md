@@ -10,7 +10,7 @@ v1.0.0 and v1.0.1 were built from [DEV_PLAN.md](DEV_PLAN.md), which is now a **f
 |---|---|---|---|
 | 1.0.0 | Released | [DEV_PLAN.md](DEV_PLAN.md) Phases 0–6 (legacy) | First release: Views, live grid, fill and zoom, multi-camera cells, audio, Access doors, OverWatch branding, installers |
 | 1.0.1 | Released | [DEV_PLAN.md](DEV_PLAN.md) Phase 7, P7.1 (legacy) | Window size and position remembered (WIN-1), collapsible Display / Quality groups in the View editor (VIEW-3), separate dev data folder (BRAND-5) |
-| 1.0.2 | Planning | [versions/v1.0.2.md](versions/v1.0.2.md) | RTSP stream mode: run without a UniFi console, with a Streams screen for RTSP feeds |
+| 1.0.2 | Planning | [versions/v1.0.2.md](versions/v1.0.2.md) | RTSP stream mode (run without a UniFi console, Streams screen for RTSP feeds); Settings bars at the top of screens; View editor cell actions in the Cell pane |
 
 Status values: **Planning** (scope being decided) → **In progress** (scope agreed, features being built) → **Released** (`package.json` at that version, installers built, release check passed).
 

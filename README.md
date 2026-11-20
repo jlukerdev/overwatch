@@ -6,6 +6,8 @@ OverWatch talks straight to your UniFi console over your local network, using Ub
 
 > OverWatch is a personal project, not a Ubiquiti product
 
+<img src="docs/guide-img/live.png" width="1200" alt="The Live screen showing a View of six cameras, with the front door camera largest">
+
 ## Features
 
 - **Views:** named camera grids you lay out yourself. A camera can span several cells, and the grid scales to fill the window.
@@ -15,6 +17,25 @@ OverWatch talks straight to your UniFi console over your local network, using Ub
 - **Audio:** listen to one camera at a time.
 - **Doors (optional):** with UniFi Access, unlock the door linked to a camera from its cell. The Doors screen shows every door's lock state and lock rules, and lockdown and evacuation.
 - **Focus mode** hides everything but the video.
+
+<table>
+  <tr>
+    <td><img width="600" src="docs/guide-img/editor.png" alt="The View editor: the grid in the middle, display and quality options and the camera list on the right."></td>
+    <td><img width="600" src="docs/guide-img/fill.png" alt="The front door camera filling the window, with zoom, grid, mute, volume and quality controls at the top right."></td>
+  </tr>
+  <tr>
+    <td align="center"><b>View editor:</b> lay out the grid and pick cameras</td>
+    <td align="center"><b>Fill and zoom:</b> one camera fills the window</td>
+  </tr>
+  <tr>
+    <td><img width="600" src="docs/guide-img/doors.png" alt="The Doors screen: a card per door with its lock state, actions and linked cameras."></td>
+    <td><img width="600" src="docs/guide-img/focus.png" alt="Focus mode: four cameras fill the whole window with no header or View list."></td>
+  </tr>
+  <tr>
+    <td align="center"><b>Doors:</b> lock state, rules, lockdown and evacuation</td>
+    <td align="center"><b>Focus mode:</b> nothing but the video</td>
+  </tr>
+</table>
 
 ## Requirements
 

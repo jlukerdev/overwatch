@@ -25,7 +25,7 @@ const SWITCH_BACK = 'Switch to UniFi Protect in Settings to use it.'
 
 /** MODE-4's refusal messages, one per kind of call, each naming what was not done. */
 export const RTSP_MODE_MESSAGES = {
-  /** Connect, Test connection, the camera list, snapshots, stream qualities. */
+  /** Connect, Test connection, the Protect camera re-read, snapshots, stream qualities. */
   protect: `${IN_RTSP_MODE}, so it does not contact a UniFi console. ${SWITCH_BACK}`,
   /** An unlock from a cell, a Doors screen action, the emergency status. */
   door: `${IN_RTSP_MODE}, so nothing was sent to the door. ${SWITCH_BACK}`,

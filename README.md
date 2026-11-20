@@ -1,8 +1,8 @@
 # OverWatch
 
-A desktop app for macOS and Windows that shows your UniFi Protect cameras live, in grid layouts you design. It can also unlock UniFi Access doors.
+A desktop app for macOS and Windows that shows your UniFi Protect cameras live, in grid layouts you design. It can also unlock UniFi Access doors. Without a UniFi console, it can show any camera that has an RTSP address instead.
 
-OverWatch talks straight to your UniFi console over your local network, using Ubiquiti's official Protect Integration API. It has no cloud service, no account and no telemetry.
+OverWatch talks straight to your UniFi console over your local network, using Ubiquiti's official Protect Integration API, or straight to your RTSP cameras. It has no cloud service, no account and no telemetry.
 
 > OverWatch is a personal project, not a Ubiquiti product
 
@@ -17,6 +17,7 @@ OverWatch talks straight to your UniFi console over your local network, using Ub
 - **Audio:** listen to one camera at a time.
 - **Doors (optional):** with UniFi Access, unlock the door linked to a camera from its cell. The Doors screen shows every door's lock state and lock rules, and lockdown and evacuation.
 - **Focus mode** hides everything but the video.
+- **RTSP streams:** no UniFi console? Add any camera by its RTSP address and use the same Views, fill, zoom and audio.
 
 <table>
   <tr>
@@ -42,8 +43,10 @@ OverWatch talks straight to your UniFi console over your local network, using Ub
 - A 64-bit computer running one of:
   - **macOS 12 (Monterey) or later**, on Apple silicon or Intel
   - **Windows 10 or 11**, on x64 or ARM64
-- A UniFi console running **UniFi Protect** on the same network or reached over a VPN. The Protect Integration API it is built against is **v7.3.74**.
-- A Protect **Integration API key**, created in Protect under *Integrations*
+- For UniFi cameras:
+  - A UniFi console running **UniFi Protect** on the same network or reached over a VPN. The Protect Integration API it is built against is **v7.3.74**.
+  - A Protect **Integration API key**, created in Protect under *Integrations*
+- Or, for any other camera: its **RTSP address** (`rtsp://` or `rtsps://`), reachable from this computer. No UniFi console is needed.
 - For doors: **UniFi Access** and an Access API token. The Access API it is built against is **v4.2.16**. Access 1.9.1 or later is required, and some features need newer: lock rules and emergency status need 1.24.6, and door-state push needs 1.20.11.
 
 Installers are built for Apple silicon Macs, Intel Macs and Windows x64 (see below). Windows on ARM needs its own build.
@@ -83,7 +86,7 @@ The builds aren't code-signed yet, so the first launch needs one extra step:
 - **macOS:** open OverWatch from Applications. macOS says it can't verify the app; choose **Done** (not *Move to Trash*). Then go to *System Settings → Privacy & Security*, scroll down to the message about OverWatch, choose **Open Anyway** and confirm with your password. You only do this once per version.
 - **Windows:** when *Windows protected your PC* appears, choose **More info**, then **Run anyway**. Some antivirus software also asks once.
 
-After installing a new version on a Mac, macOS may ask once whether OverWatch can use its keychain item ("OverWatch Safe Storage"). Choose **Always Allow**: that is where your API key is kept.
+After installing a new version on a Mac, macOS may ask once whether OverWatch can use its keychain item ("OverWatch Safe Storage"). Choose **Always Allow**: that is where your API key and stream addresses are kept.
 
 Installing a newer version over an older one keeps your Views and settings.
 
@@ -95,12 +98,31 @@ OverWatch opens on Settings:
 2. Accept the console's certificate. OverWatch shows its fingerprint and remembers it, and warns you if it ever changes.
 3. Press **Connect**, then create your first View.
 
+No UniFi console? Choose **RTSP streams** at the top of Settings instead, and see below.
+
 A full getting-started guide is coming.
+
+## Using RTSP cameras
+
+RTSP streams mode is for cameras that aren't on UniFi Protect: any camera, recorder or other device that gives you an RTSP or RTSPS address. It needs no UniFi console.
+
+1. Open Settings (the gear at the top right). Under **Mode**, choose **RTSP streams**, then **Switch to RTSP streams**. Your UniFi settings, Views and door links are kept for when you switch back.
+2. Press **Open Streams**, or choose **Streams** in the header.
+3. Press **Add stream**. Give the camera a name under **Camera name**, then enter its address in **High quality**, **Medium quality** or **Low quality**. One address is enough. If the camera has more than one stream (a main stream and a smaller sub-stream), enter each one so big grids can use the smaller stream.
+4. Press **Add stream** to save it. Then go to **Live** and press **Create a View**.
+
+Addresses usually look like `rtsp://user:password@camera-address:554/stream`; your camera's manual or app lists its own. They are stored encrypted, like your API key, and never shown again once saved. To change one, choose **Edit** on the stream, then **Replace** or **Clear**. If a cell asks for a quality the stream has no address for, OverWatch plays the nearest one it has.
+
+In RTSP streams mode:
+
+- There are no Cameras or Doors screens. UniFi Access, door unlocks, motion events and camera snapshots need UniFi Protect mode.
+- Video from an `rtsps://` address is encrypted, but the camera's certificate is not checked. Use cameras on a network you trust; plain `rtsp://` is not encrypted at all.
+- To go back, choose **UniFi Protect** under **Mode** in Settings. Each mode keeps its own Views.
 
 ## Privacy and security
 
-- Your API key and token are encrypted with the operating system's keystore (Keychain on macOS, DPAPI on Windows). They are never stored in plain text and never shown again once saved.
-- OverWatch connects only to your console. Video is relayed by a bundled [go2rtc](https://github.com/AlexxIT/go2rtc) that listens on this computer only.
+- Your API key, token and RTSP stream addresses are encrypted with the operating system's keystore (Keychain on macOS, DPAPI on Windows). They are never stored in plain text and never shown again once saved.
+- OverWatch connects only to your console, or in RTSP streams mode only to the stream addresses you entered. Video is relayed by a bundled [go2rtc](https://github.com/AlexxIT/go2rtc) that listens on this computer only.
 - Every door unlock needs you to press a button, and each attempt is written to a local log.
 
 ## Log files

@@ -1,9 +1,9 @@
 {
   "name": "view-protect",
   "productName": "OverWatch",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "private": true,
-  "description": "OverWatch: live UniFi Protect camera grid Views for Windows and macOS.",
+  "description": "OverWatch: live camera grid Views for UniFi Protect or RTSP cameras, for Windows and macOS.",
   "main": "./out/main/index.js",
   "scripts": {
     "dev": "node scripts/electron-vite.ts dev",

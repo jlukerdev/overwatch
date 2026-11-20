@@ -1,15 +1,19 @@
 // UniFi Access developer API types and zod schemas (SPEC §5.2, DOOR-1/3). P1.4's client uses these.
 //
-// OFFICIAL REFERENCE, NOT YET RUN AGAINST HARDWARE (OS-1). The shapes are Ubiquiti's, from the
+// OFFICIAL REFERENCE, PARTLY CHECKED ON A CONSOLE (OS-1). The shapes are Ubiquiti's, from the
 // UniFi Access API documentation the console offers for download; the parts the app uses are
 // extracted in docs/reference/access-endpoints-v4.2.16.md (full PDF next to it; § numbers below are
-// the PDF's). No Access hardware is on the development network, so nothing here has been checked
-// against a real console: `npm run spike:access` against the site console (OS-1) is the check.
-// Correct this file, the mock (scripts/mock-access/) and the fixtures wherever the console differs.
+// the PDF's). `npm run spike:access` has been run against a real console (Access API reference
+// v4.2.16 base): GET /doors, the GET /doors/{id} error (`CODE_NOT_EXISTS`, answered with HTTP 200),
+// the 401 `CODE_UNAUTHORIZED`, GET lock_rule, GET emergency and the notifications WebSocket open
+// were seen there (tests/fixtures/access/, `_source: "console"`). Unlock, the lock-rule PUT and the
+// emergency PUT have not been. Correct this file, the mock (scripts/mock-access/) and the fixtures
+// wherever a console differs.
 //
 // The leniencies below are deliberate and stay: the reference contradicts itself on `is_bind_hub`
 // (String in the table, boolean in every sample) and on a missing position sensor (`null` in the
-// text, `""` in the §7.7 sample), and it never says `msg` is always present.
+// text, `""` in the §7.7 sample, and a real console sends `"none"`), and it never says `msg` is
+// always present.
 //
 // Node runs scripts that import this file directly (type stripping): erasable syntax only.
 import { z } from 'zod'
@@ -25,7 +29,8 @@ export const ACCESS_SUCCESS_CODE = 'SUCCESS'
  * The documented error `code` values (§2.4) a door call can plausibly answer with; the user,
  * policy, credential and webhook codes are in the PDF and not listed. The reference does NOT say
  * which HTTP status goes with which code, so a client must treat any `code` other than `SUCCESS`
- * as an error whatever the HTTP status. `client.ts` maps each of these to an error kind.
+ * as an error whatever the HTTP status (a real console answers `CODE_NOT_EXISTS` with HTTP 200).
+ * `client.ts` maps each of these to an error kind.
  */
 export const ACCESS_ERROR_CODES = [
   'CODE_PARAMS_INVALID',
@@ -79,13 +84,18 @@ export const DoorLockRelayStatusSchema = z.enum(['lock', 'unlock'])
 export type DoorLockRelayStatus = z.infer<typeof DoorLockRelayStatusSchema>
 
 /**
- * Door position sensor (DPS). The reference says "a null value means that no device is connected",
- * but its own §7.7 sample returns `''`, so both are accepted (which one a console sends: OS-1).
+ * Door position sensor (DPS), read as `'open'`, `'close'` or `null` (no sensor / unknown). The
+ * reference says "a null value means that no device is connected", its own §7.7 sample sends `''`,
+ * and a real console sends `"none"` for a door with no sensor. All of those, a missing field and
+ * any other value read as `null`: the field is informational, and one odd value on it must never
+ * hide a door (a strict enum here once emptied the Doors list on a real console).
  */
 export const DoorPositionStatusSchema = z
-  .union([z.enum(['open', 'close']), z.literal('')])
-  .nullable()
-export type DoorPositionStatus = z.infer<typeof DoorPositionStatusSchema>
+  .unknown()
+  // `.optional()` before the transform keeps a missing field acceptable inside an object (zod 4).
+  .optional()
+  .transform((v): 'open' | 'close' | null => (v === 'open' || v === 'close' ? v : null))
+export type DoorPositionStatus = z.output<typeof DoorPositionStatusSchema>
 
 /**
  * `is_bind_hub`: boolean, or the string `'true'`/`'false'` normalized to boolean. Lenient on
@@ -99,7 +109,9 @@ export const IsBindHubSchema = z.union([
 
 /**
  * A door as returned by `GET /doors` (§7.8) and `GET /doors/{id}` (§7.7). Unknown extra fields are
- * stripped, not rejected; `spike:access` reports them separately.
+ * stripped, not rejected; `spike:access` reports them separately. A real console also sends an
+ * undocumented `extras` object (`door_thumbnail`, `door_thumbnail_last_update`) that the app does
+ * not use, so it is stripped too.
  */
 export const AccessDoorSchema = z.object({
   id: z.string().min(1),
@@ -147,8 +159,8 @@ export type AccessUnlockResponse = z.infer<typeof AccessUnlockResponseSchema>
 
 // -------------------------------------------------------------------------------------------------
 // P5.5: the rest of the door endpoints and the notifications WebSocket, from the official reference
-// (docs/reference/access-endpoints-v4.2.16.md, PDF §7.9–§7.13 and §11.1). Documented, not yet run
-// against hardware (OS-1).
+// (docs/reference/access-endpoints-v4.2.16.md, PDF §7.9–§7.13 and §11.1). The GETs and the
+// WebSocket open have been seen on a console (see the top of this file); the PUTs have not (OS-1).
 
 /** Path of the notifications WebSocket below the API root (§11.1, scope `view:device`). */
 export const ACCESS_NOTIFICATIONS_PATH = '/devices/notifications'
@@ -190,8 +202,8 @@ export const ACCESS_LOCK_RULE_TYPES = [
 
 /**
  * `data` of `GET /doors/{id}/lock_rule` (§7.11). Lenient on purpose: what the console answers for a
- * door with **no** rule is not documented, so `type` is any string (possibly empty) and
- * `ended_time` (Unix seconds) may be missing.
+ * door with **no** rule is not documented (a real console answers `{ type: "", ended_time: 0 }`),
+ * so `type` is any string (possibly empty) and `ended_time` (Unix seconds) may be missing or 0.
  */
 export const AccessLockRuleSchema = z.object({
   type: z.string().default(''),

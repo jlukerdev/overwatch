@@ -61,6 +61,27 @@ export function sourceFromHeaders(headers: HeaderReader): FixtureSource {
   return headers.get(MOCK_HEADER)?.trim() === MOCK_HEADER_VALUE ? 'mock' : 'console'
 }
 
+/**
+ * Whether a run whose target is `source` may replace the fixture whose current text is `existing`
+ * (`undefined`: no file yet). A console capture is never replaced by a mock run: the console
+ * files are the record of OS-1 and the tests rely on them. A console run may replace anything.
+ */
+export function mayOverwriteFixture(
+  existing: string | undefined,
+  source: FixtureSource,
+): { ok: true } | { ok: false; reason: string } {
+  if (source === 'console' || existing === undefined) return { ok: true }
+  let current: unknown
+  try {
+    current = JSON.parse(existing)
+  } catch {
+    return { ok: true }
+  }
+  if (isRecord(current) && current._source === 'console')
+    return { ok: false, reason: 'it holds a console capture (OS-1) and this run targets the mock' }
+  return { ok: true }
+}
+
 export const YES_REFUSED =
   '--yes is only allowed against the mock; on a real console type the door name to confirm (DOOR-3/4)'
 
@@ -87,21 +108,45 @@ export function unlockConfirmation(opts: {
 }
 
 /**
- * Normalizations the lenient Access schemas would apply to a raw response (UNVERIFIED, OS-1):
- * `is_bind_hub` sent as the string 'true'/'false', and an envelope without `msg`. Run on the raw
- * JSON before parsing so the spike reports which form the console really uses.
+ * Door keys the reference does not document but a real console sends (OS-1). The schemas strip
+ * them and the app does not use them; the spike reports them as a shape note, not a mismatch.
+ * `extras`: `{ door_thumbnail, door_thumbnail_last_update }`.
+ */
+export const CONSOLE_DOOR_KEYS: readonly string[] = ['extras']
+
+/**
+ * Normalizations the lenient Access schemas would apply to a raw response (OS-1): `is_bind_hub`
+ * sent as the string 'true'/'false', an envelope without `msg`, a `door_position_status` other
+ * than `open`/`close`/`null` (read as no sensor; a real console sends `"none"`), and the
+ * console-only door keys. Run on the raw JSON before parsing so the spike reports which form the
+ * console really uses.
  */
 export function shapeNotes(json: unknown): string[] {
   const notes: string[] = []
   if (!isRecord(json)) return notes
   if (!('msg' in json)) notes.push('(envelope).msg absent (accepted: msg is optional)')
   const data = json.data
-  const doors = Array.isArray(data) ? data : isRecord(data) ? [data] : []
+  const doors = (Array.isArray(data) ? data : isRecord(data) ? [data] : []).filter(isRecord)
   const forms = new Set<string>()
-  for (const d of doors)
-    if (isRecord(d) && typeof d.is_bind_hub === 'string') forms.add(JSON.stringify(d.is_bind_hub))
+  const positions = new Set<string>()
+  const consoleKeys = new Set<string>()
+  let positionAbsent = false
+  for (const d of doors) {
+    if (typeof d.is_bind_hub === 'string') forms.add(JSON.stringify(d.is_bind_hub))
+    const p = d.door_position_status
+    // Only a record with a relay is a door: a lock-rule or emergency `data` must not count as one.
+    if (!('door_position_status' in d)) positionAbsent ||= 'door_lock_relay_status' in d
+    else if (p !== 'open' && p !== 'close' && p !== null)
+      positions.add(p === undefined ? 'undefined' : JSON.stringify(p))
+    for (const k of CONSOLE_DOOR_KEYS) if (k in d) consoleKeys.add(k)
+  }
   for (const f of [...forms].sort())
     notes.push(`door.is_bind_hub sent as string ${f} (normalized to boolean)`)
+  if (positionAbsent) notes.push('door.door_position_status absent (read as no sensor)')
+  for (const p of [...positions].sort())
+    notes.push(`door.door_position_status sent as ${p} (read as no sensor)`)
+  for (const k of [...consoleKeys].sort())
+    notes.push(`door.${k} sent (undocumented, seen on a console; ignored)`)
   return notes
 }
 

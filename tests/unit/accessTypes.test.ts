@@ -39,6 +39,7 @@ import {
   describeNotification,
   extraKeys,
   findDoorByName,
+  mayOverwriteFixture,
   notificationsUrl,
   resolveAccessBaseUrl,
   shapeNotes,
@@ -111,18 +112,28 @@ describe('fixtures', () => {
     expect(parsed.data.length).toBeGreaterThan(0)
   })
 
+  it('doors.json (a real console, OS-1): "none" reads as no sensor and extras is stripped', () => {
+    expect(doors._source).toBe('console')
+    const parsed = AccessDoorListResponseSchema.parse(doors.response)
+    expect(parsed.data).toHaveLength(1)
+    expect(parsed.data[0]?.door_position_status).toBeNull()
+    expect(parsed.data[0]).not.toHaveProperty('extras')
+  })
+
   it('unlock.json matches the unlock response schema and shows the relay reverting', () => {
     expect(unlock.status).toBe(200)
     AccessUnlockResponseSchema.parse(unlock.response)
     expect(unlock.relayAfterUnlock.map((s) => s.relay)).toEqual(['unlock', 'lock'])
   })
 
+  // A real console answers the unknown door with HTTP 200 and a non-SUCCESS code (OS-1), which is
+  // why the client treats any code but SUCCESS as an error whatever the status.
   it.each([
-    ['error-unauthorized.json', unauthorized],
-    ['error-not-exists.json', notExists],
-  ])('%s matches the error envelope', (_name, f) => {
-    AccessErrorEnvelopeSchema.parse(f.response)
-    expect(f.status).toBeGreaterThanOrEqual(400)
+    ['error-unauthorized.json', unauthorized, 401, 'CODE_UNAUTHORIZED'],
+    ['error-not-exists.json', notExists, 200, 'CODE_NOT_EXISTS'],
+  ])('%s matches the error envelope', (_name, f, status, code) => {
+    expect(AccessErrorEnvelopeSchema.parse(f.response).code).toBe(code)
+    expect(f.status).toBe(status)
   })
 
   it.each([
@@ -232,9 +243,32 @@ describe('schemas', () => {
     )
   })
 
-  it('door position accepts open/close/null and the empty string the community example shows', () => {
-    for (const v of ['open', 'close', null, '']) expect(DoorPositionStatusSchema.parse(v)).toBe(v)
-    expect(DoorPositionStatusSchema.safeParse('ajar').success).toBe(false)
+  it('door position keeps open/close and reads anything else as null (no sensor / unknown)', () => {
+    expect(DoorPositionStatusSchema.parse('open')).toBe('open')
+    expect(DoorPositionStatusSchema.parse('close')).toBe('close')
+    // `"none"` is what a real console sends with no sensor (OS-1); `''` is the reference's sample.
+    for (const v of ['none', '', null, undefined, 'ajar', 'OPEN', 1, true, {}])
+      expect(DoorPositionStatusSchema.parse(v)).toBeNull()
+  })
+
+  it('a door with an odd or missing position still parses (the field never hides a door)', () => {
+    const door = {
+      id: 'd',
+      name: 'n',
+      full_name: 'f',
+      floor_id: 'fl',
+      type: 'door',
+      is_bind_hub: true,
+      door_lock_relay_status: 'lock',
+    }
+    expect(AccessDoorSchema.parse(door).door_position_status).toBeNull()
+    for (const v of ['none', 'ajar', 42])
+      expect(
+        AccessDoorSchema.parse({ ...door, door_position_status: v }).door_position_status,
+      ).toBeNull()
+    expect(
+      AccessDoorSchema.parse({ ...door, door_position_status: 'open' }).door_position_status,
+    ).toBe('open')
   })
 
   it('is_bind_hub (UNVERIFIED, lenient): booleans and the strings true/false, as booleans', () => {
@@ -513,7 +547,42 @@ describe('spike helpers', () => {
     ])
     expect(shapeNotes(null)).toEqual([])
     expect(doors.response.data.length).toBeGreaterThan(0)
-    expect(shapeNotes(doors.response)).toEqual([])
+    // The real console's doors (OS-1): `"none"` and the undocumented `extras` are notes only.
+    expect(shapeNotes(doors.response)).toEqual([
+      'door.door_position_status sent as "none" (read as no sensor)',
+      'door.extras sent (undocumented, seen on a console; ignored)',
+    ])
+    expect(
+      shapeNotes({ code: 'SUCCESS', msg: 'ok', data: [{ door_position_status: 'close' }, {}] }),
+    ).toEqual([])
+    expect(
+      shapeNotes({ code: 'SUCCESS', msg: 'ok', data: [{ door_position_status: null }] }),
+    ).toEqual([])
+    expect(
+      shapeNotes({ code: 'SUCCESS', msg: 'ok', data: [{ door_position_status: '' }] }),
+    ).toEqual(['door.door_position_status sent as "" (read as no sensor)'])
+    // A door with no position field at all is reported; a lock rule or emergency `data` is no door.
+    expect(
+      shapeNotes({ code: 'SUCCESS', msg: 'ok', data: [{ door_lock_relay_status: 'lock' }] }),
+    ).toEqual(['door.door_position_status absent (read as no sensor)'])
+    expect(shapeNotes({ code: 'SUCCESS', msg: 'ok', data: { type: '', ended_time: 0 } })).toEqual(
+      [],
+    )
+    expect(shapeNotes(lockRule.response)).toEqual([])
+  })
+
+  it('mayOverwriteFixture: a mock run never replaces a console capture', () => {
+    const consoleFile = JSON.stringify({ _source: 'console', response: {} })
+    const mockFile = JSON.stringify({ _source: 'mock', response: {} })
+    expect(mayOverwriteFixture(undefined, 'mock')).toEqual({ ok: true })
+    expect(mayOverwriteFixture(mockFile, 'mock')).toEqual({ ok: true })
+    expect(mayOverwriteFixture(consoleFile, 'console')).toEqual({ ok: true })
+    expect(mayOverwriteFixture(mockFile, 'console')).toEqual({ ok: true })
+    const refused = mayOverwriteFixture(consoleFile, 'mock')
+    expect(refused.ok).toBe(false)
+    if (!refused.ok) expect(refused.reason).toMatch(/console capture/)
+    // The real captures in this folder are protected from a mock run.
+    expect(mayOverwriteFixture(JSON.stringify(doors), 'mock').ok).toBe(false)
   })
 
   it('findDoorByName matches case-insensitively and rejects none/several', () => {

@@ -3,11 +3,12 @@
 // it in node:https and notifications.ts carries its notification frames over the WebSocket.
 //
 // Since P5.5 the routes, bodies and codes follow Ubiquiti's official reference
-// (docs/reference/access-endpoints-v4.2.16.md), which is documented but NOT yet run against
-// hardware (OS-1). What the reference leaves open is THE MOCK'S OWN CHOICE and is marked so:
-//   - the HTTP status that goes with each error code (the reference lists statuses and codes
-//     separately). The mock uses 400 / 401 / 403 / 500 from the reference's table, plus 404 and 405,
-//     which that table does NOT list: a real console may answer those cases differently;
+// (docs/reference/access-endpoints-v4.2.16.md). Where a real console has been seen (OS-1) the mock
+// matches it: an unknown door is HTTP 200 CODE_NOT_EXISTS, a bad token HTTP 401 CODE_UNAUTHORIZED.
+// What neither the reference nor OS-1 settles is THE MOCK'S OWN CHOICE and is marked so:
+//   - the HTTP status that goes with every other error code (the reference lists statuses and
+//     codes separately). The mock uses 400 / 403 / 500 from the reference's table, plus 404 and
+//     405, which that table does NOT list: a real console may answer those cases differently;
 //   - which code a refused operation gets (CODE_OPERATION_FORBIDDEN here);
 //   - how unlock, lock rules and emergency mode interact (see doors.ts).
 //
@@ -31,9 +32,8 @@ import {
   AccessLockRuleRequestSchema,
   AccessUnlockRequestSchema,
 } from '../../src/main/access/types.ts'
-import type { AccessDoor } from '../../src/main/access/types.ts'
 import { createDoorStore } from './doors.ts'
-import type { DoorStore, DoorStoreOptions } from './doors.ts'
+import type { DoorStore, DoorStoreOptions, MockDoor } from './doors.ts'
 import { isValidKey } from './ws.ts'
 
 export interface MockRequest {
@@ -127,7 +127,7 @@ export const MOCK_HUB_ID = 'mock-hub-0001'
  * (§11.1): `data.unique_id` is the door id. Everything but the door's own id and names is a fake
  * constant (`up_id` reuses the floor id, a guess at "parent location").
  */
-export function remoteUnlockNotification(door: AccessDoor): MockNotification {
+export function remoteUnlockNotification(door: MockDoor): MockNotification {
   return {
     event: ACCESS_EVENT_REMOTE_UNLOCK,
     receiver_id: '',
@@ -217,10 +217,12 @@ export function createAccessMock(options: AccessMockOptions): AccessMock {
   const notificationListeners = new Set<(frame: MockNotification) => void>()
   const dropHandlers = new Set<() => number>()
 
+  // As a real console answers (OS-1): a bad or missing token is HTTP 401 CODE_UNAUTHORIZED, and
+  // an unknown door is HTTP **200** CODE_NOT_EXISTS (an error carried by the code, not the status).
   const unauthorized = (): MockResponse =>
-    fail(401, 'CODE_ACCESS_TOKEN_INVALID', 'token is missing, invalid or expired')
+    fail(401, 'CODE_UNAUTHORIZED', 'You do not have permission to perform this action.')
   const notFound = (): MockResponse => fail(404, 'CODE_RESOURCE_NOT_FOUND', 'not found')
-  const noDoor = (): MockResponse => fail(404, 'CODE_NOT_EXISTS', 'door does not exist')
+  const noDoor = (): MockResponse => fail(200, 'CODE_NOT_EXISTS', 'Item not found.')
   const badMethod = (): MockResponse => fail(405, 'CODE_RESOURCE_NOT_FOUND', 'method not allowed')
   const badId = (): MockResponse => fail(400, 'CODE_PARAMS_INVALID', 'malformed door id')
 

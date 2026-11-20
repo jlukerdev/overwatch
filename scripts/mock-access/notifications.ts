@@ -2,7 +2,7 @@
 // does the RFC 6455 handshake by hand (ws.ts) and pushes frames to every connected client.
 // `GET /api/v1/developer/devices/notifications`, same Bearer token as REST (reference §11.1).
 //
-// A refused upgrade gets a plain HTTP response (401 `CODE_ACCESS_TOKEN_INVALID` for a missing or
+// A refused upgrade gets a plain HTTP response (401 `CODE_UNAUTHORIZED` for a missing or
 // wrong token, 404 for another path) and the socket is closed. The mock sends no pings of its
 // own (the reference does not say whether a console does) and ignores whatever clients send,
 // apart from answering ping and close. `--fail-rate` does not apply to the upgrade.

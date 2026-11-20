@@ -31,6 +31,7 @@ import {
   createAccessClient,
   isAccessApiUnavailable,
   toDoor,
+  unexpectedPositionValue,
 } from '../../src/main/access/client'
 import type { AccessClient, AccessClientOptions } from '../../src/main/access/client'
 import { ACCESS_ERROR_CODES, AccessDoorSchema } from '../../src/main/access/types'
@@ -42,6 +43,7 @@ import type { AccessMock, MockRequest } from '../../scripts/mock-access/app.ts'
 import { DEFAULT_UNLOCK_MS, SEED_DOORS } from '../../scripts/mock-access/doors.ts'
 import type { ConsoleEndpoint } from '../../src/main/console/endpoints'
 import type { Door } from '@shared/models'
+import consoleDoors from '../fixtures/access/doors.json'
 
 const HOST = '127.0.0.1'
 const TOKEN = 'access-client-test-token'
@@ -220,9 +222,9 @@ describe('against the P0.4 mock', () => {
 
     const err = await accessError(client.door('00000000-0000-4000-8000-000000000000'))
     expect(err.kind).toBe('not-found')
-    expect(err.status).toBe(404)
+    expect(err.status).toBe(200)
     expect(err.code).toBe('CODE_NOT_EXISTS')
-    expect(err.message).toContain('door does not exist')
+    expect(err.message).toContain('Item not found.')
     expect(err.retryable).toBe(false)
   })
 
@@ -286,7 +288,7 @@ describe('against the P0.4 mock', () => {
     const err = await accessError(wrong.client.doors())
     expect(err.kind).toBe('auth')
     expect(err.status).toBe(401)
-    expect(err.code).toBe('CODE_ACCESS_TOKEN_INVALID')
+    expect(err.code).toBe('CODE_UNAUTHORIZED')
     expect(err.message).toContain('Access → Settings → General → Advanced → API Token')
 
     // A token that was never saved fails the same way, without spending a request on it (DOOR-1).
@@ -1255,6 +1257,92 @@ describe('toDoor', () => {
   it('keeps an explicit null position null and a real reading as it is', () => {
     expect(toDoor({ ...FRONT, door_position_status: null }).position).toBeNull()
     expect(toDoor({ ...FRONT, door_position_status: 'open' }).position).toBe('open')
+  })
+
+  it('reads "none" (a real console, OS-1), an unknown value and a missing field as no sensor', () => {
+    const wire = { ...FRONT, extras: undefined }
+    for (const position of ['none', 'ajar', undefined]) {
+      const parsed = AccessDoorSchema.parse({ ...wire, door_position_status: position })
+      expect(toDoor(parsed).position).toBeNull()
+    }
+    for (const position of ['open', 'close'] as const) {
+      const parsed = AccessDoorSchema.parse({ ...wire, door_position_status: position })
+      expect(toDoor(parsed).position).toBe(position)
+    }
+  })
+})
+
+describe('doors() on the real console capture (OS-1, tests/fixtures/access/doors.json)', () => {
+  it('lists the one door, with no position sensor, and skips nothing', async () => {
+    const { client, logs } = harness(fakeFetch(() => jsonResponse(200, consoleDoors.response)))
+    const list = await client.doors()
+    expect(list).toStrictEqual<Door[]>([
+      {
+        id: 'door-001',
+        name: 'Edu Entry South',
+        fullName: 'OGBC - 1F - Edu Entry South',
+        floorId: 'floor-001',
+        type: 'door',
+        boundToHub: true,
+        relay: 'lock',
+        position: null,
+      },
+    ])
+    expect(logs.some((l) => l.includes('skipped'))).toBe(false)
+    expect(logs.some((l) => l.includes('door_position_status'))).toBe(false)
+  })
+})
+
+describe('doors() and an unexpected door_position_status', () => {
+  const wireDoor = (id: string, name: string, position: unknown): Record<string, unknown> => ({
+    id,
+    name,
+    full_name: `Site - ${name}`,
+    floor_id: 'f-1',
+    type: 'door',
+    is_bind_hub: true,
+    door_lock_relay_status: 'lock',
+    door_position_status: position,
+  })
+
+  it('keeps the door with position null and logs each distinct value once, never a name', async () => {
+    const body = {
+      code: 'SUCCESS',
+      msg: 'success',
+      data: [
+        wireDoor('d-1', 'Secret Lab', 'ajar'),
+        wireDoor('d-2', 'Vault', 'ajar'),
+        wireDoor('d-3', 'Lobby', 7),
+        wireDoor('d-4', 'Hall', 'x'.repeat(40)),
+        wireDoor('d-5', 'Gate', 'none'),
+        wireDoor('d-6', 'Yard', ''),
+        wireDoor('d-7', 'Porch', null),
+        wireDoor('d-8', 'Shed', 'open'),
+      ],
+    }
+    const { client, logs } = harness(fakeFetch(() => jsonResponse(200, body)))
+    const list = await client.doors()
+    expect(list.map((d) => d.position)).toEqual([null, null, null, null, null, null, null, 'open'])
+    const lines = (): string[] => logs.filter((l) => l.includes('door_position_status'))
+    expect(lines()).toStrictEqual([
+      'GET /doors -> door_position_status "ajar" is not open, close or a no-sensor value; read as no sensor',
+      'GET /doors -> door_position_status a number is not open, close or a no-sensor value; read as no sensor',
+      'GET /doors -> door_position_status a long string is not open, close or a no-sensor value; read as no sensor',
+    ])
+    for (const name of ['Secret Lab', 'Vault', 'Lobby', 'Hall'])
+      expect(logs.some((l) => l.includes(name))).toBe(false)
+    // A second read (a poll) does not repeat them.
+    await client.doors({ quiet: true })
+    expect(lines()).toHaveLength(3)
+  })
+
+  it('unexpectedPositionValue ignores the expected forms, including a missing field', () => {
+    for (const v of ['open', 'close', '', 'none', null])
+      expect(unexpectedPositionValue({ door_position_status: v })).toBeNull()
+    expect(unexpectedPositionValue({})).toBeNull()
+    expect(unexpectedPositionValue({ door_position_status: true })).toBe('a boolean')
+    expect(unexpectedPositionValue({ door_position_status: [] })).toBe('an array')
+    expect(unexpectedPositionValue({ door_position_status: {} })).toBe('an object')
   })
 })
 

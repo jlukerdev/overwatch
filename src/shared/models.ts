@@ -518,10 +518,12 @@ export type DoorPosition = (typeof DOOR_POSITIONS)[number]
 /**
  * A door as the app knows it (DOOR-1/2), trimmed from `AccessDoor`.
  *
- * **Community-sourced and unverified** like everything Access (SPEC §5.2, R3): the wire shape and
- * its leniencies live in `src/main/access/types.ts`, and OS-1 is what confirms them. `relay` and
- * `position` keep their enums here because the Access schemas already reject anything else, so a
- * surprising value fails in main where it can be reported, not silently in the renderer.
+ * From Ubiquiti's official Access API reference (SPEC §5.2, R3); the read calls have been checked
+ * on one console, while unlock and the PUTs are still for OS-1 to confirm. The wire shape and its
+ * leniencies live in `src/main/access/types.ts`. `relay` and
+ * `position` keep their enums here because the Access schemas already normalize the wire values
+ * (relay: anything else is rejected in main, where it can be reported; position: anything but
+ * open/close arrives as `null`), so the renderer never sees a surprising value.
  */
 export const DoorSchema = z.object({
   id: z.string().min(1),
@@ -534,7 +536,7 @@ export const DoorSchema = z.object({
   /** `is_bind_hub`: remote unlock only works when true (DOOR-3). */
   boundToHub: z.boolean(),
   relay: z.enum(DOOR_RELAY_STATES),
-  /** `''` from the console means "no sensor" and arrives here as `null`. */
+  /** `null`: no sensor or an unrecognised reading (a real console sends `"none"`). */
   position: z.enum(DOOR_POSITIONS).nullable(),
 })
 export type Door = z.infer<typeof DoorSchema>

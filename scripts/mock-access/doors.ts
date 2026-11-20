@@ -1,6 +1,8 @@
 // Fake doors served by the Access mock (P0.4, extended in P5.5). The door object and the lock-rule
 // and emergency shapes follow the official reference (docs/reference/access-endpoints-v4.2.16.md,
-// §7.7–§7.13), which is documented but not yet run against hardware (OS-1).
+// §7.7–§7.13). The door object also carries what a real console sent on OS-1 (position "none",
+// `extras`); the error statuses OS-1 saw are mirrored in app.ts. Unlock and the PUTs have not been
+// seen on a console, so their behaviour below is still the reference's word or the mock's choice.
 //
 // THE MOCK'S OWN CHOICES. The reference says what each endpoint takes and returns, not how unlock,
 // lock rules and emergency mode interact, nor what `door_lock_relay_status` reads meanwhile. This
@@ -30,8 +32,8 @@
 //     `ended_time` is the end of the schedule it cut short when the door was inside one, and the
 //     next UTC midnight otherwise.
 //   - lock_now: ends everything (rule and momentary unlock).
-//   - no rule: `{ type: '', ended_time: 0 }`. UNDOCUMENTED, a guess (the reference does not say
-//     what GET lock_rule answers for a door without a rule).
+//   - no rule: `{ type: '', ended_time: 0 }`. Undocumented, but what a real console answers (OS-1).
+//     (the reference does not say what GET lock_rule answers for a door without a rule).
 //   - emergency overrides, it does not erase: rules and timers keep running underneath, and the
 //     doors "return to their own state" when both flags are false again.
 //
@@ -44,15 +46,27 @@ import type {
   DoorLockRelayStatus,
 } from '../../src/main/access/types.ts'
 
+/**
+ * A door as the mock sends it: the documented fields, plus what a real console sends that the
+ * reference does not document (OS-1): `door_position_status: "none"` for a door with no sensor,
+ * and an `extras` object with a reader thumbnail. The app's schemas read `"none"` as no sensor and
+ * strip `extras`.
+ */
+export type MockDoor = Omit<AccessDoor, 'door_position_status'> & {
+  door_position_status: 'open' | 'close' | 'none' | null
+  extras?: { door_thumbnail: string; door_thumbnail_last_update: number }
+}
+
 const FLOOR_1 = 'c1a7d0e2-0000-4000-8000-00000000f001'
 const FLOOR_2 = 'c1a7d0e2-0000-4000-8000-00000000f002'
 
 /**
  * The seed set. Ids are fixed fake UUIDs so fixtures and tests are stable across runs.
- * `Storage Room` is deliberately not bound to a hub (`is_bind_hub: false`, no position sensor):
- * unlocking it is refused, which exercises the client's error path.
+ * `Storage Room` is deliberately not bound to a hub (`is_bind_hub: false`) and has no position
+ * sensor, sent the way a real console does (`"none"`, plus `extras`): unlocking it is refused,
+ * which exercises the client's error path.
  */
-export const SEED_DOORS: readonly AccessDoor[] = [
+export const SEED_DOORS: readonly MockDoor[] = [
   {
     id: 'd00e0001-0000-4000-8000-000000000001',
     name: 'Front Door',
@@ -91,7 +105,11 @@ export const SEED_DOORS: readonly AccessDoor[] = [
     type: 'door',
     is_bind_hub: false,
     door_lock_relay_status: 'lock',
-    door_position_status: null,
+    door_position_status: 'none',
+    extras: {
+      door_thumbnail: '/preview/reader_mock-reader-0004_1700000000.jpg',
+      door_thumbnail_last_update: 1700000000,
+    },
   },
 ]
 
@@ -101,7 +119,7 @@ export const DEFAULT_UNLOCK_MS = 5000
 /** `ended_time` of keep_lock / keep_unlock: the far-future value of the kind the reference shows. */
 export const FAR_FUTURE_ENDED_TIME = 3602128562
 
-/** What GET lock_rule answers for a door with no rule. UNDOCUMENTED: the mock's guess. */
+/** What GET lock_rule answers for a door with no rule. Undocumented; seen on a console (OS-1). */
 export const NO_LOCK_RULE: Readonly<AccessLockRule> = { type: '', ended_time: 0 }
 
 /** Longest delay node's setTimeout takes; a longer one would fire at once. */
@@ -144,8 +162,8 @@ export type DoorChange =
   | { kind: 'emergency'; status: AccessEmergencyStatus }
 
 export interface DoorStore {
-  list(): AccessDoor[]
-  get(id: string): AccessDoor | undefined
+  list(): MockDoor[]
+  get(id: string): MockDoor | undefined
   /**
    * Momentary unlock: relay `unlock` for `unlockMs` (a second one restarts the window), unless
    * refused. Does not check `is_bind_hub`; the request handler does. Throws for an unknown id.
@@ -171,7 +189,7 @@ export interface DoorStore {
 
 export interface DoorStoreOptions {
   /** A door seeded with relay `unlock` starts under a `keep_unlock` rule. */
-  doors?: readonly AccessDoor[]
+  doors?: readonly MockDoor[]
   unlockMs?: number
   timers?: TimerApi
   /** Clock in Unix milliseconds, for `ended_time`. */
@@ -183,7 +201,7 @@ type Rule =
   | { type: 'custom' | 'lock_early' | 'schedule'; endedTime: number }
 
 interface DoorState {
-  door: AccessDoor
+  door: MockDoor
   rule: Rule | undefined
   ruleTimer: unknown
   pulseTimer: unknown
@@ -236,7 +254,7 @@ export function createDoorStore(options: DoorStoreOptions = {}): DoorStore {
     }
   }
 
-  function view(s: DoorState): AccessDoor {
+  function view(s: DoorState): MockDoor {
     return { ...s.door, door_lock_relay_status: relayOf(s) }
   }
 

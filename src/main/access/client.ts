@@ -3,11 +3,12 @@
 //
 // **The shapes are Ubiquiti's, from the official UniFi Access API reference** — the extract in
 // `docs/reference/access-endpoints-v4.2.16.md` (the full PDF sits next to it; § numbers below are
-// the PDF's). ⚠️ **Documented is not the same as run against hardware:** no Access hardware exists
-// on the development network, so nothing here has talked to a real console. The on-site checklist
-// **OS-1** (`docs/spikes/P0.4-access-mock.md` §6) remains the check, and whatever is marked
-// `unverified (OS-1)` below is something the reference leaves open or contradicts itself on. Until
-// then this client is exercised against the local mock (`scripts/mock-access/`), which is what
+// the PDF's). ⚠️ **Only partly run against hardware:** the on-site check **OS-1**
+// (`docs/spikes/P0.4-access-mock.md` §6) has seen GET /doors, a GET /doors/{id} error, a 401,
+// GET lock_rule, GET emergency and the notifications WebSocket open on a real console (see
+// `./types.ts`); unlock and the two PUTs have not been seen. Whatever is marked `unverified (OS-1)`
+// below is something the reference leaves open or contradicts itself on. Day to day this client is
+// exercised against the local mock (`scripts/mock-access/`), which is what
 // `tests/unit/accessClient.test.ts` drives — in-process and over real pinned TLS.
 //
 // Push exists too: the notifications WebSocket (§11.1) lives in `./notifications.ts`. It carries no
@@ -19,8 +20,8 @@
 //     may be constructed long before Access is usable.
 //  2. **An error is HTTP non-2xx *or* `code !== 'SUCCESS'`, whatever the status.** The reference
 //     lists the HTTP statuses (§2.2) and the error codes (§2.4) but does **not** say which status
-//     goes with which code, so the real console may well answer 200 with a non-`SUCCESS` code. A
-//     401 is an auth error whatever the body.
+//     goes with which code, and a real console does answer 200 with a non-`SUCCESS` code
+//     (`CODE_NOT_EXISTS` for an unknown door, OS-1). A 401 is an auth error whatever the body.
 //  3. **The message is never empty** (SPEC §5.2): the envelope's `msg` when it is there, and the
 //     `code` plus the HTTP status when it is not (`msg` is optional in the schemas). A DOOR-3
 //     failure the user cannot read is a bug — the whole point of the unlock button is feedback.
@@ -401,10 +402,10 @@ export function accessErrorKind(status: number, code: string | null): AccessErro
  * Maps an `AccessDoor` (wire) onto the trimmed shared `Door` (SPEC §6, `@shared/models`). The
  * renderer only ever sees this shape (P1.5).
  *
- * `is_bind_hub`'s string form and the two spellings of "no position sensor" are already normalized
- * by the schemas in `./types.ts`, except that `''` has to collapse to `null` here: the reference
- * says "a null value means that no device is connected" while its own §7.7 sample sends `''`, and
- * the UI must not have to know about both (which one a console sends is unverified, OS-1).
+ * `is_bind_hub`'s string form and every spelling of "no position sensor" (`null`, `''`, `"none"`
+ * from a real console, a missing field, anything unrecognised) are already normalized by the
+ * schemas in `./types.ts`, so `door_position_status` is `'open'`, `'close'` or `null` here and the
+ * UI never has to know the wire spellings.
  */
 export function toDoor(door: AccessDoor): Door {
   return {
@@ -415,8 +416,41 @@ export function toDoor(door: AccessDoor): Door {
     type: door.type,
     boundToHub: door.is_bind_hub,
     relay: door.door_lock_relay_status,
-    position: door.door_position_status === '' ? null : door.door_position_status,
+    position: door.door_position_status,
   }
+}
+
+/** Expected `door_position_status` wire values: a reading, or one of the "no sensor" forms. */
+const EXPECTED_POSITION_VALUES: ReadonlySet<unknown> = new Set([
+  'open',
+  'close',
+  '',
+  'none',
+  null,
+  undefined,
+])
+/** Longest unexpected position string quoted in a log line; a longer one is named by its type. */
+const MAX_LOGGED_POSITION_LENGTH = 16
+
+/**
+ * A short description of a raw door's `door_position_status` when it is none of the expected wire
+ * values, or `null` when it is expected. The schema reads such a value as "no sensor", so this is
+ * only for the log: a short string is quoted, anything else is named by its type. Never a door
+ * name.
+ */
+export function unexpectedPositionValue(rawDoor: unknown): string | null {
+  if (rawDoor === null || typeof rawDoor !== 'object' || Array.isArray(rawDoor)) return null
+  const value: unknown = (rawDoor as Record<string, unknown>).door_position_status
+  if (EXPECTED_POSITION_VALUES.has(value)) return null
+  if (typeof value === 'string' && value.length <= MAX_LOGGED_POSITION_LENGTH) {
+    return JSON.stringify(value)
+  }
+  const kind = Array.isArray(value)
+    ? 'array'
+    : typeof value === 'string'
+      ? 'long string'
+      : typeof value
+  return `${/^[aeiou]/.test(kind) ? 'an' : 'a'} ${kind}`
 }
 
 /** One zod issue, structurally — just the two fields a reason line needs. */
@@ -667,7 +701,7 @@ export function createAccessClient(options: AccessClientOptions): AccessClient {
     throw new AccessApiError(
       `${raw.what} returned HTTP ${String(raw.status)} ${ACCESS_SUCCESS_CODE} with a body the ` +
         `Access schemas do not accept (${schemaMismatchReason(result.error)}). The schemas follow ` +
-        'the official Access API reference but have not been run against a console yet; OS-1 is ' +
+        'the official Access API reference, checked against only one console; OS-1 is ' +
         'the on-site check that corrects them.',
       { kind: 'invalid-response', status: raw.status, code: looseCode(raw.json), endpoint: where },
     )
@@ -709,6 +743,13 @@ export function createAccessClient(options: AccessClientOptions): AccessClient {
    */
   let quietSkipLine: string | null = null
 
+  /**
+   * Unexpected `door_position_status` values already logged (see `unexpectedPositionValue`). Each
+   * distinct one is logged once for the client's lifetime, quiet read or not, so a poll does not
+   * repeat it.
+   */
+  const loggedPositionValues = new Set<string>()
+
   return {
     async doors(doorsOptions?: DoorsOptions): Promise<Door[]> {
       const quiet = doorsOptions?.quiet === true
@@ -716,7 +757,7 @@ export function createAccessClient(options: AccessClientOptions): AccessClient {
       // The reference documents no parameters and no pagination for the doors list (§7.8): if OS-1
       // finds a `pagination` envelope after all, this is where the second page would be fetched.
       const envelope = parseBody(raw, DoorListEnvelopeSchema)
-      // Parsed **door by door**, not as one array. The shapes are documented but not yet run
+      // Parsed **door by door**, not as one array. The shapes are documented but only partly run
       // against a console (R3, OS-1), so one surprising field on one door must not empty the list
       // and leave the user unable to reach the doors that are fine — the same reasoning as the
       // Protect client skipping a camera it cannot map (CAM-1).
@@ -725,6 +766,16 @@ export function createAccessClient(options: AccessClientOptions): AccessClient {
       for (const item of envelope.data) {
         const parsed = AccessDoorSchema.safeParse(item)
         if (parsed.success) {
+          // The door is kept, its position read as "no sensor"; an unexpected value is logged
+          // once so OS-1 can learn about it, without hiding the door.
+          const odd = unexpectedPositionValue(item)
+          if (odd !== null && !loggedPositionValues.has(odd)) {
+            loggedPositionValues.add(odd)
+            log(
+              `GET /doors -> door_position_status ${odd} is not open, close or a no-sensor ` +
+                'value; read as no sensor',
+            )
+          }
           doors.push(toDoor(parsed.data))
           continue
         }
@@ -748,7 +799,7 @@ export function createAccessClient(options: AccessClientOptions): AccessClient {
         throw new AccessApiError(
           `GET /doors returned ${String(problems.length)} door(s), none of which the Access ` +
             `schemas accept (${problems[0] ?? 'no reason given'}). The schemas follow the ` +
-            'official Access API reference but have not been run against a console yet; OS-1 is ' +
+            'official Access API reference, checked against only one console; OS-1 is ' +
             'the on-site check that corrects them.',
           {
             kind: 'invalid-response',

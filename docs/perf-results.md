@@ -12,6 +12,7 @@ Recorded with the P2.5 perf harness (`npm run perf`, `scripts/perf/` + `src/main
 | macOS 27.2.1 (arm64, Apple M5 Pro, 15 cores, 64 GB) | medium | 9 | 51.5 / 53.4 | 22.1 / 24.0 | 18.6 / 19.4 | 5.4 / 5.8 | 0 / 0 | 777 / 837 | 347.9 | 0.99 / 1.04 / 1.27 | 0.78 | 1 / 1 | VideoToolboxVideoDecoder (platform; gpu enabled) | 2026-11-14, 30 min |
 | macOS 27.2.1 (arm64, Apple M5 Pro, 15 cores, 64 GB) | high | 9 (10 seen) | 51.4 / 55.0 | 20.7 / 22.2 | 18.0 / 19.6 | 5.8 / 6.2 | 3 / 13 | 928 / 998 | 396.0 | 0.99 / 1.04 / 1.09 | 0.86 | 1 / 2 | VideoToolboxVideoDecoder (platform; gpu enabled) | 2026-11-14, 30 min |
 | macOS 27.2.1 (arm64, Apple M5 Pro, 15 cores, 64 GB) | high | 9 (10 seen) | 50.9 / 52.4 | 20.3 / 21.2 | 18.5 / 19.2 | 5.8 / 6.0 | 0 / 0 | 970 / 1012 | 63.9 | 0.99 / 1.04 / 4.92 | 0.38 | 1 / 6 | VideoToolboxVideoDecoder (platform; gpu enabled) | 2026-11-14, 120 min, long |
+| macOS 27.2.1 (arm64, Apple M5 Pro, 15 cores, 64 GB) | high | 9 | 51.4 / 53.0 | 20.6 / 21.4 | 19.0 / 19.8 | 5.7 / 6.0 | 0 / 0 | 943 / 980 | 61.0 | 1.00 / 1.04 / 1.70 | 1.24 | 1 / 4 | VideoToolboxVideoDecoder, FFmpegVideoDecoder (1 not platform; gpu enabled) | 2026-11-20, 120 min, long (after UX polish) |
 
 **Reading the macOS runs (2026-11-14):**
 
@@ -38,6 +39,22 @@ Recorded with the P2.5 perf harness (`npm run perf`, `scripts/perf/` + `src/main
   The renderer went 282 → 476 MB in the first 30 minutes, then 476 → 508 MB over the next 90. Its growth rate kept falling, which is the shape of caches and the allocator settling, not of a steady leak. Even at the last window's rate, an 8-hour day adds about 100 MB (NFR-4). The whole-run slope of 63.9 MB/h is dominated by the first 30 minutes. GPU, utility and go2rtc stayed flat, and main stayed within 219–235 MB. **macOS: no memory growth that matters. G2's memory check passes.**
 - **Reconnects:** the camera in cell 7 (index 6) changed its `<video>` 5 times in the `high` run and once in the `medium` run, and cell 8 changed twice at `high`. That is the player retrying (NFR-7). Each time it recovered within one or two samples: "Not playing" peaked at 1 cell, in 1–2 samples. In the 2-hour run the same two cells reconnected again (cell 7 about 8 times, mostly around 15 min; cell 8 twice). The 4.9 s and 3.1 s buffer-lag maximums are cell 7 catching up after a reconnect: only 2 of 12,960 readings were above 2 s. Both cameras are on a weaker Wi-Fi link, so the drops are expected; what matters is that the player recovered each time without help.
 - **First frame (`FIRST_FRAME_TIMEOUT_MS` = 10 s, P2.3):** the harness does not time first frames. In these runs the user saw every cell's first frame within 10 s, so 10 s is not too tight. It is kept as is.
+
+**Re-run after the UX polish (2026-11-20).** The 2-hour `high` run was repeated with the 1.0.1 code (cell overlay restyle, placeholder compositions, fill / back transition; see "Pending re-run" below). It matches the 2026-11-14 run:
+
+- **CPU and latency:** 51.4 % of one core (renderer 20.6 %, GPU process 19.0 %, go2rtc 5.7 %); buffer lag 1.00 s mean, 1.04 s p95, 1.70 s max, with none of the 12,959 readings above 2 s. Dropped frames 1.24 % (0.38 % before).
+- **RAM (G2): it still levels off.** Slope of each 30-minute window:
+
+  | Window | Renderer MB/h | Total MB/h |
+  |---|---|---|
+  | 0–30 min | 345 | 381 |
+  | 30–60 min | 55 | 57 |
+  | 60–90 min | 6 | 9 |
+  | 90–120 min | 12 | 18 |
+
+  The renderer went 263 → 445 MB in the first 30 minutes, then 445 → 473 MB over the next 90. It settles a little later than before (55 MB/h between 30 and 60 min, against 24) but ends flatter. GPU process (~121 MB), utility (92 MB) and go2rtc (~50 MB) stayed flat, and main stayed within 221–241 MB. The whole-run slope of 61.0 MB/h is again mostly the first 30 minutes. **The UX polish adds no memory growth; G2's memory check still passes.**
+- **Reconnects:** cells 7 and 8 (indexes 6 and 7, the weaker Wi-Fi cameras) each changed their `<video>` 12 times and recovered without help; "Not playing" peaked at 1 cell, in 4 samples.
+- **Decoder (NFR-3):** 33 of the 34 players created in the run used VideoToolbox; 1 used `FFmpegVideoDecoder` (software). The summary does not say which cell; most likely one of the reconnects. CPU did not move. Worth watching for in later runs.
 
 ### Windows
 
@@ -138,4 +155,4 @@ Nothing recorded contains a URL, the console address, the go2rtc port or credent
 
 A quick check that everything works: `npm run perf -- --quality low --duration 60 --warmup 15`.
 
-**Pending re-run (UX polish, 2026-11-17).** The cell overlay restyle, the placeholder compositions (size containment on every cell) and the fill / back transition changed what the wall draws. The tables above predate them; re-run P2.5 against a real console before relying on these numbers.
+**Re-run after the UX polish (2026-11-17 → done 2026-11-20).** The cell overlay restyle, the placeholder compositions (size containment on every cell) and the fill / back transition changed what the wall draws. The macOS 2-hour `high` run was repeated after them (see "Re-run after the UX polish" under the macOS results) and matches the earlier numbers. The 30-minute `medium` run and the Windows runs have not been repeated.

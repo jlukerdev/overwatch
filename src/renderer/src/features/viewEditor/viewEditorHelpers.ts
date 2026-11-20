@@ -1,8 +1,8 @@
 // Small decisions the View editor's components need that are not edits of a View (those are
 // ./editorModel): the next free "View N" name, keeping the draft in step with the stored View,
-// reading what a drag carries, and the selection toolbar's tooltips. Pure, so they are unit-tested
-// in vitest's node environment (vitest.config.mts; tests/renderer/viewEditorHelpers.test.ts and
-// editorPanel.test.ts), per CLAUDE.md's "keep logic that has no UI pure and unit-tested", and the
+// reading what a drag carries, and the tooltips of the Cell tab's cell actions. Pure, so they are
+// unit-tested in vitest's node environment (vitest.config.mts; tests/renderer/viewEditorHelpers.test.ts
+// and editorPanel.test.ts), per CLAUDE.md's "keep logic that has no UI pure and unit-tested", and the
 // components stay thin.
 import type { View } from '@shared/models'
 import { isDraftDirty } from './editorModel'
@@ -93,7 +93,7 @@ export function layoutLossNote(count: number): string | null {
     : `${String(count)} cells with cameras did not fit the new layout and lost them.`
 }
 
-/** What the selection toolbar needs to know about the selection (`selectionActions`, the draft). */
+/** What the Cell tab's cell actions need to know about the selection (`selectionActions`, the draft). */
 export interface ToolbarSelection {
   /** How many cells are selected. */
   readonly count: number

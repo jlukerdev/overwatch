@@ -26,17 +26,19 @@
 // On the left, the list of Views (reorder on each row) with a footer pinned under it: New View, and
 // Duplicate / Delete for the View being edited. In the middle, only what the canvas needs around
 // it: a compact header (the name, the Grid controls — Layout, Columns, Rows — and Close at the far
-// right), the selection toolbar (Merge, Split, Clear cameras at the left, then the count of the
-// selected cells; a button that cannot act says why in its tooltip, `toolbarTitles`), the canvas,
-// and the save bar under it — the draft's state ("Unsaved changes" / "All changes saved", and the
-// last error beside it) with Discard and Save. The save bar is always rendered so the canvas never
-// jumps. It is also where every failure is reported — a refused Save, a merge or split, and the
-// list footer's New / Duplicate / Delete and the reorder buttons — next to the status, on one line
-// (full text in its tooltip).
+// right), the canvas, and the save bar under it — the draft's state ("Unsaved changes" / "All
+// changes saved") with Discard and Save, and beside the state the last error or, failing that, the
+// note of what the last edit cost (cameras lost to a merge or a layout change). The save bar is
+// always rendered so the canvas never jumps. It is where every failure is reported — a refused
+// Save, a merge or split, and the list footer's New / Duplicate / Delete and the reorder buttons —
+// on one line (full text in its tooltip).
 // On the right, a tabbed panel over the camera palette. **View** holds the View's Display and
-// Quality settings; **Cell** holds the cell inspector. Both panels stay mounted (the inactive one
-// `hidden`), so a change of tab loses no local state. Picking a cell when nothing was selected
-// brings the Cell tab forward (`tabAfterSelect`, ./editorTabs); after that the tab is the user's.
+// Quality settings, both folded when the editor opens; **Cell** holds what acts on the selection
+// (F1.0.2-2): the count of selected cells, Merge / Split / Clear cameras (./CellActions; a button
+// that cannot act says why in its tooltip, `toolbarTitles`), then the cell inspector. Both panels
+// stay mounted (the inactive one `hidden`), so a change of tab loses no local state. Every change
+// to a non-empty selection brings the Cell tab forward (`tabAfterSelect`, ./editorTabs); the user
+// can go back to the View tab, which stays until the selection changes again.
 // The palette stays under the tabs in both, since it is the drag source, and scrolls on its own.
 // Each cell with a camera shows its head camera's snapshot behind the name (P5.2, VIEW-3), read
 // from and fetched into the cache the Cameras tab shares (state/thumbnailsStore); which image and
@@ -70,24 +72,22 @@ import {
   ChevronDownIcon,
   ChevronUpIcon,
   CopyIcon,
-  EraserIcon,
   GridIcon,
-  MergeIcon,
   PlusIcon,
-  SplitIcon,
   TrashIcon,
   UndoIcon,
   XIcon,
 } from '../../ui/icons'
 import { setCellQuality } from '../quality/qualityChoice'
 import { CameraPalette } from './CameraPalette'
+import { CellActions } from './CellActions'
 import { CellInspector } from './CellInspector'
 import { isTextEntryTarget, keyEventTarget } from '../viewSwitcher/viewShortcut'
 import { StatusLine } from '../../ui/StatusLine'
 import { EditorCanvas } from './EditorCanvas'
 import { editorPanelId, EditorTabList, editorTabId } from './EditorTabList'
 import {
-  ALL_GROUPS_OPEN,
+  INITIAL_GROUPS,
   tabAfterSelect,
   toggleGroup,
   type EditorTab,
@@ -147,8 +147,8 @@ export function ViewEditor({ viewId, onOpen, onClose }: ViewEditorProps): JSX.El
   // A failed Delete, shown by the editor it moved back to (`initialError`).
   const [deleteError, setDeleteError] = useState<string | null>(null)
   // Which of the View tab's groups are open (P7.1, ./editorTabs). Held here, above the per-View
-  // DraftEditor, so it lasts while the editor stays open and starts with both open when it opens.
-  const [openGroups, setOpenGroups] = useState<OpenGroups>(ALL_GROUPS_OPEN)
+  // DraftEditor, so it lasts while the editor stays open and starts with both folded when it opens.
+  const [openGroups, setOpenGroups] = useState<OpenGroups>(INITIAL_GROUPS)
   const mounted = useRef(true)
   useEffect(() => {
     mounted.current = true
@@ -314,9 +314,14 @@ function DraftEditor({
   }, [])
   const [state, setState] = useState<DraftState>(() => startDraft(saved))
   const [selection, setSelection] = useState<Selection | null>(null)
-  // `Esc` clears the selection, so the next pick is a first pick again and brings the Cell tab
-  // forward (./editorTabs). Not while typing in a field, and not while a dialog is open: there
-  // `Esc` is the field's or the dialog's.
+  // The latest selection, also between renders: two pointer enters of a fast drag can arrive before
+  // React re-renders, and the second must extend from the first, not from the rendered selection.
+  const selectionRef = useRef<Selection | null>(null)
+  useEffect(() => {
+    selectionRef.current = selection
+  }, [selection])
+  // `Esc` clears the selection; the tab stays as it is (./editorTabs). Not while typing in a
+  // field, and not while a dialog is open: there `Esc` is the field's or the dialog's.
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent): void => {
       if (event.key !== 'Escape' || event.ctrlKey || event.metaKey || event.altKey) return
@@ -442,6 +447,8 @@ function DraftEditor({
   const run = (action: ViewResult, then?: (state: AppState) => void): void => {
     setPending(true)
     setError(null)
+    // The note was about the last edit; a Save or a list action moves on from it.
+    setNote(null)
     void action.then((result) => {
       setPending(false)
       if (!result.ok) {
@@ -541,13 +548,23 @@ function DraftEditor({
   }
 
   const select = (slot: Slot, extend: boolean): void => {
-    // The first pick brings the Cell tab forward; later ones leave the tab alone (./editorTabs).
-    setTab((current) => tabAfterSelect(current, rect !== null))
-    setSelection((current) =>
+    const current = selectionRef.current
+    const before =
+      current !== null && inGrid(draft, current.anchor) && inGrid(draft, current.focus)
+        ? selectionRect(draft, current.anchor, current.focus)
+        : null
+    const next: Selection =
       extend && current !== null && inGrid(draft, current.anchor)
         ? { anchor: current.anchor, focus: slot }
-        : { anchor: slot, focus: slot },
-    )
+        : { anchor: slot, focus: slot }
+    const nextRect =
+      inGrid(draft, next.anchor) && inGrid(draft, next.focus)
+        ? selectionRect(draft, next.anchor, next.focus)
+        : null
+    // A changed selection brings the Cell tab forward; the same one leaves the tab (./editorTabs).
+    setTab((tabNow) => tabAfterSelect(tabNow, before, nextRect))
+    selectionRef.current = next
+    setSelection(next)
   }
 
   const selectedCount = selectedIndexes.length
@@ -682,54 +699,6 @@ function DraftEditor({
           </button>
         </header>
 
-        <div className="viewEditor__toolbar" role="toolbar" aria-label="Selected cells">
-          <button
-            type="button"
-            className="button button--sm"
-            disabled={actions?.canMerge !== true}
-            title={titles.merge}
-            onClick={merge}
-          >
-            <MergeIcon />
-            Merge
-          </button>
-          <button
-            type="button"
-            className="button button--sm"
-            disabled={actions?.canSplit !== true}
-            title={titles.split}
-            onClick={split}
-          >
-            <SplitIcon />
-            Split
-          </button>
-          <button
-            type="button"
-            className="button button--sm"
-            disabled={!selectionHasCameras}
-            title={titles.clear}
-            onClick={clearCameras}
-          >
-            <EraserIcon />
-            Clear cameras
-          </button>
-          <span
-            className="viewEditor__selectionCount"
-            title={selectedCount === 0 ? undefined : 'Press Esc to clear the selection'}
-          >
-            {selectedCount === 0
-              ? 'No cells selected'
-              : selectedCount === 1
-                ? '1 cell selected'
-                : `${String(selectedCount)} cells selected`}
-          </span>
-          {note === null ? null : (
-            <StatusLine kind="warn" role="status" className="viewEditor__note">
-              {note}
-            </StatusLine>
-          )}
-        </div>
-
         <div className="viewEditor__canvasBox">
           <EditorCanvas
             view={draft}
@@ -761,12 +730,17 @@ function DraftEditor({
             <span className="viewEditor__saveDot" aria-hidden="true" />
             {dirty ? 'Unsaved changes' : 'All changes saved'}
           </span>
-          {/* One line, so the bar's height never changes; the whole message is in the tooltip. */}
-          {error === null ? null : (
+          {/* One line, so the bar's height never changes; the whole message is in the tooltip. The
+              last error, or else what the last edit cost (a merge or a layout change). */}
+          {error !== null ? (
             <StatusLine kind="error" role="alert" className="viewEditor__message" title={error}>
               {error}
             </StatusLine>
-          )}
+          ) : note !== null ? (
+            <StatusLine kind="warn" role="status" className="viewEditor__message" title={note}>
+              {note}
+            </StatusLine>
+          ) : null}
           <div className="viewEditor__saveActions">
             <button
               type="button"
@@ -815,9 +789,19 @@ function DraftEditor({
           aria-labelledby={editorTabId(panelId, 'cell')}
           hidden={tab !== 'cell'}
         >
+          <CellActions
+            selectedCount={selectedCount}
+            canMerge={actions?.canMerge === true}
+            canSplit={actions?.canSplit === true}
+            canClear={selectionHasCameras}
+            titles={titles}
+            onMerge={merge}
+            onSplit={split}
+            onClear={clearCameras}
+          />
           <CellInspector
             cell={inspected}
-            selectedCount={selectedIndexes.length}
+            selectedCount={selectedCount}
             cameras={cameras}
             choices={choices}
             onAdd={(ref) => {

@@ -1,7 +1,8 @@
 // The View editor's cell inspector (P3.3; VIEW-2, VIEW-3): the cameras of the one selected cell, in
 // order, with ▲/▼ to reorder, a remove button each, and an "Add camera" picker — the keyboard way to
-// assign cameras, beside the palette's drag-and-drop. It is the side panel's **Cell** tab (UX polish
-// 2026-11-17; the tab names it, so the no-selection hint has no heading of its own).
+// assign cameras, beside the palette's drag-and-drop. It is the side panel's **Cell** tab, under
+// the selection's actions (./CellActions, F1.0.2-2); the tab names it, so the hint shown when the
+// selection is not exactly one cell has no heading of its own.
 //
 // Every edit is a call into ./editorModel (`addCellCamera`, `removeCellCamera`, `moveCellCamera`)
 // made by the editor; this component only says which one. A cell holds several cameras already
@@ -122,8 +123,8 @@ export function CellInspector({
       <section className="viewEditor__panel" aria-label="Cell">
         <p className="viewEditor__hint">
           {selectedCount === 0
-            ? 'Select a cell on the canvas to see and change its cameras. Drag across cells, or Shift-click, to select several.'
-            : `${String(selectedCount)} cells are selected. Select a single cell to change its cameras.`}
+            ? 'Select a cell on the canvas to edit it.'
+            : 'Select one cell to edit its cameras and settings.'}
         </p>
       </section>
     )

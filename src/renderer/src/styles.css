@@ -837,13 +837,13 @@ body,
 
 /* --- settings bar (ui/SettingsBar.tsx) -----------------------------------------------------------
  * A screen's own settings, collapsible: the Doors screen's polling, the Cameras screen's stream
- * qualities. It sits in a screen with the `--screen-pad-*` padding (`.doors`, `.cameras`), right
- * after the screen's title row and above any banner. Closed, it takes its own row, so nothing is
- * hidden; open, its body hangs below it over the content, covering it rather than moving it (an
- * inline body would push the screen down on every open).
+ * qualities. It is the first child of a screen with the `--screen-pad-*` padding and a 1rem flex
+ * gap (`.doors`, `.cameras`), above the title row and any banner. Closed, it takes its own row, so
+ * nothing is hidden; open, its body hangs below it over the content, covering it rather than moving
+ * it (an inline body would push the screen down on every open).
  *
- * `position: sticky` keeps it at the top while the screen scrolls: the scroll container is
- * `.app__body` (html, body and #root never scroll), and the screen is its child, as tall as its
+ * `position: sticky` keeps it under the app header while the screen scrolls: the scroll container
+ * is `.app__body` (html, body and #root never scroll), and the screen is its child, as tall as its
  * content, so the bar sticks for the whole scroll.
  */
 .settingsBar {
@@ -852,13 +852,13 @@ body,
   top: 0;
   flex-shrink: 0;
   /*
-   * Flush with the sides of the screen: the negative margins take back the screen's padding. Both
-   * edges are drawn, since the bar sits between the title row and the content; stuck under the app
-   * header, its top edge doubles the header's bottom one, which still reads as a single line.
+   * Flush with the app header and the screen's sides: the negative margins take back the screen's
+   * padding. No bottom margin: the screen's flex gap already gives the title row the space the top
+   * padding gave it. Only the bottom edge is drawn; a top one would double the app header's.
    */
-  margin: 0 calc(-1 * var(--screen-pad-x));
+  margin: calc(-1 * var(--screen-pad-top)) calc(-1 * var(--screen-pad-x)) 0;
   padding: 0;
-  border-width: 1px 0;
+  border-width: 0 0 1px;
   border-radius: 0;
 }
 

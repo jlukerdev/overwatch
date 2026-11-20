@@ -1,5 +1,5 @@
-// A screen's own settings, as a collapsible bar under the screen's title row (the Doors screen's
-// polling, P5.6, and the Cameras screen's stream qualities, P5.7). The look is `.settingsBar` in
+// A screen's own settings, as a collapsible bar at the top of the screen, above its title row (the
+// Doors screen's polling, P5.6, and the Cameras screen's stream qualities, P5.7). The look is `.settingsBar` in
 // ../styles.css, which also says where the bar must sit. Only the toggle opens and closes it.
 //
 // Closed by default; the whole bar is the toggle, titled "Settings" with a gear, and opening it

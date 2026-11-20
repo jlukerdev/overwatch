@@ -12,28 +12,38 @@
 // grid is left to do nothing, and FILL-1's click-to-fill is untouched because nothing here is
 // listening yet.
 //
-// **Only the video is zoomed, as a crop** (F1.0.2-9; zoomMath's "Drawn as a crop"). Nothing is
-// transformed. Each `<video>` inside `<ZoomPanLayer>` gets `object-fit: fill` and an
-// `object-view-box` that crops its natural picture to the part the zoom shows, so the video element
-// stays the cell's size at every zoom. A transform was the obvious way and the wrong one: an 8×
-// `scale` makes the video's quad 8× the cell, and on Windows Chromium draws video through a
-// DirectComposition overlay sized from that quad, so every zoom step resized a huge swap chain or
-// dropped the video out of the overlay and back — the reported slowdown, then the picture flashing
-// back and forth. macOS scales the surface for free, which is why only Windows showed it. The crop
-// costs the same on every platform, and the placeholder (a blurred still, the "Connecting…" label)
-// is no longer blown up with the picture: it stays the cell's size, as the overlay always did.
+// **The zoomed picture is drawn on a canvas** (F1.0.2-9; zoomMath's "Drawn on a canvas"). The
+// videos are never touched: they keep playing at 1×, as the stylesheet's `contain` draws them
+// (player.css). While zoomed, `<ZoomPanLayer>`'s cell-sized `<canvas>`, laid over the player, is
+// shown and draws the visible video's current frame into zoomMath's `zoomDrawRect`, clipped by the
+// canvas. A transform was the obvious way and the wrong one, and an `object-view-box` crop the
+// second: both make the video's quad up to 8× the cell (Chromium lays the video out at the zoomed
+// size and clips it), and on Windows Chromium draws video through a DirectComposition overlay sized
+// from that quad. A trace of a 2688×1512 camera showed a swap chain rebuilt at up to 16384×9216 per
+// zoom step, presents of up to 2.1 s, then the GPU process crashing and every player reconnecting.
+// With the canvas the video and its overlay stay the cell's size at every zoom, a zoom step is only
+// a redraw, and the placeholder (a blurred still, the "Connecting…" label) is never blown up: it is
+// under the canvas, and shows only while there is no frame to draw.
 //
-// The videos are the light-DOM children of the `<vp-mse-player>` elements LivePlayer appends
-// imperatively — one, or two during a quality swap (QUAL-6) or a reconnect — so `paint` finds them
-// with `querySelectorAll` each time rather than keeping references. A layer can appear mid-zoom, and
-// it knows its natural size only at `loadedmetadata`: while filled, capture-phase `loadedmetadata`
-// and `resize` listeners on the layer (media events do not bubble, but they do pass through their
-// ancestors in the capture phase) repaint at once, so a new video is cropped before its first frame
-// shows. A video with no size yet is left to the stylesheet's `contain` (player.css). The overlay
-// (name, badge, controls) is the layer's sibling and is never touched. The layer is **always
-// rendered**, filled or not, zoomed or not: wrapping the player only while zoomed would re-parent
-// it, which is a remount — a new connection, the very thing FILL-2's "same player, enlarged" exists
-// to avoid. At 1× no video has any inline style from here at all.
+// **Which video, and when.** The visible video is the last, in DOM order, inside a
+// `.livePlayer__layer` that is not `--pending` and not inside a pre-warm wrapper
+// (`.gridCell__player--prewarm`, Cell.tsx); with none, or one without a current frame and a size,
+// the canvas is hidden and the player shows as at 1×. They are the light-DOM children of the
+// `<vp-mse-player>` elements LivePlayer appends imperatively — one, or two during a quality swap
+// (QUAL-6) or a reconnect — so `paint` finds the visible one each time rather than keeping a
+// reference. The canvas is drawn by `paint` (once per animation frame of a gesture, at once on a
+// reset) and, while zoomed, on each new frame of the visible video: one `requestVideoFrameCallback`
+// is kept pending on it, and each callback paints, which re-registers on whatever video is visible
+// by then. What can change the visible video without a frame of it — a layer's `--pending` going,
+// a layer removed, a pre-warm wrapper becoming the shown one — is watched by a `MutationObserver`
+// on the layer while zoomed, and a video learning its size by capture-phase `loadedmetadata` and
+// `resize` listeners (media events do not bubble, but they do pass through their ancestors in the
+// capture phase); both repaint. The background the canvas clears to is the player's own
+// (`.livePlayer`'s computed colour, read once per zoom), so its bars are the letterbox's. The
+// overlay (name, badge, controls) is the layer's sibling and is never touched. The layer is
+// **always rendered**, filled or not, zoomed or not: wrapping the player only while zoomed would
+// re-parent it, which is a remount — a new connection, the very thing FILL-2's "same player,
+// enlarged" exists to avoid. At 1× the canvas is hidden and 0×0, and no frame callback is pending.
 //
 // **The cell listens, not the layer.** Wheel, pointer and click listeners go on the cell element
 // (`.gridCell`), native and attached in an effect (as CellOverlay's hover listeners are), so a wheel
@@ -63,8 +73,7 @@
 // so that leftover swallow is forgotten before any later click on the picture.
 //
 // **Hot path.** Wheel ticks and pointer moves arrive many times a frame. The zoom state lives in a
-// ref, and the crop is written straight onto each video's `style`, once per animation frame however
-// many events came in. The one thing React draws is `zoomed` (scale > 1), mirrored in a ref and
+// ref, and the canvas is redrawn from it once per animation frame however many events came in. The one thing React draws is `zoomed` (scale > 1), mirrored in a ref and
 // `setState`d only when it flips, because it decides whether the 100% control is there; a wheel
 // tick at 3× re-renders nothing. The cursor classes are toggled with `classList`, not
 // through React's `className`, so they never re-render anything either. The cell's rect is read at
@@ -76,13 +85,14 @@
 // stylesheet loads first, a cursor resting on a zoomed picture still gets out of the way.
 //
 // **Reset on leaving fill** (ZOOM-2). Esc, the back control, a plain double-click, a View switch or
-// the slot going away all end in `enabled` going false, and the effect's cleanup puts every video
-// back to the identity at once (not on the next frame) by clearing its inline `object-fit` and
-// `object-view-box`, cancels the frame, drops every listener and the resize observer, releases any
+// the slot going away all end in `enabled` going false, and the effect's cleanup goes back to the identity at once
+// (not on the next frame) by hiding and emptying the canvas and cancelling its frame callback,
+// cancels the animation frame, drops every listener and the resize observer, releases any
 // pointer capture and clears the cursor classes. Unmount is the same cleanup. **Resize** is watched
 // only while zoomed: a `ResizeObserver` on the cell re-clamps to the new box at the same scale, so a
 // window resize never leaves a gap at an edge, and repaints even when the clamp changes nothing —
-// the crop depends on the box's shape, not only on the state.
+// the drawing depends on the box, not only on the state, and the canvas's backing store is resized
+// to the new box.
 import {
   useCallback,
   useEffect,
@@ -104,11 +114,12 @@ import {
   pinchStep,
   wheelZoomFactor,
   zoomAt,
-  zoomViewBox,
+  zoomDrawRect,
   type ClickGuardEvent,
   type ClickGuardState,
   type ZoomBox,
   type ZoomPoint,
+  type ZoomRect,
   type ZoomState,
 } from './zoomMath'
 import './zoom.css'
@@ -122,12 +133,19 @@ const PANNING_CLASS = 'gridCell--panning'
  * wheel or click there is a control's, never zoom's (header).
  */
 const CONTROLS_SELECTOR = '.cellOverlay__slot, .cellOverlay__bottom'
+/** On `<ZoomPanLayer>`'s canvas while it shows the zoomed picture (zoom.css). */
+const CANVAS_ON_CLASS = 'zoomPan__canvas--on'
+/** The videos that may be the visible one (header, "Which video"); pre-warm ones are filtered out. */
+const SHOWN_VIDEO_SELECTOR = '.livePlayer__layer:not(.livePlayer__layer--pending) video'
+const PREWARM_SELECTOR = '.gridCell__player--prewarm'
 
 export interface ZoomPan {
   /** For the cell element (`.gridCell`): where every listener goes. */
   readonly cellRef: RefObject<HTMLDivElement | null>
-  /** For `<ZoomPanLayer>`: where the videos to crop are found. */
+  /** For `<ZoomPanLayer>`: where the video to draw is found. */
   readonly layerRef: RefObject<HTMLDivElement | null>
+  /** For `<ZoomPanLayer>`'s canvas: where the zoomed picture is drawn. */
+  readonly canvasRef: RefObject<HTMLCanvasElement | null>
   /** Scale > 1: the 100% control is shown. */
   readonly zoomed: boolean
   /** ZOOM-2's 100% control. Stable. */
@@ -158,6 +176,66 @@ function measureCell(cell: HTMLElement): MeasuredCell {
   return { left: rect.left, top: rect.top, box: { width: rect.width, height: rect.height } }
 }
 
+/** A video's pending `requestVideoFrameCallback`, with the element it was registered on. */
+interface PendingFrame {
+  readonly video: HTMLVideoElement
+  readonly id: number
+}
+
+/**
+ * Shows or hides the canvas, writing its class only when that changes: even an unchanged write is a
+ * mutation, which the layer's `MutationObserver` would answer with another paint.
+ */
+function showCanvas(canvas: HTMLCanvasElement, on: boolean): void {
+  if (canvas.classList.contains(CANVAS_ON_CLASS) !== on)
+    canvas.classList.toggle(CANVAS_ON_CLASS, on)
+}
+
+/** The visible video in the layer, or `null` (header, "Which video"). */
+function visibleVideo(layer: HTMLElement): HTMLVideoElement | null {
+  let found: HTMLVideoElement | null = null
+  for (const video of layer.querySelectorAll<HTMLVideoElement>(SHOWN_VIDEO_SELECTOR)) {
+    if (video.closest(PREWARM_SELECTOR) === null) found = video
+  }
+  return found
+}
+
+/** The video has a frame to draw and knows its size. */
+function hasFrame(video: HTMLVideoElement): boolean {
+  return (
+    video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA &&
+    video.videoWidth > 0 &&
+    video.videoHeight > 0
+  )
+}
+
+/** The colour behind the player (player.css's `.livePlayer` background), never hard-coded here. */
+function playerBackground(layer: HTMLElement, video: HTMLVideoElement): string {
+  const player = video.closest('.livePlayer') ?? layer.querySelector('.livePlayer')
+  if (player !== null) {
+    const colour = getComputedStyle(player).backgroundColor
+    if (colour !== '' && colour !== 'transparent' && colour !== 'rgba(0, 0, 0, 0)') return colour
+  }
+  return getComputedStyle(document.documentElement).getPropertyValue('--bg-sunken').trim()
+}
+
+/**
+ * One frame on the canvas: cleared to the player's background, then the video drawn into `rect`
+ * (cell-local CSS px), scaled to the backing store's device px; the canvas clips what reaches past it.
+ */
+function drawFrame(
+  context: CanvasRenderingContext2D,
+  video: HTMLVideoElement,
+  rect: ZoomRect,
+  dpr: number,
+  background: string,
+): void {
+  context.fillStyle = background
+  context.fillRect(0, 0, context.canvas.width, context.canvas.height)
+  context.imageSmoothingEnabled = true
+  context.drawImage(video, rect.left * dpr, rect.top * dpr, rect.width * dpr, rect.height * dpr)
+}
+
 /** The event started on one of the overlay's controls, which zoom leaves alone (header). */
 function isOnControl(target: EventTarget | null): boolean {
   return target instanceof Element && target.closest(CONTROLS_SELECTOR) !== null
@@ -166,6 +244,15 @@ function isOnControl(target: EventTarget | null): boolean {
 export function useZoomPan(enabled: boolean): ZoomPan {
   const cellRef = useRef<HTMLDivElement | null>(null)
   const layerRef = useRef<HTMLDivElement | null>(null)
+  const canvasRef = useRef<HTMLCanvasElement | null>(null)
+  /** The canvas's 2D context, made once; it also keeps the canvas reachable after an unmount. */
+  const contextRef = useRef<CanvasRenderingContext2D | null>(null)
+  /** The colour the canvas clears to, read at the first draw of each zoom (header). */
+  const backgroundRef = useRef<string | null>(null)
+  /** The one pending video frame callback while zoomed (header, "Which video, and when"). */
+  const pendingFrameRef = useRef<PendingFrame | null>(null)
+  /** `paint`, for the video frame callbacks `paint` itself registers. */
+  const paintRef = useRef<(() => void) | null>(null)
   const stateRef = useRef<ZoomState>(ZOOM_IDENTITY)
   const zoomedRef = useRef(false)
   const frameRef = useRef<number | null>(null)
@@ -173,39 +260,101 @@ export function useZoomPan(enabled: boolean): ZoomPan {
   const rectRef = useRef<MeasuredCell | null>(null)
   const [zoomed, setZoomed] = useState(false)
 
+  /** Cancels the pending video frame callback, if any. */
+  const cancelFrameCallback = useCallback((): void => {
+    const pending = pendingFrameRef.current
+    if (pending === null) return
+    pendingFrameRef.current = null
+    pending.video.cancelVideoFrameCallback(pending.id)
+  }, [])
+
   /**
-   * Writes the current state onto every video in the layer now (header, "Only the video is zoomed").
-   * At the identity, or for a video with no size yet, the inline crop is cleared and player.css's
-   * `contain` applies.
+   * Back to 1×: the canvas hidden and emptied (a 0×0 backing store holds no memory), no frame
+   * callback pending. Needs neither ref an unmount may already have cleared: the context knows its
+   * canvas.
+   */
+  const stopCanvas = useCallback((): void => {
+    cancelFrameCallback()
+    backgroundRef.current = null
+    const canvas = canvasRef.current ?? contextRef.current?.canvas ?? null
+    if (canvas === null) return
+    showCanvas(canvas, false)
+    if (canvas.width !== 0) canvas.width = 0
+    if (canvas.height !== 0) canvas.height = 0
+  }, [cancelFrameCallback])
+
+  /**
+   * Draws the current state on the canvas now (header, "The zoomed picture is drawn on a canvas"),
+   * and keeps a frame callback pending on the visible video so its next frame is drawn too. At the
+   * identity the canvas is stopped; with no frame to draw it is only hidden, and the callback waits
+   * for one.
    */
   const paint = useCallback((): void => {
-    const layer = layerRef.current
-    if (layer === null) return
     const state = stateRef.current
-    // Normally cached by the press or wheel that zoomed; the identity needs no box at all. Without
-    // a cached rect, the cell's layout size: unlike `measureCell` it never ends the fill transition
-    // from a paint, and a transform on the slot does not change it.
-    let box: ZoomBox | null = null
-    if (isZoomed(state)) {
-      const cell = cellRef.current
-      box =
-        rectRef.current?.box ??
-        (cell === null ? null : { width: cell.clientWidth, height: cell.clientHeight })
+    const layer = layerRef.current
+    const canvas = canvasRef.current
+    if (!isZoomed(state) || layer === null || canvas === null) {
+      stopCanvas()
+      return
     }
-    for (const video of layer.querySelectorAll('video')) {
-      const viewBox =
-        box === null
-          ? ''
-          : zoomViewBox(state, box, { width: video.videoWidth, height: video.videoHeight })
-      if (viewBox === '') {
-        video.style.removeProperty('object-fit')
-        video.style.removeProperty('object-view-box')
-      } else {
-        video.style.setProperty('object-fit', 'fill')
-        video.style.setProperty('object-view-box', viewBox)
+    // Normally cached by the press or wheel that zoomed. Without a cached rect, the cell's layout
+    // size: unlike `measureCell` it never ends the fill transition from a paint, and a transform on
+    // the slot does not change it.
+    const cell = cellRef.current
+    const box: ZoomBox | null =
+      rectRef.current?.box ??
+      (cell === null ? null : { width: cell.clientWidth, height: cell.clientHeight })
+    const video = visibleVideo(layer)
+
+    // One callback, on the visible video; moved when the visible video changes.
+    if (pendingFrameRef.current !== null && pendingFrameRef.current.video !== video) {
+      cancelFrameCallback()
+    }
+    if (video !== null && pendingFrameRef.current === null) {
+      const pending: PendingFrame = {
+        video,
+        id: video.requestVideoFrameCallback(() => {
+          if (pendingFrameRef.current === pending) pendingFrameRef.current = null
+          paintRef.current?.()
+        }),
       }
+      pendingFrameRef.current = pending
     }
-  }, [])
+
+    const rect =
+      box === null || video === null || !hasFrame(video)
+        ? null
+        : zoomDrawRect(state, box, { width: video.videoWidth, height: video.videoHeight })
+    if (box === null || video === null || rect === null) {
+      showCanvas(canvas, false)
+      return
+    }
+    let context = contextRef.current
+    if (context?.canvas !== canvas) {
+      context = contextRef.current = canvas.getContext('2d', { alpha: false })
+    }
+    if (context === null) {
+      showCanvas(canvas, false)
+      return
+    }
+
+    const dpr = window.devicePixelRatio || 1
+    const width = Math.round(box.width * dpr)
+    const height = Math.round(box.height * dpr)
+    // Assigning a size clears the canvas (and resets the context), so only when it changes.
+    if (canvas.width !== width) canvas.width = width
+    if (canvas.height !== height) canvas.height = height
+    backgroundRef.current ??= playerBackground(layer, video)
+    drawFrame(context, video, rect, dpr, backgroundRef.current)
+    showCanvas(canvas, true)
+  }, [cancelFrameCallback, stopCanvas])
+
+  useEffect(() => {
+    paintRef.current = paint
+    return () => {
+      paintRef.current = null
+    }
+  }, [paint])
 
   /** Paints on the next animation frame, once however many times it is asked (header). */
   const schedulePaint = useCallback((): void => {
@@ -411,8 +560,9 @@ export function useZoomPan(enabled: boolean): ZoomPan {
 
   // Resize while zoomed: same scale, re-clamped to the new box (header), and the new rect cached
   // for the next move. The observer's first report, right after `observe`, is a no-op clamp. The
-  // repaint is asked for either way: a new box is a new crop even when the clamp keeps the state
-  // (`apply` skips an unchanged one, and `schedulePaint` coalesces with its frame when it did not).
+  // repaint is asked for either way: a new box is a new drawing and a new canvas size even when the
+  // clamp keeps the state (`apply` skips an unchanged one, and `schedulePaint` coalesces with its
+  // frame when it did not).
   useEffect(() => {
     const cell = cellRef.current
     if (!enabled || !zoomed || cell === null) return undefined
@@ -428,10 +578,10 @@ export function useZoomPan(enabled: boolean): ZoomPan {
   }, [enabled, zoomed, apply, schedulePaint])
 
   // A video that learns its size mid-zoom — a quality swap's or a reconnect's new layer, or a stream
-  // whose resolution changed — is cropped at once, before its first frame shows (header). Capture
-  // phase, because media events do not bubble. Attached for as long as the cell is filled, not only
-  // while zoomed: a video whose size arrives between the first zoomed paint and React committing
-  // `zoomed` would otherwise stay uncropped. At 1× the paint only clears, which costs nothing.
+  // whose resolution changed — is drawn at its new size at once (header). Capture phase, because
+  // media events do not bubble. Attached for as long as the cell is filled, not only while zoomed: a
+  // video whose size arrives between the first zoomed paint and React committing `zoomed` would
+  // otherwise wait for its next frame. At 1× the paint only stops the canvas, which costs nothing.
   useEffect(() => {
     const layer = layerRef.current
     if (!enabled || layer === null) return undefined
@@ -440,30 +590,48 @@ export function useZoomPan(enabled: boolean): ZoomPan {
     }
     layer.addEventListener('loadedmetadata', onMediaSize, { capture: true })
     layer.addEventListener('resize', onMediaSize, { capture: true })
+    // A change of which video is visible (a swap's layer promoted, the old one removed, a pre-warm
+    // wrapper shown) repaints too (header, "Which video"): the frame callback may sit on a video that
+    // is gone. For the same reason as the listeners above, for as long as the cell is filled: a swap
+    // between the first zoomed paint and React committing `zoomed` would otherwise freeze the canvas.
+    // The canvas's own class is the hook's, not a change of video.
+    const mutations = new MutationObserver((records) => {
+      if (records.some((record) => record.target !== canvasRef.current)) schedulePaint()
+    })
+    mutations.observe(layer, {
+      subtree: true,
+      childList: true,
+      attributes: true,
+      attributeFilter: ['class'],
+    })
     return () => {
       layer.removeEventListener('loadedmetadata', onMediaSize, { capture: true })
       layer.removeEventListener('resize', onMediaSize, { capture: true })
+      mutations.disconnect()
     }
-  }, [enabled, paint])
+  }, [enabled, paint, schedulePaint])
 
-  return { cellRef, layerRef, zoomed, resetZoom }
+  return { cellRef, layerRef, canvasRef, zoomed, resetZoom }
 }
 
 export interface ZoomPanLayerProps {
   /** `useZoomPan`'s `layerRef`. */
   readonly layerRef: RefObject<HTMLDivElement | null>
-  /** The player, and only the player (header, "Only the video is zoomed"). */
+  /** `useZoomPan`'s `canvasRef`. */
+  readonly canvasRef: RefObject<HTMLCanvasElement | null>
+  /** The player, and only the player (header, "The zoomed picture is drawn on a canvas"). */
   readonly children: ReactNode
 }
 
 /**
- * The element around the player whose videos `useZoomPan` crops; never transformed itself. Always
- * rendered, so the player never remounts (FILL-2).
+ * The element around the player, and the canvas over it where `useZoomPan` draws the zoomed
+ * picture; neither is ever transformed. Always rendered, so the player never remounts (FILL-2).
  */
-export function ZoomPanLayer({ layerRef, children }: ZoomPanLayerProps): JSX.Element {
+export function ZoomPanLayer({ layerRef, canvasRef, children }: ZoomPanLayerProps): JSX.Element {
   return (
     <div className="zoomPan" ref={layerRef}>
       {children}
+      <canvas className="zoomPan__canvas" ref={canvasRef} aria-hidden />
     </div>
   )
 }

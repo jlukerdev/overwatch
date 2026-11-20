@@ -291,7 +291,8 @@ interface ControllerLayer {
  * The player's recoveries, one `console.warn` each, so a report from the field has them in the app
  * log (renderer warnings reach it as `[renderer] …`). Fixed text only: no URL, stream name or go2rtc
  * message. Each fires once per recovery — a few an hour on a wall that is struggling, none on a
- * healthy one — and never per frame or per sample.
+ * healthy one — and never per frame or per sample. A socket that keeps closing while go2rtc or the
+ * network is down is logged once, until the player paints again.
  */
 const STALLED_WARNING = `[LivePlayer] picture froze for ${String(STALL_GRACE_MS / 1000)} s; reconnecting`
 const NO_FIRST_FRAME_WARNING = `[LivePlayer] no picture within ${String(FIRST_FRAME_TIMEOUT_MS / 1000)} s; retrying`
@@ -318,6 +319,11 @@ function createPlayerController(input: {
   let volume = input.volume
   let disposed = false
   const layers = new Map<number, ControllerLayer>()
+  /**
+   * A socket close was logged and no layer has painted since: further closes are the same outage
+   * retrying (every backoff step, or every cell at a go2rtc restart), and stay out of the app log.
+   */
+  let socketCloseLogged = false
   /** At most one `ensureStream` is ever scheduled (see the `ensure` command), so one slot. */
   let ensureTimer: ReturnType<typeof setTimeout> | null = null
   /** The last answer `reportAudio` gave; nothing is reported before a layer with audio shows. */
@@ -403,11 +409,14 @@ function createPlayerController(input: {
     element.classList.add('livePlayer__layer', PENDING_LAYER_CLASS)
     element.setHooks({
       onFirstFrame: () => {
+        socketCloseLogged = false
         dispatch({ type: 'firstFrame', id })
       },
       onSocketClosed: () => {
         // Only a socket that died by itself; one this player closes is quiet (MsePlayer.stop).
-        console.warn(SOCKET_CLOSED_WARNING)
+        // Once per outage, not once per retry (`socketCloseLogged`).
+        if (!socketCloseLogged) console.warn(SOCKET_CLOSED_WARNING)
+        socketCloseLogged = true
         dispatch({ type: 'socketClosed', id })
       },
       onCodecUnsupported: (mime) => {

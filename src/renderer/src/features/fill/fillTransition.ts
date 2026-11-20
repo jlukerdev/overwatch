@@ -17,9 +17,9 @@
 // seems to grow in place; the box around it is a little off the old rectangle on one axis, which
 // nobody sees in a sixth of a second.
 //
-// **The slot, not the zoom layer.** `useZoomPan` owns the crop of the videos inside the cell's
-// `.zoomPan` (features/zoom/ZoomPan.tsx); this transform is on `.gridView__slot`, further up, so the
-// two never write the same property.
+// **The slot, not the zoom layer.** `useZoomPan` draws the zoom on its own canvas inside the cell's
+// `.zoomPan` (features/zoom/ZoomPan.tsx) and writes nothing on the slot or the videos; this
+// transform is on `.gridView__slot`, further up, so the two never write the same property.
 //
 // **When it runs** ({@link fillTransitionPlan}): only when the filled slot changed within one View
 // that is on screen at a real size, and the user has not asked for reduced motion. A View switch

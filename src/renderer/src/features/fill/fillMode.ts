@@ -93,6 +93,7 @@ import { isTextEntryTarget, type ViewShortcutTarget } from '../viewSwitcher/view
 export type FillState = { readonly viewId: string; readonly slotKey: string } | null
 
 /** Fill shows the whole camera, whatever the View's own `fit` (header). */
+// The zoom's canvas assumes it (zoomMath's `containRect`): change both together.
 export const FILL_FIT: Fit = 'contain'
 
 /**

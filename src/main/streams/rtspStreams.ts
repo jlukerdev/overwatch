@@ -122,14 +122,26 @@ export function rtspInventory(
 
 /**
  * RTSP-3/5: a stored stream URL → its go2rtc source. `rtsps://` becomes go2rtc's `rtspx://` (TLS
- * without certificate verification: go2rtc cannot pin, SPEC R12); only the scheme changes, matched
- * ignoring case, and the rest is kept verbatim. `rtsp://` is passed as is. Anything else is
- * returned unchanged too: the caller has already validated the URL (`validateRtspUrl`), so this is
- * not a second validator.
+ * without certificate verification: go2rtc cannot pin, SPEC R12), matched ignoring case; `rtsp://`
+ * keeps its scheme. Anything else is returned unchanged: the caller has already validated the URL
+ * (`validateRtspUrl`), so this is not a second validator.
  *
- * Unlike Protect's `toGo2rtcSource` nothing is stripped from the query: a user's camera expects its
- * own URL exactly as entered.
+ * One query parameter is dropped, **`enableSrtp`** (name matched ignoring case): a UniFi console's
+ * own RTSPS address ends in `?enableSrtp`, and with it the console expects SRTP and go2rtc's
+ * RTSP-over-TLS session fails (go2rtc issue #81, SPEC §5.3) — the same rule as Protect's
+ * `toGo2rtcSource`. Everything else (userinfo, host, path, other parameters, a fragment) is kept
+ * verbatim, because a camera expects its own URL as entered.
  */
 export function toRtspGo2rtcSource(url: string): string {
-  return /^rtsps:\/\//i.test(url) ? `rtspx://${url.slice('rtsps://'.length)}` : url
+  const source = /^rtsps:\/\//i.test(url) ? `rtspx://${url.slice('rtsps://'.length)}` : url
+  const hash = source.indexOf('#')
+  const beforeHash = hash === -1 ? source : source.slice(0, hash)
+  const fragment = hash === -1 ? '' : source.slice(hash)
+  const q = beforeHash.indexOf('?')
+  if (q === -1) return source
+  const kept = beforeHash
+    .slice(q + 1)
+    .split('&')
+    .filter((p) => p !== '' && p.split('=')[0]?.toLowerCase() !== 'enablesrtp')
+  return `${beforeHash.slice(0, q)}${kept.length > 0 ? `?${kept.join('&')}` : ''}${fragment}`
 }

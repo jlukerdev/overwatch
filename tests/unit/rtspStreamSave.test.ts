@@ -216,8 +216,8 @@ describe('rtspInventory (RTSP-3)', () => {
 
 describe('toRtspGo2rtcSource (RTSP-3, RTSP-5)', () => {
   it('turns rtsps:// into rtspx://, matching the scheme ignoring case, and keeps the rest verbatim', () => {
-    expect(toRtspGo2rtcSource('rtsps://u:p@cam.invalid:7441/a/b?enableSrtp&x=1')).toBe(
-      'rtspx://u:p@cam.invalid:7441/a/b?enableSrtp&x=1',
+    expect(toRtspGo2rtcSource('rtsps://u:p@cam.invalid:7441/a/b?x=1&y')).toBe(
+      'rtspx://u:p@cam.invalid:7441/a/b?x=1&y',
     )
     expect(toRtspGo2rtcSource('RTSPS://Cam.Invalid/Live')).toBe('rtspx://Cam.Invalid/Live')
   })
@@ -225,6 +225,21 @@ describe('toRtspGo2rtcSource (RTSP-3, RTSP-5)', () => {
   it('passes rtsp:// as is', () => {
     expect(toRtspGo2rtcSource(URL_A)).toBe(URL_A)
     expect(toRtspGo2rtcSource('RTSP://cam.invalid/x')).toBe('RTSP://cam.invalid/x')
+  })
+
+  it('drops enableSrtp (a UniFi console address) and keeps every other parameter', () => {
+    expect(toRtspGo2rtcSource('rtsps://console.invalid:7441/AbCdEf?enableSrtp')).toBe(
+      'rtspx://console.invalid:7441/AbCdEf',
+    )
+    expect(toRtspGo2rtcSource('rtsps://cam.invalid/a?x=1&EnableSRTP=true&y=2')).toBe(
+      'rtspx://cam.invalid/a?x=1&y=2',
+    )
+    expect(toRtspGo2rtcSource('rtsp://cam.invalid/a?enableSrtp#frag')).toBe(
+      'rtsp://cam.invalid/a#frag',
+    )
+    expect(toRtspGo2rtcSource('rtsp://cam.invalid/a?enableSrtpX=1')).toBe(
+      'rtsp://cam.invalid/a?enableSrtpX=1',
+    )
   })
 
   it('only rewrites the scheme at the start', () => {

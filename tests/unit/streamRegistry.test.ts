@@ -665,7 +665,7 @@ describe('ensureStream in RTSP streams mode (RTSP-3, RTSP-5)', () => {
     expect(StreamHandleSchema.parse(handle)).toEqual(handle)
     expect(handle).toMatchObject({ cameraId: GARDEN, quality: 'high', name: `${GARDEN}_high` })
     expect(handle.port).toBe(PORT)
-    // Only the scheme changes: the query is kept verbatim (unlike Protect's enableSrtp strip).
+    // The scheme changes and only enableSrtp would be dropped; other parameters are kept.
     expect(r.go2rtc.registered.get(`${GARDEN}_high`)).toBe(
       'rtspx://admin:garden-pass-1@cam-a.invalid:7441/high?x=1',
     )

@@ -177,35 +177,15 @@
   white-space: nowrap;
 }
 
-/* QUAL-7: which RTSPS qualities exist on the console, as small quiet chips. A detail, so muted;
-   an absent quality is dimmed rather than hidden, so the card says what is missing too. */
+/* QUAL-7: which RTSPS qualities exist on the console, as the shared `.qualityChips` (styles.css),
+   or a muted note in their place. */
 .cameraCard__rtsps {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.3rem;
   margin: 0.2rem 0 0;
-  padding: 0;
-  list-style: none;
 }
 
 .cameraCard__rtspsNote {
   color: var(--muted);
   font-size: var(--font-xs);
-}
-
-.cameraCard__rtspsQuality {
-  padding: 0.05rem 0.4rem;
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  color: var(--fg);
-  font-size: var(--font-xs);
-  letter-spacing: 0.02em;
-}
-
-.cameraCard__rtspsQuality--absent {
-  border-style: dashed;
-  color: var(--muted);
-  opacity: 0.55;
 }
 
 /* P4.5: the list loads all at once. The first load shows this bar in the empty state, in place

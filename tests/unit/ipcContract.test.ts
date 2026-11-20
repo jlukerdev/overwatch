@@ -817,7 +817,11 @@ describe('the stream contract (CON-2, NFR-9)', () => {
     // go2rtc opens the upstream RTSPS session only while a consumer is attached, so a release call
     // would be a second lifecycle for the renderer to get wrong — and the app never DELETEs a
     // Protect stream (QUAL-8: they may be shared with other integrations).
+    // `deleteRtspStream` (RTSP-1) is not one: it removes a configured RTSP stream from the user's
+    // list and its URLs from secrets.bin, and plays no part in a player's lifecycle.
+    const notAPlaybackCall = new Set<string>(['deleteRtspStream'])
     for (const name of Object.keys(IPC)) {
+      if (notAPlaybackCall.has(name)) continue
       expect(/release|delete|destroy|stop.*stream/i.test(name), name).toBe(false)
     }
   })

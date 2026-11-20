@@ -33,6 +33,7 @@ import {
   type Settings,
 } from '@shared/models'
 import type { StreamQuality } from '@shared/quality'
+import type { RtspStreamUrls } from '@shared/rtsp'
 import { streamHandle } from '@shared/streams'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { ConfigSchema, CONFIG_SCHEMA_VERSION, type Config } from '../../src/main/config/schema'
@@ -56,6 +57,7 @@ import {
   type StreamRegistry,
   type StreamRegistryErrorKind,
 } from '../../src/main/streams/registry'
+import { RtspStreamError } from '../../src/main/streams/rtspStreams'
 import { PinMismatchError, PinRequiredError } from '../../src/main/tls/pinning'
 import type { LeafCertInfo, PinCheckResult } from '../../src/main/tls/pinning'
 import type { z } from 'zod'
@@ -130,10 +132,25 @@ function setup(options: SetupOptions = {}) {
     schemaVersion: CONFIG_SCHEMA_VERSION,
     console: ConsoleConfigSchema.parse({ host: '192.0.2.10', certFingerprint: FP_A }),
   })
+  /** RTSP-2: what the fake secrets.bin holds under `rtspUrls`, written like the real store does. */
+  let storedRtspUrls: Record<string, RtspStreamUrls> = {}
   const secrets = {
     isEncryptionAvailable: vi.fn(() => options.keystore ?? true),
     set: vi.fn(() => Promise.resolve()),
     clear: vi.fn(() => Promise.resolve()),
+    setRtspUrls: vi.fn((streamId: string, urls: RtspStreamUrls) => {
+      const rest = Object.fromEntries(
+        Object.entries(storedRtspUrls).filter(([id]) => id !== streamId),
+      )
+      storedRtspUrls = Object.keys(urls).length === 0 ? rest : { ...rest, [streamId]: { ...urls } }
+      return Promise.resolve()
+    }),
+    clearRtspStream: vi.fn((streamId: string) => {
+      storedRtspUrls = Object.fromEntries(
+        Object.entries(storedRtspUrls).filter(([id]) => id !== streamId),
+      )
+      return Promise.resolve()
+    }),
   }
   const check: PinCheckResult = options.check ?? {
     state: 'no-pin',
@@ -321,6 +338,10 @@ function setup(options: SetupOptions = {}) {
     /** What the fake config store last wrote. */
     get disk() {
       return stored
+    },
+    /** What the fake secrets store holds under `rtspUrls`. */
+    get secretsDisk() {
+      return storedRtspUrls
     },
     setReady(next: boolean) {
       ready = next
@@ -588,6 +609,21 @@ describe('request validation (CLAUDE.md)', () => {
       payload: { links: { 'cam-1': 7 } },
       why: 'a door id that is not a string',
     },
+    {
+      channel: IPC.saveRtspStream.channel,
+      payload: { name: 'Garden', urls: { high: 'exec:rm -rf /' } },
+      why: 'a URL with a scheme go2rtc would run (RTSP-2)',
+    },
+    {
+      channel: IPC.saveRtspStream.channel,
+      payload: { name: '  ', urls: {} },
+      why: 'a name that is only whitespace',
+    },
+    {
+      channel: IPC.deleteRtspStream.channel,
+      payload: { id: 'cam-1' },
+      why: 'an id that is not an RTSP stream id',
+    },
   ]
 
   for (const { channel, payload, why } of cases) {
@@ -660,6 +696,10 @@ function payloadFor(channel: string): unknown {
       return { withSocketSec: 5, withoutSocketSec: 2, unlockedSec: 1, detailsSec: 30 }
     case IPC.setViewVisible.channel:
       return { visible: true }
+    case IPC.saveRtspStream.channel:
+      return { name: 'Garden', urls: { high: 'rtsp://cam.invalid/1' } }
+    case IPC.deleteRtspStream.channel:
+      return { id: 'rtsp-0f8e1c2a-3b4d-4e5f-8a9b-0c1d2e3f4a5b' }
     default:
       return undefined
   }
@@ -2218,6 +2258,264 @@ describe('setViewVisible (P6.2, NFR-8)', () => {
     })
     const result = await handlerFor(router, IPC.setViewVisible.channel)({ visible: true })
     expect(failure(result)).toMatchObject({ kind: 'not-ready', retryable: true })
+  })
+})
+
+describe('saveRtspStream / deleteRtspStream (RTSP-1/2, F1.0.2-5)', () => {
+  const HIGH = 'rtsp://admin:garden-pass-1@cam-a.invalid:554/high'
+  const MEDIUM = 'rtsp://admin:garden-pass-2@cam-a.invalid:554/medium'
+  const LOW = 'rtsps://admin:garden-pass-3@cam-a.invalid:7441/low'
+  const OTHER = 'rtsp://admin:porch-pass@cam-b.invalid/live'
+  const URLS = [HIGH, MEDIUM, LOW, OTHER]
+  const UNKNOWN_ID = 'rtsp-99999999-9999-4999-8999-999999999999'
+
+  /** Every reply of the test, for the CON-2 check at the end of each one. */
+  let replies: unknown[]
+
+  beforeEach(() => {
+    replies = []
+  })
+
+  async function save(payload: unknown): Promise<IpcResult<AppState>> {
+    const result = await h.call<AppState>(IPC.saveRtspStream, payload)
+    replies.push(result)
+    return result
+  }
+
+  async function remove(id: string): Promise<IpcResult<AppState>> {
+    const result = await h.call<AppState>(IPC.deleteRtspStream, { id })
+    replies.push(result)
+    return result
+  }
+
+  /** Creates a stream and answers its id. */
+  async function create(name: string, urls: Record<string, string>): Promise<string> {
+    const result = await save({ name, urls })
+    if (!result.ok) throw new Error(`create failed: ${result.error.message}`)
+    const stream = h.disk.rtsp.streams.find((s) => s.name === name)
+    if (stream === undefined) throw new Error('the stream was not stored')
+    return stream.id
+  }
+
+  /** CON-2: no URL, or any part of one, in any reply — successes and refusals alike. */
+  function expectNoUrlInReplies(): void {
+    const text = JSON.stringify(replies)
+    for (const url of URLS) expect(text).not.toContain(url)
+    expect(text).not.toContain('pass-')
+    expect(text).not.toContain('cam-a.invalid')
+    expect(text).not.toContain('cam-b.invalid')
+    // The scheme alone may appear: a refusal's fixed text names "rtsp:// or rtsps://".
+    expect(text).not.toMatch(/rtsps?:\/\/\w/)
+  }
+
+  it('creates a stream with one URL: secrets, then config, then booleans in the reply', async () => {
+    const result = await save({ name: '  Garden ', urls: { high: HIGH } })
+    if (!result.ok) throw new Error(result.error.message)
+    const [stream] = h.disk.rtsp.streams
+    expect(stream?.name).toBe('Garden')
+    expect(stream?.id).toMatch(/^rtsp-[0-9a-f-]{36}$/)
+    const id = stream?.id ?? ''
+    expect(h.secrets.setRtspUrls).toHaveBeenCalledWith(id, { high: HIGH })
+    expect(h.secrets.setRtspUrls.mock.invocationCallOrder[0]).toBeLessThan(
+      h.config.update.mock.invocationCallOrder[0] ?? 0,
+    )
+    expect(h.secretsDisk).toEqual({ [id]: { high: HIGH } })
+    // In memory, on the very object the redactor and `appState` read.
+    expect(h.services.credentials.rtspUrls).toEqual({ [id]: { high: HIGH } })
+    expect(h.services.current.rtsp.streams).toEqual([{ id, name: 'Garden' }])
+    expect(result.value.settings.rtsp.streams).toEqual([{ id, name: 'Garden' }])
+    expect(result.value.secretsStored.rtspUrls).toEqual({
+      [id]: { high: true, medium: false, low: false },
+    })
+    expectNoUrlInReplies()
+  })
+
+  it('refuses a create with no URL and writes nothing', async () => {
+    const result = await save({ name: 'Garden', urls: { high: null } })
+    expect(failure(result)).toMatchObject({
+      kind: 'bad-request',
+      message: 'Add at least one stream address.',
+    })
+    expect(h.secrets.setRtspUrls).not.toHaveBeenCalled()
+    expect(h.config.update).not.toHaveBeenCalled()
+    expect(h.disk.rtsp.streams).toEqual([])
+    expect(h.services.credentials.rtspUrls).toBeUndefined()
+  })
+
+  it('refuses a name another stream has, in a different case, and writes nothing', async () => {
+    await create('Garden', { high: HIGH })
+    h.secrets.setRtspUrls.mockClear()
+    h.config.update.mockClear()
+    const result = await save({ name: 'GARDEN', urls: { high: OTHER } })
+    expect(failure(result)).toMatchObject({
+      kind: 'bad-request',
+      message: 'Another stream already has this name.',
+    })
+    expect(h.secrets.setRtspUrls).not.toHaveBeenCalled()
+    expect(h.config.update).not.toHaveBeenCalled()
+    expect(h.disk.rtsp.streams).toHaveLength(1)
+    expectNoUrlInReplies()
+  })
+
+  it('edits: keeps an untouched quality, sets another, clears a third, and renames', async () => {
+    const id = await create('Garden', { high: HIGH, low: LOW })
+    const result = await save({ id, name: 'Back garden', urls: { medium: MEDIUM, low: null } })
+    if (!result.ok) throw new Error(result.error.message)
+    expect(h.secretsDisk).toEqual({ [id]: { high: HIGH, medium: MEDIUM } })
+    expect(h.services.credentials.rtspUrls).toEqual({ [id]: { high: HIGH, medium: MEDIUM } })
+    expect(h.disk.rtsp.streams).toEqual([{ id, name: 'Back garden' }])
+    expect(result.value.secretsStored.rtspUrls[id]).toEqual({
+      high: true,
+      medium: true,
+      low: false,
+    })
+    expectNoUrlInReplies()
+  })
+
+  it('lets an edit keep its own name in another case, and does not rewrite unchanged URLs', async () => {
+    const id = await create('Garden', { high: HIGH })
+    h.secrets.setRtspUrls.mockClear()
+    const result = await save({ id, name: 'garden', urls: {} })
+    expect(result.ok).toBe(true)
+    expect(h.secrets.setRtspUrls).not.toHaveBeenCalled()
+    expect(h.disk.rtsp.streams).toEqual([{ id, name: 'garden' }])
+  })
+
+  it('refuses clearing the last URL and writes nothing', async () => {
+    const id = await create('Garden', { high: HIGH })
+    h.secrets.setRtspUrls.mockClear()
+    h.config.update.mockClear()
+    const result = await save({ id, name: 'Renamed', urls: { high: null } })
+    expect(failure(result)).toMatchObject({
+      kind: 'bad-request',
+      message: 'A stream needs at least one address, so the last one cannot be cleared.',
+    })
+    expect(h.secrets.setRtspUrls).not.toHaveBeenCalled()
+    expect(h.config.update).not.toHaveBeenCalled()
+    expect(h.disk.rtsp.streams).toEqual([{ id, name: 'Garden' }])
+    expect(h.services.credentials.rtspUrls).toEqual({ [id]: { high: HIGH } })
+    expectNoUrlInReplies()
+  })
+
+  it('answers not-found for an edit or a delete of a stream that is not stored', async () => {
+    const edited = await save({ id: UNKNOWN_ID, name: 'Garden', urls: { high: HIGH } })
+    expect(failure(edited)).toMatchObject({
+      kind: 'not-found',
+      message: 'That stream no longer exists.',
+    })
+    const deleted = await remove(UNKNOWN_ID)
+    expect(failure(deleted).kind).toBe('not-found')
+    expect(h.secrets.setRtspUrls).not.toHaveBeenCalled()
+    expect(h.secrets.clearRtspStream).not.toHaveBeenCalled()
+    expect(h.config.update).not.toHaveBeenCalled()
+    expectNoUrlInReplies()
+  })
+
+  it('deletes: removes the config entry and the URLs, and leaves the Views untouched', async () => {
+    const id = await create('Garden', { high: HIGH })
+    const keep = await create('Porch', { low: OTHER })
+    expect((await h.call(IPC.setMode, { mode: 'rtsp' })).ok).toBe(true)
+    const view = testView('r1', {
+      cols: 1,
+      rows: 1,
+      cells: [{ col: 0, row: 0, cameraIds: [id] }],
+    })
+    expect((await h.call(IPC.setViews, { views: [view], lastViewId: 'r1', mode: 'rtsp' })).ok).toBe(
+      true,
+    )
+    const viewsBefore = structuredClone(h.disk.rtsp.views)
+
+    const result = await remove(id)
+    if (!result.ok) throw new Error(result.error.message)
+    expect(h.disk.rtsp.streams).toEqual([{ id: keep, name: 'Porch' }])
+    expect(h.services.current.rtsp.streams).toEqual([{ id: keep, name: 'Porch' }])
+    expect(h.secrets.clearRtspStream).toHaveBeenCalledWith(id)
+    expect(h.secretsDisk).toEqual({ [keep]: { low: OTHER } })
+    expect(h.services.credentials.rtspUrls).toEqual({ [keep]: { low: OTHER } })
+    expect(result.value.secretsStored.rtspUrls).toEqual({
+      [keep]: { high: false, medium: false, low: true },
+    })
+    // Views are never edited: the cell still names the deleted stream ("Camera not found").
+    expect(h.disk.rtsp.views).toEqual(viewsBefore)
+    expect(h.disk.rtsp.lastViewId).toBe('r1')
+    expectNoUrlInReplies()
+  })
+
+  it('does not touch secrets.bin when deleting a stream with no stored URL', async () => {
+    const id = await create('Garden', { high: HIGH })
+    // As after a stored URL failed validation on read: the stream is in config, its URLs are not.
+    delete h.services.credentials.rtspUrls
+    expect((await remove(id)).ok).toBe(true)
+    expect(h.disk.rtsp.streams).toEqual([])
+    expect(h.secrets.clearRtspStream).not.toHaveBeenCalled()
+  })
+
+  it('drops rtspUrls from memory altogether when the last stream is deleted', async () => {
+    const id = await create('Garden', { high: HIGH })
+    expect((await remove(id)).ok).toBe(true)
+    expect(h.services.credentials.rtspUrls).toBeUndefined()
+    expect(h.secretsDisk).toEqual({})
+  })
+
+  it('refuses setting a URL while the keystore is unavailable, and writes nothing (CON-2)', async () => {
+    const p = setup({ keystore: false })
+    const result = await p.call<AppState>(IPC.saveRtspStream, {
+      name: 'Garden',
+      urls: { high: HIGH },
+    })
+    replies.push(result)
+    expect(failure(result).kind).toBe('internal')
+    expect(failure(result).message).toContain('Secure storage')
+    expect(p.secrets.setRtspUrls).not.toHaveBeenCalled()
+    expect(p.config.update).not.toHaveBeenCalled()
+    expect(p.disk.rtsp.streams).toEqual([])
+    expectNoUrlInReplies()
+  })
+
+  it('puts the URLs back when the config write fails, so a create leaves no orphan', async () => {
+    h.config.update.mockImplementationOnce(() => Promise.reject(new Error('disk full')))
+    const result = await save({ name: 'Garden', urls: { high: HIGH } })
+    expect(failure(result).kind).toBe('internal')
+    expect(h.secretsDisk).toEqual({})
+    expect(h.services.credentials.rtspUrls).toBeUndefined()
+    expect(h.disk.rtsp.streams).toEqual([])
+    expectNoUrlInReplies()
+  })
+
+  it('runs overlapping saves one at a time, so the second sees the first`s name', async () => {
+    const [first, second] = await Promise.all([
+      save({ name: 'Garden', urls: { high: HIGH } }),
+      save({ name: 'garden', urls: { high: OTHER } }),
+    ])
+    expect(first.ok).toBe(true)
+    expect(failure(second).message).toBe('Another stream already has this name.')
+    expect(h.disk.rtsp.streams).toHaveLength(1)
+    expect(Object.values(h.secretsDisk)).toEqual([{ high: HIGH }])
+    expectNoUrlInReplies()
+  })
+
+  it('refuses an invalid URL at the schema without quoting it', async () => {
+    const bad = 'http://admin:garden-pass-1@cam-a.invalid/high'
+    const result = await handlerFor(
+      h.router,
+      IPC.saveRtspStream.channel,
+    )({
+      name: 'Garden',
+      urls: { high: bad },
+    })
+    replies.push(result)
+    expect(failure(result).kind).toBe('invalid-request')
+    expect(JSON.stringify(result)).not.toContain(bad)
+    expectNoUrlInReplies()
+  })
+
+  it('maps RtspStreamError to its own kind, never retryable', () => {
+    expect(toIpcError(new RtspStreamError('not-found', 'That stream no longer exists.'))).toEqual({
+      kind: 'not-found',
+      message: 'That stream no longer exists.',
+      endpoint: null,
+      retryable: false,
+    })
   })
 })
 

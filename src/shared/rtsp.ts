@@ -18,6 +18,7 @@
 // CON-2: a stream URL is a secret (it usually carries a username and password). Every `reason`
 // here is a fixed sentence and **never echoes the URL or any part of it**.
 import { z } from 'zod'
+import { MAX_RTSP_STREAM_NAME_LENGTH } from './models'
 import { QUALITIES, type Quality } from './quality'
 
 /** RTSP-2: longest URL accepted, in UTF-16 code units (`String.length`). */
@@ -115,4 +116,33 @@ export function rtspUrlsStored(
     if (stored.high || stored.medium || stored.low) out[streamId] = stored
   }
   return out
+}
+
+export type RtspNameCheck = { readonly ok: true } | { readonly ok: false; readonly reason: string }
+
+/**
+ * RTSP-1: a stream's name is 1–64 characters once trimmed and unique among `streams` ignoring case.
+ * `exceptId` is the stream being edited, so keeping its own name is not a clash. Shared by the
+ * Add/Edit dialog and main's `vp:rtsp/streams/save`, so the two can never disagree.
+ */
+export function validateRtspStreamName(
+  name: string,
+  streams: readonly { readonly id: string; readonly name: string }[],
+  exceptId?: string,
+): RtspNameCheck {
+  const trimmed = name.trim()
+  if (trimmed.length === 0) return { ok: false, reason: 'Enter a name for the camera.' }
+  if (trimmed.length > MAX_RTSP_STREAM_NAME_LENGTH) {
+    return {
+      ok: false,
+      reason: `The name is too long (at most ${String(MAX_RTSP_STREAM_NAME_LENGTH)} characters).`,
+    }
+  }
+  const lower = trimmed.toLowerCase()
+  if (
+    streams.some((stream) => stream.id !== exceptId && stream.name.trim().toLowerCase() === lower)
+  ) {
+    return { ok: false, reason: 'Another stream already has this name.' }
+  }
+  return { ok: true }
 }

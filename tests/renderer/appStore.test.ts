@@ -151,6 +151,9 @@ function fakeBridge(overrides: Partial<ViewProtectApi> = {}): FakeBridge {
     setAccessPolling: unimplemented('setAccessPolling'),
     // F1.0.2-3 (MODE-1/4); the Settings mode picker calls it through the store (F1.0.2-4).
     setMode: unimplemented('setMode'),
+    // F1.0.2-5 (RTSP-1/2): driven by the Streams screen; no store test drives them.
+    saveRtspStream: unimplemented('saveRtspStream'),
+    deleteRtspStream: unimplemented('deleteRtspStream'),
     // P6.2 (NFR-7/8): the wall reports itself (features/power/) and the players hear `onRecover`
     // themselves; no store test drives either.
     setViewVisible: unimplemented('setViewVisible'),

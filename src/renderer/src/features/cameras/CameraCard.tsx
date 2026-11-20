@@ -88,15 +88,11 @@ function RtspsLine({ summary }: { summary: RtspsSummary }): JSX.Element {
     )
   }
   return (
-    <ul className="cameraCard__rtsps" aria-label="RTSPS streams" title="RTSPS streams">
+    <ul className="qualityChips cameraCard__rtsps" aria-label="RTSPS streams" title="RTSPS streams">
       {summary.badges.map((badge) => (
         <li
           key={badge.quality}
-          className={
-            badge.present
-              ? 'cameraCard__rtspsQuality'
-              : 'cameraCard__rtspsQuality cameraCard__rtspsQuality--absent'
-          }
+          className={badge.present ? 'qualityChip' : 'qualityChip qualityChip--absent'}
           title={badge.present ? 'On the console' : 'Not created yet'}
         >
           {badge.label}

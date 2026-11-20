@@ -10,7 +10,7 @@ v1.0.0 and v1.0.1 were built from [DEV_PLAN.md](DEV_PLAN.md), which is now a **f
 |---|---|---|---|
 | 1.0.0 | Released | [DEV_PLAN.md](DEV_PLAN.md) Phases 0–6 (legacy) | First release: Views, live grid, fill and zoom, multi-camera cells, audio, Access doors, OverWatch branding, installers |
 | 1.0.1 | Released | [DEV_PLAN.md](DEV_PLAN.md) Phase 7, P7.1 (legacy) | Window size and position remembered (WIN-1), collapsible Display / Quality groups in the View editor (VIEW-3), separate dev data folder (BRAND-5) |
-| 1.0.2 | Planning | [versions/v1.0.2.md](versions/v1.0.2.md) | Scope not decided yet |
+| 1.0.2 | Planning | [versions/v1.0.2.md](versions/v1.0.2.md) | RTSP stream mode: run without a UniFi console, with a Streams screen for RTSP feeds |
 
 Status values: **Planning** (scope being decided) → **In progress** (scope agreed, features being built) → **Released** (`package.json` at that version, installers built, release check passed).
 
@@ -45,6 +45,9 @@ Ideas not yet assigned to a version. Move an item into a version file when it is
 | PTZ preset and patrol buttons | The API has presets and patrols only, no continuous PTZ |
 | Motion badge on cells | Per-cell motion indicator in the overlay (CELL-3) |
 | Pre-warm when rotating off a missing camera's placeholder | CELL-2 pre-warm skips that case today |
+| Thumbnails for RTSP streams | Grab a frame from the stream; v1.0.2 shows an icon |
+| Test a stream before saving | Probe an RTSP URL from the Streams dialog |
+| Motion events for RTSP cameras | e.g. ONVIF events, so multi-camera cells can switch on motion in RTSP mode |
 
 ## Open verification
 

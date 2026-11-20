@@ -1,18 +1,19 @@
-// UX polish 2026-11-17 (VIEW-3): the View editor's side panel and toolbar decisions
+// VIEW-3: the View editor's side panel and cell-action decisions
 // (src/renderer/src/features/viewEditor/editorTabs.ts, editorThumbnails.ts `paletteSnapshots`,
-// viewEditorHelpers.ts `toolbarTitles`).
+// viewEditorHelpers.ts `toolbarTitles`, CellActions.tsx `selectionCaption`, `focusAfterAction`).
 //
-// What these tests protect: the arrow keys walk the View | Cell tabs and wrap; only the first pick
-// of a cell brings the Cell tab forward, so the user is never yanked off the View tab afterwards;
-// the palette draws a thumbnail only from what the cache already holds, for a camera that can have
-// one; a toolbar button that cannot act on the selection says why; and the View tab's Display and
-// Quality groups start open and fold independently (P7.1).
+// What these tests protect: the arrow keys walk the View | Cell tabs and wrap; every change to a
+// non-empty selection brings the Cell tab forward, while the same selection or a cleared one leaves
+// the tab where the user put it (F1.0.2-2); the palette draws a thumbnail only from what the cache
+// already holds, for a camera that can have one; a cell action that cannot act on the selection
+// says why, under a caption counting the selected cells; and the View tab's Display and Quality
+// groups start folded and fold independently (P7.1, F1.0.2-2).
 import type { Camera } from '@shared/ipc'
 import { describe, expect, it } from 'vitest'
 import type { ThumbnailEntry } from '../../src/renderer/src/state/camerasStore'
 import {
-  ALL_GROUPS_OPEN,
   EDITOR_TABS,
+  INITIAL_GROUPS,
   tabAfterSelect,
   tabForKey,
   toggleGroup,
@@ -22,6 +23,10 @@ import {
   refSnapshot,
 } from '../../src/renderer/src/features/viewEditor/editorThumbnails'
 import { toolbarTitles } from '../../src/renderer/src/features/viewEditor/viewEditorHelpers'
+import {
+  focusAfterAction,
+  selectionCaption,
+} from '../../src/renderer/src/features/viewEditor/CellActions'
 
 function camera(overrides: Partial<Camera> & { id: string }): Camera {
   return {
@@ -66,33 +71,67 @@ describe('tabForKey', () => {
   })
 })
 
-describe('tabAfterSelect', () => {
-  it('brings the Cell tab forward on the first pick', () => {
-    expect(tabAfterSelect('view', false)).toBe('cell')
-    expect(tabAfterSelect('cell', false)).toBe('cell')
+describe('tabAfterSelect (F1.0.2-2)', () => {
+  const at = (col: number, row: number, colSpan = 1, rowSpan = 1) => ({
+    col,
+    row,
+    colSpan,
+    rowSpan,
   })
 
-  it('leaves the tab alone when something was selected already', () => {
-    expect(tabAfterSelect('view', true)).toBe('view')
-    expect(tabAfterSelect('cell', true)).toBe('cell')
+  it('brings the Cell tab forward on the first pick', () => {
+    expect(tabAfterSelect('view', null, at(0, 0))).toBe('cell')
+    expect(tabAfterSelect('cell', null, at(0, 0))).toBe('cell')
+  })
+
+  it('brings the Cell tab forward when another cell is picked from the View tab', () => {
+    expect(tabAfterSelect('view', at(0, 0), at(1, 0))).toBe('cell')
+  })
+
+  it('brings the Cell tab forward when a drag or Shift-click grows the selection', () => {
+    expect(tabAfterSelect('view', at(0, 0), at(0, 0, 2, 1))).toBe('cell')
+    expect(tabAfterSelect('view', at(0, 0, 2, 1), at(0, 0, 2, 2))).toBe('cell')
+  })
+
+  it('leaves the tab alone when the selection stays the same', () => {
+    expect(tabAfterSelect('view', at(1, 1, 2, 1), at(1, 1, 2, 1))).toBe('view')
+    expect(tabAfterSelect('cell', at(1, 1), at(1, 1))).toBe('cell')
+  })
+
+  it('leaves the tab alone when the selection is cleared', () => {
+    expect(tabAfterSelect('view', at(0, 0), null)).toBe('view')
+    expect(tabAfterSelect('cell', at(0, 0), null)).toBe('cell')
+    expect(tabAfterSelect('view', null, null)).toBe('view')
+  })
+})
+
+describe('selectionCaption (F1.0.2-2)', () => {
+  it('counts the selected cells, and has nothing to say for none', () => {
+    expect(selectionCaption(0)).toBeNull()
+    expect(selectionCaption(1)).toBe('1 cell selected')
+    expect(selectionCaption(4)).toBe('4 cells selected')
   })
 })
 
 describe('toggleGroup (P7.1)', () => {
-  it('starts with both groups open', () => {
-    expect(ALL_GROUPS_OPEN).toEqual({ display: true, quality: true })
+  const allOpen = { display: true, quality: true } as const
+
+  it('starts with both groups folded (F1.0.2-2)', () => {
+    expect(INITIAL_GROUPS).toEqual({ display: false, quality: false })
   })
 
-  it('folds one group and leaves the other alone', () => {
-    const folded = toggleGroup(ALL_GROUPS_OPEN, 'display')
-    expect(folded).toEqual({ display: false, quality: true })
-    expect(toggleGroup(folded, 'quality')).toEqual({ display: false, quality: false })
+  it('opens one group and leaves the other alone', () => {
+    const opened = toggleGroup(INITIAL_GROUPS, 'display')
+    expect(opened).toEqual({ display: true, quality: false })
+    expect(toggleGroup(opened, 'quality')).toEqual(allOpen)
   })
 
-  it('opens a folded group again, without changing what it was given', () => {
-    const folded = toggleGroup(ALL_GROUPS_OPEN, 'quality')
-    expect(toggleGroup(folded, 'quality')).toEqual(ALL_GROUPS_OPEN)
-    expect(ALL_GROUPS_OPEN).toEqual({ display: true, quality: true })
+  it('folds an open group again, without changing what it was given', () => {
+    const folded = toggleGroup(allOpen, 'quality')
+    expect(folded).toEqual({ display: true, quality: false })
+    expect(toggleGroup(folded, 'quality')).toEqual(allOpen)
+    expect(allOpen).toEqual({ display: true, quality: true })
+    expect(INITIAL_GROUPS).toEqual({ display: false, quality: false })
   })
 })
 
@@ -167,5 +206,22 @@ describe('toolbarTitles', () => {
     const titles = toolbarTitles({ count: 2, canMerge: false, canSplit: false, hasCameras: false })
     expect(titles.merge).toBe('These cells cannot be merged')
     expect(titles.clear).toBe('The selected cells have no cameras')
+  })
+})
+
+describe('focusAfterAction (F1.0.2-2)', () => {
+  it('stays on the clicked action while it can still act', () => {
+    expect(focusAfterAction([true, true, true], 0)).toBe(0)
+  })
+
+  it('moves to the next action that can act, wrapping around', () => {
+    // Merge went disabled after a merge: Split is next.
+    expect(focusAfterAction([false, true, true], 0)).toBe(1)
+    // Clear cameras went disabled and only Merge can act: wrap to the start.
+    expect(focusAfterAction([true, false, false], 2)).toBe(0)
+  })
+
+  it('answers null when no action can act', () => {
+    expect(focusAfterAction([false, false, false], 1)).toBeNull()
   })
 })

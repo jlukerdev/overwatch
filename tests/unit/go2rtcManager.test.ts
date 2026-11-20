@@ -558,18 +558,20 @@ describe('createGo2rtcManager — the desired stream set', () => {
     const h = createHarness()
     await h.manager.start()
     await h.manager.addStream('cam1_low', SOURCE)
-    await h.manager.removeStream('cam1_low')
+    expect(await h.manager.removeStream('cam1_low')).toBe(true)
     expect(h.manager.streams()).toEqual({})
     expect(h.requests.filter((r) => r.method === 'DELETE')).toHaveLength(1)
 
-    // Unknown name: nothing is sent, nothing throws.
-    await h.manager.removeStream('nope_low')
+    // Unknown name: nothing is sent, nothing throws, and go2rtc does not have it.
+    expect(await h.manager.removeStream('nope_low')).toBe(true)
     expect(h.requests.filter((r) => r.method === 'DELETE')).toHaveLength(1)
 
-    // A failing DELETE is logged, not thrown: the desired set is what the next start uses.
+    // A failing DELETE is logged and answered `false`, not thrown: the desired set is what the
+    // next start uses, and the caller can say the running go2rtc may still have it (MODE-4).
     await h.manager.addStream('cam2_low', OTHER_SOURCE)
     h.streamsStatus = 500
-    await expect(h.manager.removeStream('cam2_low')).resolves.toBeUndefined()
+    await expect(h.manager.removeStream('cam2_low')).resolves.toBe(false)
+    expect(h.manager.streams()).toEqual({})
   })
 
   it('answers streamInfo with the allowlisted summary, and null when go2rtc is down (R7)', async () => {

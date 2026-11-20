@@ -27,8 +27,8 @@ function settings(
   })
 }
 
-const KEY: SecretsStored = { protectApiKey: true, accessToken: false }
-const NO_KEY: SecretsStored = { protectApiKey: false, accessToken: false }
+const KEY: SecretsStored = { protectApiKey: true, accessToken: false, rtspUrls: {} }
+const NO_KEY: SecretsStored = { protectApiKey: false, accessToken: false, rtspUrls: {} }
 
 describe('initialScreen', () => {
   it('opens Settings while there are no settings yet', () => {

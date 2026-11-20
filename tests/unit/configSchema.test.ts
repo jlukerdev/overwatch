@@ -94,6 +94,9 @@ describe('defaultConfig', () => {
       ui: { overlayAutoHideSec: 3 },
       // DOOR-6 (P5.6): P5.5's hard-coded intervals, plus the new details read.
       accessPolling: { withSocketSec: 5, withoutSocketSec: 2, unlockedSec: 1, detailsSec: 30 },
+      // MODE-1: a first run is in Protect mode. RTSP-2: no streams and no RTSP Views yet.
+      mode: 'protect',
+      rtsp: { streams: [], views: [], lastViewId: null },
     })
   })
 

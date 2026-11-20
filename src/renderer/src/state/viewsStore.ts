@@ -19,7 +19,7 @@
 // its turn comes, not when it was called. Two quick edits (a rename, then a drag) would otherwise both
 // start from the same list, and the second save would silently undo the first.
 import { type AppState, type IpcResult, ipcFail } from '@shared/ipc'
-import { ViewSchema, type View } from '@shared/models'
+import { ViewSchema, type AppMode, type View } from '@shared/models'
 import {
   DEFAULT_LAYOUT_PRESET,
   LAYOUT_PRESETS,
@@ -217,10 +217,15 @@ function enqueue<T>(task: () => Promise<T>): Promise<T> {
   return run
 }
 
-/** The persisted pair as it is right now, or `null` before the first load. */
-function current(): { views: View[]; lastViewId: string | null } | null {
+/**
+ * The persisted pair as it is right now, with the app mode it belongs to (MODE-4: main refuses a
+ * save whose mode is no longer the stored one), or `null` before the first load.
+ */
+function current(): { views: View[]; lastViewId: string | null; mode: AppMode } | null {
   const settings = useAppStore.getState().settings
-  return settings === null ? null : { views: settings.views, lastViewId: settings.lastViewId }
+  return settings === null
+    ? null
+    : { views: settings.views, lastViewId: settings.lastViewId, mode: settings.mode }
 }
 
 function notFound(id: string): IpcResult<never> {
@@ -242,7 +247,10 @@ function mutate(
     if (now === null) return ipcFail('not-ready', NOT_LOADED, { retryable: true })
     const next = plan(now)
     if ('ok' in next) return next
-    return useAppStore.getState().setViews(next)
+    // Only the pair `plan` returned, plus the mode of the list it was computed from (MODE-4).
+    return useAppStore
+      .getState()
+      .setViews({ views: next.views, lastViewId: next.lastViewId, mode: now.mode })
   })
 }
 
@@ -341,7 +349,7 @@ export const viewsActions = {
       const now = current()
       if (now === null) return ipcFail('not-ready', NOT_LOADED, { retryable: true })
       if (!now.views.some((view) => view.id === id)) return notFound(id)
-      return useAppStore.getState().setLastView(id)
+      return useAppStore.getState().setLastView(id, now.mode)
     })
   },
 } as const

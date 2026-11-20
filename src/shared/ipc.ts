@@ -24,6 +24,7 @@
 import { z } from 'zod'
 import {
   ACCESS_POLLING_BOUNDS,
+  AppModeSchema,
   CameraEventSchema,
   CameraSchema,
   CameraStateChangeSchema,
@@ -40,6 +41,7 @@ import {
   type CameraStateChange,
   type DoorStates,
 } from './models'
+import { RtspUrlsStoredSchema } from './rtsp'
 import { PACKAGE_CHANNEL, QualitySchema, StreamQualitySchema } from './quality'
 import {
   StreamHandleSchema,
@@ -172,6 +174,12 @@ export type IpcSecretKey = z.infer<typeof SecretKeySchema>
 export const SecretsStoredSchema = z.object({
   protectApiKey: z.boolean(),
   accessToken: z.boolean(),
+  /**
+   * RTSP-2: per stream, which qualities have a URL in secrets.bin. Booleans only — a stream URL is
+   * write-only like the API key (CON-2), so this is all the renderer ever learns about one. A stream
+   * with no URL stored is absent.
+   */
+  rtspUrls: RtspUrlsStoredSchema,
 })
 export type SecretsStored = z.infer<typeof SecretsStoredSchema>
 
@@ -476,11 +484,17 @@ export type EnsureStreamInput = z.infer<typeof EnsureStreamInputSchema>
  *  - **`lastViewId` names one of `views`** (or is `null`). The persisted file tolerates a dangling id
  *    (SettingsSchema), but the renderer computes both halves of this payload together, so a mismatch
  *    here is a bug on its side, not a state to persist.
+ *
+ * `mode` (MODE-4) is the app mode whose list the renderer edited — `settings.mode` of the
+ * `AppState` it built the list from. Main writes the list into that mode's slot only while it is
+ * still the stored mode, and refuses the save otherwise: a list built before a switch must not land
+ * in the other mode's Views.
  */
 export const SetViewsInputSchema = z
   .object({
     views: z.array(ViewSchema),
     lastViewId: z.string().min(1).nullable(),
+    mode: AppModeSchema,
   })
   .check((ctx) => {
     const { views, lastViewId } = ctx.value
@@ -512,10 +526,23 @@ export type SetViewsInput = z.infer<typeof SetViewsInputSchema>
 /**
  * VIEW-4/6: switch the active View. Its own channel so that switching — the thing the user does
  * most, from the keyboard — sends one id instead of every View. `null` means "no View", which is
- * only meaningful while there are none.
+ * only meaningful while there are none. `mode` is the mode whose list the id was picked from, refused
+ * like `SetViewsInputSchema`'s when it is no longer the stored mode (MODE-4).
  */
-export const SetLastViewInputSchema = z.object({ viewId: z.string().min(1).nullable() })
+export const SetLastViewInputSchema = z.object({
+  viewId: z.string().min(1).nullable(),
+  mode: AppModeSchema,
+})
 export type SetLastViewInput = z.infer<typeof SetLastViewInputSchema>
+
+/**
+ * MODE-1/4: switch the app mode. Only the mode crosses: main saves it, tears down or restores the
+ * Protect side itself and answers with the new `AppState` (whose `settings.views` are then the new
+ * mode's Views). An unknown mode is refused here rather than loaded as Protect: the lenient
+ * fallback is for a hand-edited config.json, not for a request.
+ */
+export const SetModeInputSchema = z.object({ mode: AppModeSchema })
+export type SetModeInput = z.infer<typeof SetModeInputSchema>
 
 /**
  * QUAL-1: the two app-wide quality defaults, as a pair. The same shape as `StreamsConfig`
@@ -878,6 +905,14 @@ export const IPC = {
   setViews: call('vp:views/set', SetViewsInputSchema, AppStateSchema),
   /** VIEW-4/6: make a View the active one and remember it across restarts. Must name a stored View. */
   setLastView: call('vp:views/active', SetLastViewInputSchema, AppStateSchema),
+  /**
+   * MODE-1/4: switch between UniFi Protect and RTSP streams mode, persisted at once (MODE-2: there is
+   * no separate Save). Switching to RTSP closes the Protect feeds and the door-state monitor, drops
+   * the inventory and unregisters every go2rtc stream; switching back behaves like a launch (CON-4).
+   * The same mode again only answers the state. UniFi settings, secrets, pins, door links and
+   * either mode's Views are never cleared by a switch.
+   */
+  setMode: call('vp:app/mode', SetModeInputSchema, AppStateSchema),
   /** QUAL-1: persist the app-wide grid and fill quality defaults. */
   setStreams: call('vp:streams/defaults', SetStreamsInputSchema, AppStateSchema),
   /**
@@ -1066,6 +1101,8 @@ export interface ViewProtectApi {
   setViews(input: SetViewsInput): Promise<IpcResult<AppState>>
   /** VIEW-4/6: switch the active View. */
   setLastView(input: SetLastViewInput): Promise<IpcResult<AppState>>
+  /** MODE-1/4: switch the app mode, persisted at once. */
+  setMode(input: SetModeInput): Promise<IpcResult<AppState>>
   /** QUAL-1: the app-wide grid and fill quality defaults, persisted. */
   setStreams(input: SetStreamsInput): Promise<IpcResult<AppState>>
   /** QUAL-7: which RTSPS qualities exist for a camera. Booleans only. */

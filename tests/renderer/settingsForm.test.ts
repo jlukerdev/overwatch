@@ -32,8 +32,8 @@ const draftWith = (overrides: Partial<ConsoleDraft> = {}): ConsoleDraft => ({
   ...overrides,
 })
 
-const NO_SECRETS: SecretsStored = { protectApiKey: false, accessToken: false }
-const BOTH_SECRETS: SecretsStored = { protectApiKey: true, accessToken: true }
+const NO_SECRETS: SecretsStored = { protectApiKey: false, accessToken: false, rtspUrls: {} }
+const BOTH_SECRETS: SecretsStored = { protectApiKey: true, accessToken: true, rtspUrls: {} }
 
 describe('consoleDraftFrom', () => {
   it('seeds the three saved fields and nothing else', () => {
@@ -138,7 +138,7 @@ describe('consoleInputFrom', () => {
     [
       'Access switched on with a token already in the keystore (DOOR-0)',
       draftWith({ accessEnabled: true }),
-      { protectApiKey: true, accessToken: true },
+      { protectApiKey: true, accessToken: true, rtspUrls: {} },
     ],
     [
       'Access switched on with a token being typed',

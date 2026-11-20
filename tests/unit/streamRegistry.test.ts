@@ -107,12 +107,25 @@ function createFakeManager() {
     registered.set(name, source)
     return Promise.resolve()
   })
-  /** Not part of the registry's job: the app never deletes or stops anything to refresh a URL. */
-  const removeStream = vi.fn(() => Promise.resolve())
+  /**
+   * Never used to refresh a URL: the app never deletes or stops anything for that. Only a switch to
+   * RTSP mode (`unregisterAll`, MODE-4) removes streams.
+   */
+  const removeStream = vi.fn((name: string) => {
+    registered.delete(name)
+    return Promise.resolve(true)
+  })
   const stop = vi.fn(() => Promise.resolve())
 
   return {
-    manager: { start, runtime: () => runtime, addStream, removeStream, stop },
+    manager: {
+      start,
+      runtime: () => runtime,
+      addStream,
+      removeStream,
+      stop,
+      streams: () => Object.fromEntries(registered),
+    },
     start,
     addStream,
     removeStream,
@@ -142,6 +155,8 @@ interface Harness {
   readonly lines: string[]
   setCameras(next: readonly Camera[]): void
   setHost(next: string | null): void
+  /** MODE-4: the app mode the registry is told about. */
+  setProtectMode(next: boolean): void
 }
 
 function setup(
@@ -155,12 +170,14 @@ function setup(
   const lines: string[] = []
   let cameras: readonly Camera[] = options.cameras ?? [camera('cam-1')]
   let host: string | null = HOST
+  let protectMode = true
 
   const registry = createStreamRegistry({
     manager: go2rtc.manager,
     protect: () => protect.client,
     cameras: () => cameras,
     consoleHost: () => host,
+    protectMode: () => protectMode,
     log: (line) => lines.push(line),
   })
 
@@ -174,6 +191,9 @@ function setup(
     },
     setHost(next) {
       host = next
+    },
+    setProtectMode(next) {
+      protectMode = next
     },
   }
 }
@@ -507,5 +527,82 @@ describe('no secret ever leaves the registry (CON-2, NFR-9, SPEC §6.1)', () => 
     expect(h.go2rtc.stop).not.toHaveBeenCalled()
     await h.registry.ensureStream('cam-1', 'low')
     expect(h.protect.rtspsStreams).toHaveBeenCalledTimes(2)
+  })
+})
+
+describe('RTSP streams mode (MODE-4)', () => {
+  it('refuses ensureStream with bad-request and makes no Protect call', async () => {
+    const h = setup()
+    h.setProtectMode(false)
+    const err = await refusal(h.registry.ensureStream('cam-1', 'high'))
+    expect(err.kind).toBe('bad-request')
+    expect(err.retryable).toBe(false)
+    expect(err.message).toContain('RTSP streams mode')
+    expect(h.protect.rtspsStreams).not.toHaveBeenCalled()
+    expect(h.protect.createRtspsStreams).not.toHaveBeenCalled()
+    expect(h.go2rtc.start).not.toHaveBeenCalled()
+    expect(h.go2rtc.addStream).not.toHaveBeenCalled()
+  })
+
+  it('unregisterAll removes every registered stream from go2rtc and forgets the cached URLs', async () => {
+    const h = setup()
+    await h.registry.ensureStream('cam-1', 'high')
+    await h.registry.ensureStream('cam-1', 'low')
+    expect(h.go2rtc.registered.size).toBe(2)
+    await h.registry.unregisterAll()
+    expect(h.go2rtc.removeStream).toHaveBeenCalledTimes(2)
+    expect(h.go2rtc.registered.size).toBe(0)
+    // go2rtc itself keeps running: the switch removes streams, not the sidecar.
+    expect(h.go2rtc.stop).not.toHaveBeenCalled()
+    // The cache went too: the next stream (back in Protect mode) reads its URL again.
+    await h.registry.ensureStream('cam-1', 'high')
+    expect(h.protect.rtspsStreams).toHaveBeenCalledTimes(3)
+    expectNoSecret(h)
+  })
+
+  it('does not register a stream whose read was in flight when everything was unregistered', async () => {
+    const h = setup()
+    let release = (): void => undefined
+    h.protect.rtspsStreams.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          release = () => {
+            resolve({ high: rtspsUrl(ALIASES.high, HOST), medium: null, low: null, package: null })
+          }
+        }),
+    )
+    const pending = h.registry.ensureStream('cam-1', 'high')
+    await Promise.resolve()
+    await h.registry.unregisterAll()
+    release()
+    const err = await refusal(pending)
+    expect(err.kind).toBe('bad-request')
+    expect(h.go2rtc.addStream).not.toHaveBeenCalled()
+    expect(h.go2rtc.registered.size).toBe(0)
+  })
+
+  it('never rejects, even when go2rtc will not drop a stream', async () => {
+    const h = setup()
+    await h.registry.ensureStream('cam-1', 'high')
+    h.go2rtc.removeStream.mockRejectedValueOnce(new Error('go2rtc is restarting'))
+    await expect(h.registry.unregisterAll()).resolves.toBeUndefined()
+    expect(h.lines.some((line) => line.includes('could not be removed'))).toBe(true)
+  })
+
+  it('counts a stream the running go2rtc did not drop (removeStream answers false)', async () => {
+    const h = setup()
+    await h.registry.ensureStream('cam-1', 'high')
+    await h.registry.ensureStream('cam-1', 'low')
+    // The real manager never rejects: a failed DELETE is a `false` answer.
+    h.go2rtc.removeStream.mockResolvedValueOnce(false)
+    await h.registry.unregisterAll()
+    expect(h.lines.some((line) => line.includes('1 could not be removed'))).toBe(true)
+  })
+
+  it('logs no failure when go2rtc dropped every stream', async () => {
+    const h = setup()
+    await h.registry.ensureStream('cam-1', 'high')
+    await h.registry.unregisterAll()
+    expect(h.lines.some((line) => line.includes('could not be removed'))).toBe(false)
   })
 })

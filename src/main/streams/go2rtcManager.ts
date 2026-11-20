@@ -265,8 +265,13 @@ export interface Go2rtcManager {
    * is verified (QUAL-8).
    */
   addStream(name: string, source: string): Promise<void>
-  /** Drops `name` from the desired set, and from a running go2rtc on a best-effort basis. */
-  removeStream(name: string): Promise<void>
+  /**
+   * Drops `name` from the desired set, and from a running go2rtc on a best-effort basis. Never
+   * rejects. Resolves `true` when go2rtc no longer has the stream (it was not in the set, go2rtc is
+   * not running, or the DELETE answered 2xx or 404), `false` when the running go2rtc may still have
+   * it (the DELETE failed or answered anything else; logged). The desired set forgets it either way.
+   */
+  removeStream(name: string): Promise<boolean>
   /** The desired set: what the next (re)start will put in the config. */
   streams(): Record<string, string>
   /**
@@ -899,22 +904,28 @@ export function createGo2rtcManager(options: Go2rtcManagerOptions): Go2rtcManage
     }
   }
 
-  const removeStream = async (name: string): Promise<void> => {
-    if (!desired.delete(name)) return
+  const removeStream = async (name: string): Promise<boolean> => {
+    if (!desired.delete(name)) return true
     const runtime = runtimeValue
     const current = auth
-    if (runtime === null || current === null) return
+    if (runtime === null || current === null) return true
     // Best effort: the desired set is authoritative, and the next start simply leaves it out. A
     // stream go2rtc still knows about costs nothing while no consumer is attached (ARCHITECTURE §2).
+    // The answer says whether the running go2rtc dropped it, for a caller that reports it (MODE-4).
     try {
-      await http({
+      const res = await http({
         url: `${go2rtcApiUrl(runtime.port, '/api/streams')}?src=${encodeURIComponent(name)}`,
         method: 'DELETE',
         headers: authHeaders(current),
         timeoutMs: API_TIMEOUT_MS,
       })
+      // 404: go2rtc does not have it, which is what was asked for.
+      if ((res.status >= 200 && res.status < 300) || res.status === 404) return true
+      log(`[go2rtc] could not unregister stream "${name}": DELETE answered ${String(res.status)}`)
+      return false
     } catch (err) {
       log(`[go2rtc] could not unregister stream "${name}": ${safeMessage(err)}`)
+      return false
     }
   }
 

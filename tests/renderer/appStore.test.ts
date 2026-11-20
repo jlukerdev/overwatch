@@ -56,9 +56,11 @@ function appState(overrides: Partial<AppState> = {}): AppState {
       streams: { defaultGridQuality: 'low', defaultFillQuality: 'high' },
       ui: { overlayAutoHideSec: 3 },
       accessPolling: { withSocketSec: 5, withoutSocketSec: 2, unlockedSec: 1, detailsSec: 30 },
+      mode: 'protect',
+      rtsp: { streams: [], views: [], lastViewId: null },
     },
     keystoreAvailable: true,
-    secretsStored: { protectApiKey: true, accessToken: false },
+    secretsStored: { protectApiKey: true, accessToken: false, rtspUrls: {} },
     connection: {
       protect: endpointStatus('protect', 'idle'),
       access: endpointStatus('access', 'disabled'),
@@ -147,6 +149,9 @@ function fakeBridge(overrides: Partial<ViewProtectApi> = {}): FakeBridge {
     doorAction: unimplemented('doorAction'),
     setDoorEmergency: unimplemented('setDoorEmergency'),
     setAccessPolling: unimplemented('setAccessPolling'),
+    // F1.0.2-3 (MODE-1/4): on the bridge so the `ViewProtectApi` is complete; the mode picker that
+    // calls it is F1.0.2-4.
+    setMode: unimplemented('setMode'),
     // P6.2 (NFR-7/8): the wall reports itself (features/power/) and the players hear `onRecover`
     // themselves; no store test drives either.
     setViewVisible: unimplemented('setViewVisible'),
@@ -204,7 +209,7 @@ describe('load', () => {
     expect(store.version).toBe('0.1.0')
     expect(store.settings?.console.host).toBe('udm.local')
     expect(store.keystoreAvailable).toBe(true)
-    expect(store.secretsStored).toEqual({ protectApiKey: true, accessToken: false })
+    expect(store.secretsStored).toEqual({ protectApiKey: true, accessToken: false, rtspUrls: {} })
     expect(store.cameras).toHaveLength(1)
     expect(store.loadError).toBeNull()
   })
@@ -363,7 +368,9 @@ describe('mutating actions', () => {
           },
         }),
     })
-    useAppStore.setState({ secretsStored: { protectApiKey: false, accessToken: false } })
+    useAppStore.setState({
+      secretsStored: { protectApiKey: false, accessToken: false, rtspUrls: {} },
+    })
 
     const result = await useAppStore.getState().setSecret({ key: 'protectApiKey', value: 'abc' })
 

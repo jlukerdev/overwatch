@@ -298,7 +298,7 @@ describe('setAccessPolling (DOOR-6)', () => {
       version: '0.1.0',
       settings: SettingsSchema.parse({ accessPolling: polling }),
       keystoreAvailable: true,
-      secretsStored: { protectApiKey: false, accessToken: false },
+      secretsStored: { protectApiKey: false, accessToken: false, rtspUrls: {} },
       connection: null as unknown as AppState['connection'],
       cameras: [],
     }

@@ -10,6 +10,9 @@
 //    part of) is swallowed; an ordinary click is not.
 //  - only a primary modifier + double-click resets.
 //  - an unchanged step returns the same object, so the hook skips the frame.
+//  - the crop the hook draws (`object-view-box` on a `fill`ed video) shows exactly the picture the
+//    old `translate · scale` transform of a `contain`ed video showed, letterbox included, at every
+//    point of the cell (F1.0.2-9).
 import { describe, expect, it } from 'vitest'
 import {
   DRAG_THRESHOLD_PX,
@@ -27,10 +30,11 @@ import {
   pinchStep,
   wheelZoomFactor,
   zoomAt,
-  zoomTransform,
+  zoomViewBox,
   type ClickGuardEvent,
   type ClickGuardState,
   type ZoomBox,
+  type ZoomNaturalSize,
   type ZoomPoint,
   type ZoomState,
 } from '../../src/renderer/src/features/zoom/zoomMath'
@@ -366,15 +370,137 @@ describe('isZoomResetDblClick (ZOOM-2)', () => {
   })
 })
 
-describe('isZoomed / zoomTransform (ZOOM-3)', () => {
-  it('the identity is not zoomed and has no transform', () => {
+describe('isZoomed (ZOOM-3)', () => {
+  it('the identity is not zoomed', () => {
     expect(isZoomed(ZOOM_IDENTITY)).toBe(false)
-    expect(zoomTransform(ZOOM_IDENTITY)).toBe('')
   })
 
-  it('a zoomed state is a translate then a scale', () => {
-    const state: ZoomState = { scale: 2.5, x: -100, y: -40.5 }
-    expect(isZoomed(state)).toBe(true)
-    expect(zoomTransform(state)).toBe('translate(-100px, -40.5px) scale(2.5)')
+  it('a scale above 1 is zoomed', () => {
+    expect(isZoomed({ scale: 2.5, x: -100, y: -40.5 })).toBe(true)
+  })
+})
+
+/** The four insets of an `inset(T% R% B% L%)` view box, as fractions. */
+function parseInset(viewBox: string): { top: number; right: number; bottom: number; left: number } {
+  const match = /^inset\((\S+)% (\S+)% (\S+)% (\S+)%\)$/.exec(viewBox)
+  if (match === null) throw new Error(`not an inset: ${viewBox}`)
+  const [top, right, bottom, left] = match.slice(1).map((value) => Number(value) / 100)
+  if (top === undefined || right === undefined || bottom === undefined || left === undefined) {
+    throw new Error(`not an inset: ${viewBox}`)
+  }
+  return { top, right, bottom, left }
+}
+
+/**
+ * The old drawing: the screen point's content point (through the transform), as a fraction of the
+ * natural picture `contain`ed in the box. Outside [0, 1] is the letterbox.
+ */
+function viaTransform(
+  state: ZoomState,
+  box: ZoomBox,
+  natural: ZoomNaturalSize,
+  screen: ZoomPoint,
+): ZoomPoint {
+  const p = contentAt(state, screen)
+  const fit = Math.min(box.width / natural.width, box.height / natural.height)
+  const width = natural.width * fit
+  const height = natural.height * fit
+  return {
+    x: (p.x - (box.width - width) / 2) / width,
+    y: (p.y - (box.height - height) / 2) / height,
+  }
+}
+
+/** The new drawing: a `fill`ed video maps the box linearly onto the view box. */
+function viaViewBox(viewBox: string, box: ZoomBox, screen: ZoomPoint): ZoomPoint {
+  const inset = parseInset(viewBox)
+  return {
+    x: inset.left + (screen.x / box.width) * (1 - inset.left - inset.right),
+    y: inset.top + (screen.y / box.height) * (1 - inset.top - inset.bottom),
+  }
+}
+
+describe('zoomViewBox (F1.0.2-9; ZOOM-3)', () => {
+  const HD: ZoomNaturalSize = { width: 1920, height: 1080 }
+
+  it("is empty at the identity, so the stylesheet's contain applies", () => {
+    expect(zoomViewBox(ZOOM_IDENTITY, BOX, HD)).toBe('')
+  })
+
+  it('is empty without real sizes (no metadata yet, a cell not laid out)', () => {
+    const state: ZoomState = { scale: 2, x: 0, y: 0 }
+    expect(zoomViewBox(state, { width: 0, height: 900 }, HD)).toBe('')
+    expect(zoomViewBox(state, BOX, { width: 0, height: 0 })).toBe('')
+    expect(zoomViewBox(state, BOX, { width: Number.NaN, height: 1080 })).toBe('')
+    expect(zoomViewBox(state, { width: 1600, height: Number.POSITIVE_INFINITY }, HD)).toBe('')
+    expect(zoomViewBox(state, BOX, { width: 1920, height: -1080 })).toBe('')
+  })
+
+  it('crops a 16:9 camera in a 16:9 cell to the quarter on screen at 2×', () => {
+    expect(zoomViewBox({ scale: 2, x: 0, y: 0 }, BOX, HD)).toBe('inset(0% 50% 50% 0%)')
+    const centre = zoomAt(ZOOM_IDENTITY, 2, { x: 800, y: 450 }, BOX)
+    expect(zoomViewBox(centre, BOX, HD)).toBe('inset(25% 25% 25% 25%)')
+    const corner = clampPan({ scale: 2, x: -5000, y: -5000 }, BOX)
+    expect(zoomViewBox(corner, BOX, HD)).toBe('inset(50% 0% 0% 50%)')
+  })
+
+  it('reaches into the letterbox with negative insets', () => {
+    // A 16:9 camera in a 4:3 cell: 112.5 px bars above and below a 675 px tall picture.
+    const box: ZoomBox = { width: 1200, height: 900 }
+    expect(zoomViewBox({ scale: 2, x: 0, y: 0 }, box, HD)).toBe('inset(-16.6667% 50% 50% 0%)')
+    // A 4:3 camera in a 16:9 cell: 200 px bars left and right of a 1200 px wide picture.
+    const sd: ZoomNaturalSize = { width: 1440, height: 1080 }
+    const corner = clampPan({ scale: 2, x: -5000, y: 0 }, BOX)
+    expect(zoomViewBox(corner, BOX, sd)).toBe('inset(0% -16.6667% 50% 50%)')
+  })
+
+  it('never writes -0', () => {
+    expect(zoomViewBox({ scale: 2, x: 0, y: 0 }, BOX, HD)).not.toContain('-0%')
+  })
+
+  it('shows the same picture as the transform it replaces, at every point', () => {
+    const boxes: readonly ZoomBox[] = [
+      BOX,
+      { width: 1200, height: 900 },
+      { width: 900, height: 1600 },
+      { width: 1000, height: 1000 },
+      { width: 1366.4, height: 711.2 },
+    ]
+    const naturals: readonly ZoomNaturalSize[] = [
+      HD,
+      { width: 1440, height: 1080 },
+      { width: 1080, height: 1920 },
+      { width: 2688, height: 1512 },
+      { width: 640, height: 360 },
+    ]
+    for (const box of boxes) {
+      const states: ZoomState[] = [
+        zoomAt(ZOOM_IDENTITY, 2, { x: 0, y: 0 }, box),
+        zoomAt(ZOOM_IDENTITY, 3.7, { x: box.width * 0.3, y: box.height * 0.8 }, box),
+        zoomAt(zoomAt(ZOOM_IDENTITY, 2, { x: 10, y: 10 }, box), 4, { x: box.width, y: 0 }, box),
+        zoomAt(ZOOM_IDENTITY, MAX_ZOOM, { x: box.width / 2, y: box.height / 2 }, box),
+        clampPan({ scale: 1.25, x: -1e6, y: -1e6 }, box),
+        panBy(zoomAt(ZOOM_IDENTITY, 6, { x: 0, y: 0 }, box), -123.4, -56.7, box),
+      ]
+      const screens: readonly ZoomPoint[] = [
+        { x: 0, y: 0 },
+        { x: box.width, y: box.height },
+        { x: box.width, y: 0 },
+        { x: box.width * 0.37, y: box.height * 0.61 },
+        { x: box.width / 2, y: box.height / 2 },
+      ]
+      for (const natural of naturals) {
+        for (const state of states) {
+          expectCovers(state, box)
+          const viewBox = zoomViewBox(state, box, natural)
+          for (const screen of screens) {
+            const expected = viaTransform(state, box, natural, screen)
+            const actual = viaViewBox(viewBox, box, screen)
+            expect(actual.x).toBeCloseTo(expected.x, 5)
+            expect(actual.y).toBeCloseTo(expected.y, 5)
+          }
+        }
+      }
+    }
   })
 })

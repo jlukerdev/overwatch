@@ -21,8 +21,8 @@
 // it at its slot), so a control press is never a cell click.
 //
 // **Zoom (P3.6; ZOOM-1/2/3), filled only.** `useZoomPan(filled)` (features/zoom/ZoomPan.tsx) listens
-// on this cell's element while it is filled, and transforms `<ZoomPanLayer>`, which wraps the player
-// and nothing else, so the overlay is never scaled. The layer is rendered whether filled or not: the
+// on this cell's element while it is filled, and crops the videos inside `<ZoomPanLayer>`, which
+// wraps the player and nothing else, so the overlay is never zoomed. The layer is rendered whether filled or not: the
 // player must never be re-parented, which would remount it and break FILL-2's "same player". While
 // filled the overlay's slot also has the zoom reset (ZOOM-2), an icon button that is always there
 // and disabled at 1×, where it would do nothing (the user's call, 2026-11-16). A drag's trailing click is stopped by the hook before `onClick` below sees it, so

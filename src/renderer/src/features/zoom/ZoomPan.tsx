@@ -12,11 +12,28 @@
 // grid is left to do nothing, and FILL-1's click-to-fill is untouched because nothing here is
 // listening yet.
 //
-// **Only the player is scaled.** The transform is on `<ZoomPanLayer>`, which wraps `<LivePlayer>`
-// and nothing else; the overlay (name, badge, controls) is its sibling and stays the size it is. The
-// layer is **always rendered**, filled or not, zoomed or not: wrapping the player only while zoomed
-// would re-parent it, which is a remount — a new connection, the very thing FILL-2's "same player,
-// enlarged" exists to avoid. At 1× the layer has no transform at all.
+// **Only the video is zoomed, as a crop** (F1.0.2-9; zoomMath's "Drawn as a crop"). Nothing is
+// transformed. Each `<video>` inside `<ZoomPanLayer>` gets `object-fit: fill` and an
+// `object-view-box` that crops its natural picture to the part the zoom shows, so the video element
+// stays the cell's size at every zoom. A transform was the obvious way and the wrong one: an 8×
+// `scale` makes the video's quad 8× the cell, and on Windows Chromium draws video through a
+// DirectComposition overlay sized from that quad, so every zoom step resized a huge swap chain or
+// dropped the video out of the overlay and back — the reported slowdown, then the picture flashing
+// back and forth. macOS scales the surface for free, which is why only Windows showed it. The crop
+// costs the same on every platform, and the placeholder (a blurred still, the "Connecting…" label)
+// is no longer blown up with the picture: it stays the cell's size, as the overlay always did.
+//
+// The videos are the light-DOM children of the `<vp-mse-player>` elements LivePlayer appends
+// imperatively — one, or two during a quality swap (QUAL-6) or a reconnect — so `paint` finds them
+// with `querySelectorAll` each time rather than keeping references. A layer can appear mid-zoom, and
+// it knows its natural size only at `loadedmetadata`: while filled, capture-phase `loadedmetadata`
+// and `resize` listeners on the layer (media events do not bubble, but they do pass through their
+// ancestors in the capture phase) repaint at once, so a new video is cropped before its first frame
+// shows. A video with no size yet is left to the stylesheet's `contain` (player.css). The overlay
+// (name, badge, controls) is the layer's sibling and is never touched. The layer is **always
+// rendered**, filled or not, zoomed or not: wrapping the player only while zoomed would re-parent
+// it, which is a remount — a new connection, the very thing FILL-2's "same player, enlarged" exists
+// to avoid. At 1× no video has any inline style from here at all.
 //
 // **The cell listens, not the layer.** Wheel, pointer and click listeners go on the cell element
 // (`.gridCell`), native and attached in an effect (as CellOverlay's hover listeners are), so a wheel
@@ -46,11 +63,10 @@
 // so that leftover swallow is forgotten before any later click on the picture.
 //
 // **Hot path.** Wheel ticks and pointer moves arrive many times a frame. The zoom state lives in a
-// ref, and the transform is written straight onto the layer's `style`, once per animation frame
-// however many events came in. The one thing React draws is `zoomed` (scale > 1), mirrored in a ref
-// and `setState`d only when it flips, because it decides whether the 100% control is there; a wheel
-// tick at 3× re-renders nothing. `will-change: transform` is set only while zoomed: a layer promoted
-// for nothing costs GPU memory per cell. The cursor classes are toggled with `classList`, not
+// ref, and the crop is written straight onto each video's `style`, once per animation frame however
+// many events came in. The one thing React draws is `zoomed` (scale > 1), mirrored in a ref and
+// `setState`d only when it flips, because it decides whether the 100% control is there; a wheel
+// tick at 3× re-renders nothing. The cursor classes are toggled with `classList`, not
 // through React's `className`, so they never re-render anything either. The cell's rect is read at
 // each press, each wheel event and each resize, and reused by every move in between, so a pointer
 // move never forces a layout; the cell does not move under a gesture.
@@ -60,11 +76,13 @@
 // stylesheet loads first, a cursor resting on a zoomed picture still gets out of the way.
 //
 // **Reset on leaving fill** (ZOOM-2). Esc, the back control, a plain double-click, a View switch or
-// the slot going away all end in `enabled` going false, and the effect's cleanup puts the layer back
-// to the identity at once (not on the next frame), cancels the frame, drops every listener and the
-// resize observer, releases any pointer capture and clears the cursor classes. Unmount is the same
-// cleanup. **Resize** is watched only while zoomed: a `ResizeObserver` on the cell re-clamps to the
-// new box at the same scale, so a window resize never leaves a gap at an edge.
+// the slot going away all end in `enabled` going false, and the effect's cleanup puts every video
+// back to the identity at once (not on the next frame) by clearing its inline `object-fit` and
+// `object-view-box`, cancels the frame, drops every listener and the resize observer, releases any
+// pointer capture and clears the cursor classes. Unmount is the same cleanup. **Resize** is watched
+// only while zoomed: a `ResizeObserver` on the cell re-clamps to the new box at the same scale, so a
+// window resize never leaves a gap at an edge, and repaints even when the clamp changes nothing —
+// the crop depends on the box's shape, not only on the state.
 import {
   useCallback,
   useEffect,
@@ -86,7 +104,7 @@ import {
   pinchStep,
   wheelZoomFactor,
   zoomAt,
-  zoomTransform,
+  zoomViewBox,
   type ClickGuardEvent,
   type ClickGuardState,
   type ZoomBox,
@@ -108,7 +126,7 @@ const CONTROLS_SELECTOR = '.cellOverlay__slot, .cellOverlay__bottom'
 export interface ZoomPan {
   /** For the cell element (`.gridCell`): where every listener goes. */
   readonly cellRef: RefObject<HTMLDivElement | null>
-  /** For `<ZoomPanLayer>`: what is transformed. */
+  /** For `<ZoomPanLayer>`: where the videos to crop are found. */
   readonly layerRef: RefObject<HTMLDivElement | null>
   /** Scale > 1: the 100% control is shown. */
   readonly zoomed: boolean
@@ -155,14 +173,48 @@ export function useZoomPan(enabled: boolean): ZoomPan {
   const rectRef = useRef<MeasuredCell | null>(null)
   const [zoomed, setZoomed] = useState(false)
 
-  /** Writes the current state onto the layer now. */
+  /**
+   * Writes the current state onto every video in the layer now (header, "Only the video is zoomed").
+   * At the identity, or for a video with no size yet, the inline crop is cleared and player.css's
+   * `contain` applies.
+   */
   const paint = useCallback((): void => {
     const layer = layerRef.current
     if (layer === null) return
     const state = stateRef.current
-    layer.style.transform = zoomTransform(state)
-    layer.style.willChange = isZoomed(state) ? 'transform' : ''
+    // Normally cached by the press or wheel that zoomed; the identity needs no box at all. Without
+    // a cached rect, the cell's layout size: unlike `measureCell` it never ends the fill transition
+    // from a paint, and a transform on the slot does not change it.
+    let box: ZoomBox | null = null
+    if (isZoomed(state)) {
+      const cell = cellRef.current
+      box =
+        rectRef.current?.box ??
+        (cell === null ? null : { width: cell.clientWidth, height: cell.clientHeight })
+    }
+    for (const video of layer.querySelectorAll('video')) {
+      const viewBox =
+        box === null
+          ? ''
+          : zoomViewBox(state, box, { width: video.videoWidth, height: video.videoHeight })
+      if (viewBox === '') {
+        video.style.removeProperty('object-fit')
+        video.style.removeProperty('object-view-box')
+      } else {
+        video.style.setProperty('object-fit', 'fill')
+        video.style.setProperty('object-view-box', viewBox)
+      }
+    }
   }, [])
+
+  /** Paints on the next animation frame, once however many times it is asked (header). */
+  const schedulePaint = useCallback((): void => {
+    if (frameRef.current !== null) return
+    frameRef.current = requestAnimationFrame(() => {
+      frameRef.current = null
+      paint()
+    })
+  }, [paint])
 
   /** The one way the state changes: React only hears about a flip of `zoomed` (header). */
   const apply = useCallback(
@@ -181,13 +233,9 @@ export function useZoomPan(enabled: boolean): ZoomPan {
         paint()
         return
       }
-      if (frameRef.current !== null) return
-      frameRef.current = requestAnimationFrame(() => {
-        frameRef.current = null
-        paint()
-      })
+      schedulePaint()
     },
-    [paint],
+    [paint, schedulePaint],
   )
 
   const resetZoom = useCallback((): void => {
@@ -362,19 +410,41 @@ export function useZoomPan(enabled: boolean): ZoomPan {
   }, [enabled, apply])
 
   // Resize while zoomed: same scale, re-clamped to the new box (header), and the new rect cached
-  // for the next move. The observer's first report, right after `observe`, is a no-op clamp.
+  // for the next move. The observer's first report, right after `observe`, is a no-op clamp. The
+  // repaint is asked for either way: a new box is a new crop even when the clamp keeps the state
+  // (`apply` skips an unchanged one, and `schedulePaint` coalesces with its frame when it did not).
   useEffect(() => {
     const cell = cellRef.current
     if (!enabled || !zoomed || cell === null) return undefined
     const observer = new ResizeObserver(() => {
       const measured = (rectRef.current = measureCell(cell))
       apply(clampPan(stateRef.current, measured.box))
+      schedulePaint()
     })
     observer.observe(cell)
     return () => {
       observer.disconnect()
     }
-  }, [enabled, zoomed, apply])
+  }, [enabled, zoomed, apply, schedulePaint])
+
+  // A video that learns its size mid-zoom — a quality swap's or a reconnect's new layer, or a stream
+  // whose resolution changed — is cropped at once, before its first frame shows (header). Capture
+  // phase, because media events do not bubble. Attached for as long as the cell is filled, not only
+  // while zoomed: a video whose size arrives between the first zoomed paint and React committing
+  // `zoomed` would otherwise stay uncropped. At 1× the paint only clears, which costs nothing.
+  useEffect(() => {
+    const layer = layerRef.current
+    if (!enabled || layer === null) return undefined
+    const onMediaSize = (): void => {
+      paint()
+    }
+    layer.addEventListener('loadedmetadata', onMediaSize, { capture: true })
+    layer.addEventListener('resize', onMediaSize, { capture: true })
+    return () => {
+      layer.removeEventListener('loadedmetadata', onMediaSize, { capture: true })
+      layer.removeEventListener('resize', onMediaSize, { capture: true })
+    }
+  }, [enabled, paint])
 
   return { cellRef, layerRef, zoomed, resetZoom }
 }
@@ -382,11 +452,14 @@ export function useZoomPan(enabled: boolean): ZoomPan {
 export interface ZoomPanLayerProps {
   /** `useZoomPan`'s `layerRef`. */
   readonly layerRef: RefObject<HTMLDivElement | null>
-  /** The player, and only the player (header, "Only the player is scaled"). */
+  /** The player, and only the player (header, "Only the video is zoomed"). */
   readonly children: ReactNode
 }
 
-/** The transformed element around the player. Always rendered, so the player never remounts. */
+/**
+ * The element around the player whose videos `useZoomPan` crops; never transformed itself. Always
+ * rendered, so the player never remounts (FILL-2).
+ */
 export function ZoomPanLayer({ layerRef, children }: ZoomPanLayerProps): JSX.Element {
   return (
     <div className="zoomPan" ref={layerRef}>

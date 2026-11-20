@@ -1,18 +1,17 @@
 /*
- * Digital zoom (P3.6; ZOOM-1/2/3): the layer around the player that `useZoomPan` transforms, and
- * the cursors of a zoomed cell. Tokens come from src/renderer/src/styles.css.
+ * Digital zoom (P3.6; ZOOM-1/2/3): the layer around the player whose videos `useZoomPan` crops,
+ * and the cursors of a zoomed cell. Tokens come from src/renderer/src/styles.css.
  *
- * The layer is always there, zoomed or not (ZoomPan.tsx, "Only the player is scaled"), and is the
- * cell's box exactly, so its untransformed coordinates are the cell's and zoomMath needs no
- * conversion. `transform-origin: 0 0` is what zoomMath's `(x, y) + scale · p` assumes. The
- * `transform` itself and `will-change` are written on the element by the hook, per frame and only
- * while zoomed. The cell's `overflow: hidden` (grid.css) clips the zoomed picture to the cell, and
- * the overlay, painted after the layer, stays on top of it at its own size.
+ * The layer is always there, zoomed or not (ZoomPan.tsx, "Only the video is zoomed"), and is the
+ * cell's box exactly, so its coordinates are the cell's and zoomMath needs no conversion. It is
+ * never transformed: zoom is each video's inline `object-fit: fill` and `object-view-box`, written
+ * by the hook only while zoomed, so the video stays the cell's size at every zoom (F1.0.2-9: an 8×
+ * transform made an 8×-sized video quad, which Windows' overlay path resized at every step). The
+ * overlay, painted after the layer, stays on top of it at its own size.
  */
 .zoomPan {
   position: absolute;
   inset: 0;
-  transform-origin: 0 0;
 }
 
 /* FILL-1: the filled cell takes touch gestures for itself, so two fingers pinch the camera, not the page. */

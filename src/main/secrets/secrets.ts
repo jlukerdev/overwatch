@@ -132,6 +132,12 @@ export type SecretsErrorCode =
   | 'crypto-failed'
   /** The existing file could not be read, so writing would have destroyed what is in it. */
   | 'read-failed'
+  /**
+   * A clear (`clear`, `clearRtspStream`, `setRtspUrls` with no URL) met a file the keystore cannot
+   * decrypt. Removing one secret must not cost all the others, so the file is left exactly as it is
+   * and the clear is refused; a write (`set`) replaces it, and `clearAll` still removes it.
+   */
+  | 'unreadable'
 
 export class SecretsError extends Error {
   readonly code: SecretsErrorCode
@@ -152,14 +158,17 @@ export type SecretsReadResult =
   /**
    * There is a file but it cannot be used: a different keystore, a corrupt blob, another app's
    * data. Treated as "no secrets stored" so the app still starts; the user re-enters the key in
-   * Settings (P1.6). `problem` is fixed text and never contains a secret.
+   * Settings (P1.6), and `set` replaces the file. A clear refuses (`SecretsError('unreadable')`)
+   * rather than deleting it, so clearing one secret never takes the others with it. `problem` is
+   * fixed text and never contains a secret.
    */
   | { readonly status: 'unreadable'; readonly secrets: Secrets; readonly problem: string }
   /**
    * The file is there but could not be read at all — a lock, a permissions change, too many open
    * files. Unlike `unreadable` this says **nothing about the contents**: the stored secrets are
    * probably fine, so overwriting or deleting the file here would destroy a credential the user
-   * would have to go and re-create. `set` and `clear` refuse instead of merging into `{}`.
+   * would have to go and re-create. `set` and `clear` refuse (`read-failed`) instead of merging
+   * into `{}`.
    */
   | { readonly status: 'io-error'; readonly secrets: Secrets; readonly problem: string }
 
@@ -183,16 +192,23 @@ export interface SecretsStore {
   get(key: SecretKey): Promise<string | undefined>
   /** Stores one secret. Throws `SecretsError` if the keystore is unavailable (CON-2). */
   set(key: SecretKey, value: string): Promise<void>
-  /** Removes one secret: the key is deleted, never blanked. */
+  /**
+   * Removes one secret: the key is deleted, never blanked. Throws `SecretsError('unreadable')` and
+   * touches nothing if the file cannot be decrypted.
+   */
   clear(key: SecretKey): Promise<void>
   /**
    * RTSP-2: replaces one stream's URL set with `urls`. Every URL is checked with `validateRtspUrl`
    * first; an invalid one throws `SecretsError('invalid-value')` with fixed text and nothing is
-   * stored. A set with no URL at all removes the stream's entry. Throws `SecretsError` if the
+   * stored. A set with no URL at all removes the stream's entry (a clear: refused with
+   * `SecretsError('unreadable')` on a file that cannot be decrypted). Throws `SecretsError` if the
    * keystore is unavailable (CON-2).
    */
   setRtspUrls(streamId: string, urls: RtspStreamUrls): Promise<void>
-  /** RTSP-1: removes one stream's URLs (a deleted stream). Nothing to do if it has none. */
+  /**
+   * RTSP-1: removes one stream's URLs (a deleted stream). Nothing to do if it has none. Throws
+   * `SecretsError('unreadable')` and touches nothing if the file cannot be decrypted.
+   */
   clearRtspStream(streamId: string): Promise<void>
   /** Removes the file and every secret in it. */
   clearAll(): Promise<void>
@@ -260,7 +276,8 @@ export function createSecretsStore(options: SecretsStoreOptions): SecretsStore {
   async function write(secrets: Secrets): Promise<void> {
     if (isEmpty(secrets)) {
       // A cleared secret is removed, not blanked: with nothing left, the file goes away. This also
-      // works while the keystore is unavailable, so a user can always get rid of a stored secret.
+      // works while the keystore is unavailable, so a user can always get rid of a stored secret in
+      // a file that can be read (a clear on an unreadable file is refused in `update`).
       await removeIfPresent(path)
       return
     }
@@ -297,6 +314,10 @@ export function createSecretsStore(options: SecretsStoreOptions): SecretsStore {
   /**
    * Read-modify-write under the queue, with the refusal rules `set` and `clear` share. `mutate` gets
    * a copy of what is stored and returns the new set, or `null` for "nothing to change".
+   *
+   * Refusals: an `io-error` file refuses both (`read-failed`). An `unreadable` file refuses a clear
+   * (`unreadable`) and leaves the file untouched, because it may still hold the API key, the token
+   * and other streams' URLs that a working keystore could decrypt again; a write replaces it.
    */
   async function update(
     mutate: (current: Secrets) => Secrets | null,
@@ -314,9 +335,13 @@ export function createSecretsStore(options: SecretsStoreOptions): SecretsStore {
     }
     if (!options.writing && current.status === 'empty') return
     if (!options.writing && current.status === 'unreadable') {
-      // Nothing in it can be read, so there is nothing to preserve.
-      await removeIfPresent(path)
-      return
+      // Refused even when there would be nothing to remove: the file reads as `{}`, but deleting
+      // it here would destroy every other secret in it. Nothing on disk is touched.
+      throw new SecretsError(
+        'unreadable',
+        `${fileName} could not be read with this machine's keystore, so nothing was removed. ` +
+          'Check that the keystore is unlocked and OverWatch may use it, then try again.',
+      )
     }
     // An `unreadable` file on a write is different: its contents are genuinely unrecoverable, so
     // the write starts from an empty set and replaces it.

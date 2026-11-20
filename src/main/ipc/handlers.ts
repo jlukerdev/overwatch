@@ -755,16 +755,17 @@ export function createIpcRouter(deps: IpcRouterDeps): ReadonlyMap<string, IpcHan
         ready.manager.rtspStreamsChanged()
       })
       // Nothing stored for it: no secrets.bin read or write at all. A clear on a file the keystore
-      // cannot decrypt removes the file (secrets.ts), so it is only risked when there is something
-      // of this stream's to remove.
+      // cannot decrypt is refused and leaves the file as it is (secrets.ts), so there is no point
+      // reading it unless this stream has something to remove.
       if (services.credentials.rtspUrls?.[input.id] === undefined) return state(ready)
       // No keystore needed: removing a stored secret works even when it cannot be written again.
       try {
         await services.secrets.clearRtspStream(input.id)
       } catch (err) {
         // The stream is already deleted from config.json, so the answer is still the new state.
-        // Its URLs stay encrypted in secrets.bin under an id nothing refers to, and stay in memory
-        // so the log redactor keeps covering them. The message is the store's fixed text (CON-2).
+        // Its URLs stay encrypted in secrets.bin under an id nothing refers to (also when the file
+        // cannot be decrypted: the store refuses rather than delete it), and stay in memory so the
+        // log redactor keeps covering them. The message is the store's fixed text (CON-2).
         console.error(
           `[rtsp] A deleted stream's addresses could not be removed from secrets.bin: ${
             err instanceof SecretsError ? err.message : 'unexpected error'
@@ -988,8 +989,13 @@ async function restoreRtspUrls(
   try {
     await secrets.setRtspUrls(id, previous ?? {})
     setStoredRtspUrls(credentials, id, previous ?? {})
-  } catch {
-    console.error("[rtsp] A stream's addresses could not be put back after a failed save.")
+  } catch (err) {
+    // The store's fixed text only, never the URL (CON-2).
+    console.error(
+      `[rtsp] A stream's addresses could not be put back after a failed save: ${
+        err instanceof SecretsError ? err.message : 'unexpected error'
+      }`,
+    )
   }
 }
 

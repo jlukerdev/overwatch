@@ -8,7 +8,7 @@ Notes for working on OverWatch (internal name: View Protect). Coding agents star
 
 ```
 view-protect/
-├─ docs/                      spec, architecture, dev plan, perf results, API references
+├─ docs/                      spec, architecture, feature tracking (versions/), perf results, API references
 ├─ resources/
 │  ├─ bin/<platform>-<arch>/  go2rtc binaries (gitignored; npm run fetch:go2rtc)
 │  └─ icons/                  icon.svg (source) → icon.png / .icns / .ico
@@ -75,7 +75,7 @@ On Windows, if the binary is in use, quit OverWatch (and any go2rtc) first.
 - **go2rtc.** `predist` fetches every go2rtc target, and each package copies only its own `resources/bin/<platform>-<arch>/`. After packing and before signing, `scripts/after-pack.ts` (`afterPack` in `electron-builder.yml`) fails the build if the packaged go2rtc is missing, differs from the pinned version or hash, or is built for the wrong OS or CPU. macOS ad-hoc signing then re-signs the binary, so in a signed app it no longer hashes to its `go2rtc.json`; that is expected. Run builds through `npm run dist*`: the hook path is resolved against the current directory.
 - **Signing.** None yet. The macOS apps are ad-hoc signed (`identity: '-'`, hardened runtime off) so Apple silicon will run them and Gatekeeper offers *Open Anyway*; without any signature macOS reports the app as damaged. The Windows files are unsigned. The first-launch steps for users are in the README.
 - **Check a build.** `codesign --verify --deep --strict dist/mac-arm64/OverWatch.app` should print nothing. To launch a packaged build from a terminal started by VS Code or Claude Code, unset `ELECTRON_RUN_AS_NODE` first (`env -u ELECTRON_RUN_AS_NODE dist/mac-arm64/OverWatch.app/Contents/MacOS/OverWatch --user-data-dir=<empty dir>`), or it starts as plain Node and says "bad option".
-- **Upgrade check (G6).** Install the new build over an older one: Views and settings are kept, because the `userData` folder name never changes (`src/main/branding.ts`).
+- **Upgrade check.** Part of every version's release check. Install the new build over an older one: Views and settings are kept, because the `userData` folder name never changes (`src/main/branding.ts`).
 
 ## Protect API types
 
@@ -85,7 +85,7 @@ The `overrides` entry in `package.json` makes openapi-typescript (whose TypeScri
 
 ## UniFi Access mock
 
-Access is optional and off by default. The build machine has no Access hardware, so the client is developed against a local mock that follows `docs/reference/access-endpoints-v4.2.16.md`. Real hardware is still unverified (OS-1 in DEV_PLAN).
+Access is optional and off by default. The build machine has no Access hardware, so the client is developed against a local mock that follows `docs/reference/access-endpoints-v4.2.16.md`. Real hardware is still unverified (OS-1 in [FEATURES.md](FEATURES.md#open-verification)).
 
 ```bash
 npm run mock:access
@@ -104,4 +104,4 @@ The icon source is `resources/icons/icon.svg`. After editing it:
 
 ## Spikes
 
-Phase 0 scripts in `scripts/spikes/` read secrets from `.env.local` (gitignored). See `docs/spikes/` for what each one proved, e.g. `npm run spike:video` (`P0.5-video.md`).
+The early proof-of-concept scripts in `scripts/spikes/` read secrets from `.env.local` (gitignored). See `docs/spikes/` for what each one proved, e.g. `npm run spike:video` (`P0.5-video.md`).

@@ -107,4 +107,4 @@ npm run dev            # run the app
 npm run dist           # build the installers into dist/ (see docs/DEVELOPMENT.md)
 ```
 
-To work on the code, see [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md). The design docs are [docs/SPEC.md](docs/SPEC.md) (requirements), [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) (architecture) and [docs/DEV_PLAN.md](docs/DEV_PLAN.md) (plan). Inside the code the project is called *View Protect*.
+To work on the code, see [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md). The design docs are [docs/SPEC.md](docs/SPEC.md) (requirements), [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) (architecture) and [docs/FEATURES.md](docs/FEATURES.md) (features by version). Inside the code the project is called *View Protect*.

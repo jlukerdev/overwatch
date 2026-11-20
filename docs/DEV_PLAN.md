@@ -1,5 +1,7 @@
 # View Protect (OverWatch) — Development Plan
 
+> **Legacy document, frozen at v1.0.1.** This plan built v1.0.0 (Phases 0–6) and v1.0.1 (Phase 7). It is kept as the historical record and is no longer updated. New versions are planned in [FEATURES.md](FEATURES.md). Where this plan and [SPEC.md](SPEC.md) disagree, SPEC.md describes the current app.
+
 Phases run in order. Each one ends with a **gate**: a check you can demo or measure. A phase isn't done until its gate passes on **both macOS and Windows** (unless marked otherwise). Requirement IDs refer to `SPEC.md`.
 
 ---

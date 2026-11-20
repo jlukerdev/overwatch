@@ -1,11 +1,11 @@
 # CLAUDE.md — View Protect (OverWatch)
 
-The app's external name is **OverWatch** (P6.1, SPEC BRAND-1…5); "View Protect" is the internal and repo name. Every string the user sees — window title, header, menus, About, dialogs, errors, toasts, the Settings foot "OverWatch v<version>" — says OverWatch, in that casing. Code identifiers (`window.viewProtect`, `ViewProtectApi`, `vp:` channels, `VP_*`), the package name `view-protect` and the `userData` folder name "View Protect" stay as they are: renaming that folder would lose every user's data (`src/main/branding.ts`).
+The app's external name is **OverWatch** (SPEC BRAND-1…5); "View Protect" is the internal and repo name. Every string the user sees — window title, header, menus, About, dialogs, errors, toasts, the Settings foot "OverWatch v<version>" — says OverWatch, in that casing. Code identifiers (`window.viewProtect`, `ViewProtectApi`, `vp:` channels, `VP_*`), the package name `view-protect` and the `userData` folder name "View Protect" stay as they are: renaming that folder would lose every user's data (`src/main/branding.ts`).
 
-This app is built and maintained by agents. Read `docs/SPEC.md`, `docs/ARCHITECTURE.md` and `docs/DEV_PLAN.md` before changing anything. Developer how-tos (commands, go2rtc, generated types, the Access mock, icons) are in `docs/DEVELOPMENT.md`; `README.md` is user-facing.
+This app is built and maintained by agents. Read `docs/SPEC.md` (how the app behaves now), `docs/ARCHITECTURE.md` and `docs/FEATURES.md` (what each version delivers, with one file per planned version in `docs/versions/`) before changing anything. `docs/DEV_PLAN.md` is the frozen legacy plan that built v1.0.0 and v1.0.1: read it for history only and never edit it. Developer how-tos (commands, go2rtc, generated types, the Access mock, icons) are in `docs/DEVELOPMENT.md`; `README.md` is user-facing.
 
 ## Ground rules
-- Work one DEV_PLAN task at a time using the workflow below. Don't start a phase until the previous phase's gate has passed. Reference requirement IDs (e.g. `CELL-2`) in commits.
+- Work one feature at a time (a feature ID from a version file, e.g. `F1.0.2-1`) using the workflow below. Only build features listed in a version file whose scope the user has agreed. Reference the feature ID and requirement IDs (e.g. `CELL-2`) in commits.
 - **The Protect API contract lives in `docs/reference/protect-openapi-v7.3.74.json`.** Check it before calling any endpoint, and use the generated types.
 - **The Access API contract lives in `docs/reference/access-endpoints-v4.2.16.md`** (the door, lock-state and notification parts of Ubiquiti's official document, `docs/reference/access-api-reference-v4.2.16.pdf`). Check it before calling any Access endpoint. It is documented but not yet run against hardware (OS-1).
 - **Official Protect Integration API only.** Never use the private Protect API or username/password login.
@@ -17,27 +17,28 @@ This app is built and maintained by agents. Read `docs/SPEC.md`, `docs/ARCHITECT
 - Fixtures must be sanitized: no IPs, MACs, tokens or keys.
 - Spike secrets come from `.env.local` (gitignored). Never hard-code them.
 
-## Workflow for each work unit (one DEV_PLAN task, e.g. `P0.1`)
-Follow these steps in order for **every** task. Do not batch several tasks into one branch or PR.
+## Workflow for each work unit (one feature, e.g. `F1.0.2-1`)
+Follow these steps in order for **every** feature. Do not batch several features into one branch or PR unless the version file says they ship together.
 
-1. **Branch.** The base branch is **`feature/view-protect`**. Pull it to get its latest, then create a new branch for the task from it: `view-protect/<task-id>-<slug>` (e.g. `view-protect/p0.1-scaffold`).
-2. **Implement with subagents.** The main agent plans and coordinates the task. The implementation work goes to subagents (e.g. one for code, one for tests or fixtures). The main agent combines their results and checks them: build, lint and tests must pass.
+1. **Branch.** The base branch is **`feature/view-protect`**. Pull it to get its latest, then create a new branch for the feature from it: `view-protect/<feature-id>-<slug>` (e.g. `view-protect/f1.0.2-1-export-views`).
+2. **Implement with subagents.** The main agent plans and coordinates the feature. The implementation work goes to subagents (e.g. one for code, one for tests or fixtures). The main agent combines their results and checks them: build, lint and tests must pass.
 3. **Review.** When implementation is done, run the `/code-review` skill on the branch's changes.
    - Apply the recommended fixes that are clear-cut correctness or quality fixes.
    - **Ask the user for approval** on any finding that changes scope, behaviour, the spec, architecture, security posture, or that you're unsure about. List each with the trade-off and your recommendation, and wait for the answer before changing it.
    - Re-run build, lint and tests after the fixes.
-4. **Commit, push, PR.** Commit (message references the task ID and requirement IDs), push the branch, and open a PR into `feature/view-protect` (never `main`). The PR description includes: the task, what changed, test/gate evidence, review findings with what was done about each one (fixed / deferred / user decision), and anything left open.
-5. **Wait for merge.** Stop and tell the user the PR is ready. **Do not start the next task until the user has approved and merged the PR.** After the merge, pull `feature/view-protect` and go to step 1 for the next task.
+4. **Update tracking.** Set the feature's status in its version file (add the PR number once it exists), and update `docs/SPEC.md` for any behaviour change.
+5. **Commit, push, PR.** Commit (message references the feature ID and requirement IDs), push the branch, and open a PR into `feature/view-protect` (never `main`). The PR description includes: the feature, what changed, test/gate evidence, review findings with what was done about each one (fixed / deferred / user decision), and anything left open.
+6. **Wait for merge.** Stop and tell the user the PR is ready. **Do not start the next feature until the user has approved and merged the PR.** After the merge, pull `feature/view-protect` and go to step 1 for the next feature.
 
 Merging `feature/view-protect` into `main` is the user's call. Agents never open or merge PRs into `main`.
 
-Phase gates (`G0`…`G6`) still apply. The last task of a phase includes the gate evidence in its PR, and the next phase doesn't start until that PR is merged.
+Each version file has a **release check**. The last PR of a version sets `package.json` to that version and includes the release-check evidence; the next version's features don't start until that PR is merged.
 
 ## Conventions
 - TypeScript strict. Keep logic that has no UI (e.g. `cellScheduler.ts`) pure and unit-tested.
 - Feature folders in `src/renderer/src/features/`. Shared types in `src/shared/`.
-- If behaviour changes, update `docs/SPEC.md` in the same change.
-- Perf-related changes: re-run the P2.5 harness and update `docs/perf-results.md`.
+- If behaviour changes, update `docs/SPEC.md` in the same change. SPEC.md describes the current app only: no task numbers, dates or "changed from" history (that belongs in the version file). Keep a short reason where it stops a future change from undoing a deliberate choice.
+- Perf-related changes: re-run the perf harness (`npm run perf`) and update `docs/perf-results.md`.
 
 ## UI conventions (renderer)
 The look is defined once, in `src/renderer/src/styles.css` and `src/renderer/src/ui/`. Reuse it; do not restyle per feature.
@@ -49,5 +50,5 @@ The look is defined once, in `src/renderer/src/styles.css` and `src/renderer/src
 - **Over live video.** Chips sit on `--scrim`; the name chip is 28 px tall, the strip's controls 35 px (`--control-size`), buttons at least 35 × 35 px (`features/cells/cells.css`). The quality-coloured select is the one opaque chip (user decision 2026-11-16). No `backdrop-filter` and no per-frame React state over video; animate `transform` / `opacity` only.
 - **States.** Every interactive element has hover, active and a visible `:focus-visible` ring (2 px `--accent`). Disabled controls are dimmed and, where it is not obvious, say why in `title`. Any animation is off or reduced under `prefers-reduced-motion`.
 - **Copy.** Plain sentences a homeowner would read, sentence case, one short line of help at most. Product names exact (OverWatch, Protect, Access, API key). The certificate UI says "accepted", not "pinned".
-- **Do not rename** the header nav buttons' text ("Cameras", "Doors", "Live"): the perf harness clicks them by text. Settings is not a nav button but the gear icon button at the header's end (P5.8), found by its `aria-label` "Settings"; do not change that label either. Grep `tests/` and `scripts/perf/` before changing any visible string.
+- **Do not rename** the header nav buttons' text ("Cameras", "Doors", "Live"): the perf harness clicks them by text. Settings is not a nav button but the gear icon button at the header's end, found by its `aria-label` "Settings"; do not change that label either. Grep `tests/` and `scripts/perf/` before changing any visible string.
 - **Check it on screen.** For a visual change, launch the app on a blank profile (`npm run build`, then `npx electron out/main/index.js --user-data-dir=<empty dir>`) and look at the screens you touched; say in the PR what could not be seen without a console.

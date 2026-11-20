@@ -36,7 +36,7 @@
 // missing (../../state/setupChecklist.ts). There is no Settings button in this screen's header: the app header
 // ends with one (the gear, P5.8), and every state that needs Settings offers "Open settings" itself.
 //
-// At the bottom of every state but "Checking the console…", the screen's own Settings bar
+// Under the title row in every state but "Checking the console…", the screen's own Settings bar
 // (./StreamsSettings, P5.7): QUAL-1's app-wide grid and fill quality, closed by default.
 import { useCallback, useEffect, useMemo, useState, type JSX } from 'react'
 import type { ConnectionPhase, EndpointStatus, IpcError, IpcResult } from '@shared/ipc'
@@ -237,6 +237,10 @@ export function CameraList({ onOpenSettings }: CameraListProps): JSX.Element {
         </div>
       </header>
 
+      {/* QUAL-1's app-wide defaults (P5.7), in every state of the screen: the shared Settings bar,
+          under the title row and above any banner, as the Doors screen's polling. */}
+      {streams === undefined ? null : <StreamsSettings streams={streams} />}
+
       {/* A snapshot failure that is not about a camera is a credential or a pin problem, so it is
           reported once for the whole list with the way to fix it (CON-1/2/3), not per row. */}
       {thumbnails.error === null ? null : (
@@ -295,10 +299,6 @@ export function CameraList({ onOpenSettings }: CameraListProps): JSX.Element {
           })}
         </ul>
       )}
-
-      {/* QUAL-1's app-wide defaults (P5.7), in every state of the screen: the shared Settings bar,
-          pinned to the bottom, as the Doors screen's polling. */}
-      {streams === undefined ? null : <StreamsSettings streams={streams} />}
     </section>
   )
 }

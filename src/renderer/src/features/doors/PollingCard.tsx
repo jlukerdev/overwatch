@@ -3,7 +3,7 @@
 // and one line of help to its right, a Save button and "Reset to defaults".
 //
 // **Collapsible** (user decision 2026-11-19): the shared ../../ui/SettingsBar, closed by default and
-// pinned to the bottom of the Doors screen; opening it grows the bar upwards over the door cards.
+// under the Doors screen's title row; opening it expands downwards over the door cards.
 // The draft is this component's state, outside the bar's body, so what was typed is kept while it
 // is closed, for as long as the screen stays open.
 //

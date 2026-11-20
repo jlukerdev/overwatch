@@ -836,26 +836,30 @@ body,
 }
 
 /* --- settings bar (ui/SettingsBar.tsx) -----------------------------------------------------------
- * A screen's own settings, collapsible and pinned to the bottom of the screen (user decision
- * 2026-11-19): the Doors screen's polling, the Cameras screen's stream qualities. It expects to be
- * the last child of a screen that is a flex column with `min-height: 100%` and the padding
- * `--screen-pad-*` tokens (`.doors`, `.cameras`): `margin-top: auto` puts it at the bottom of a short
- * screen and `position: sticky` keeps it there while the screen scrolls under it, so opening it
- * grows upwards. Its body scrolls by itself when the window is too short for it.
+ * A screen's own settings, collapsible: the Doors screen's polling, the Cameras screen's stream
+ * qualities. It is the first child of a screen with the `--screen-pad-*` padding and a 1rem flex
+ * gap (`.doors`, `.cameras`), above the title row and any banner. Closed, it takes its own row, so
+ * nothing is hidden; open, its body hangs below it over the content, covering it rather than moving
+ * it (an inline body would push the screen down on every open).
+ *
+ * `position: sticky` keeps it under the app header while the screen scrolls: the scroll container
+ * is `.app__body` (html, body and #root never scroll), and the screen is its child, as tall as its
+ * content, so the bar sticks for the whole scroll.
  */
 .settingsBar {
   position: sticky;
   z-index: 1;
-  bottom: 0;
+  top: 0;
+  flex-shrink: 0;
   /*
-   * Flush with the bottom and the sides of the screen (user decision 2026-11-19): the negative
-   * margins take back the screen's padding, and only the top edge is drawn.
+   * Flush with the app header and the screen's sides: the negative margins take back the screen's
+   * padding. No bottom margin: the screen's flex gap already gives the title row the space the top
+   * padding gave it. Only the bottom edge is drawn; a top one would double the app header's.
    */
-  margin: auto calc(-1 * var(--screen-pad-x)) calc(-1 * var(--screen-pad-bottom));
+  margin: calc(-1 * var(--screen-pad-top)) calc(-1 * var(--screen-pad-x)) 0;
   padding: 0;
-  border-width: 1px 0 0;
+  border-width: 0 0 1px;
   border-radius: 0;
-  box-shadow: 0 -8px 16px var(--bg);
 }
 
 .settingsBar__heading {
@@ -943,10 +947,23 @@ body,
   outline-offset: -2px;
 }
 
+/*
+ * Open, the body hangs below the bar's bottom edge (`+ 1px` past the padding box, so that edge stays
+ * the divider between the toggle and the body) over the content, with the bar's background, its own
+ * bottom edge and a shadow downwards. It scrolls by itself when taller than the window allows: 60vh
+ * leaves room for the app header and the bar's heading down to the 400 px minimum window.
+ */
 .settingsBar__body {
+  position: absolute;
+  top: calc(100% + 1px);
+  right: 0;
+  left: 0;
   max-height: min(60vh, 28rem);
   padding: 0.25rem var(--screen-pad-x) 1rem;
   overflow: auto;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-raised);
+  box-shadow: 0 8px 16px var(--bg);
 }
 
 /*

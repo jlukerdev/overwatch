@@ -25,6 +25,8 @@ import { z } from 'zod'
 import {
   ACCESS_POLLING_BOUNDS,
   AppModeSchema,
+  MAX_RTSP_STREAM_NAME_LENGTH,
+  RTSP_STREAM_ID_PATTERN,
   CameraEventSchema,
   CameraSchema,
   CameraStateChangeSchema,
@@ -41,7 +43,7 @@ import {
   type CameraStateChange,
   type DoorStates,
 } from './models'
-import { RtspUrlsStoredSchema } from './rtsp'
+import { isValidRtspUrl, RtspUrlsStoredSchema } from './rtsp'
 import { PACKAGE_CHANNEL, QualitySchema, StreamQualitySchema } from './quality'
 import {
   StreamHandleSchema,
@@ -545,6 +547,44 @@ export const SetModeInputSchema = z.object({ mode: AppModeSchema })
 export type SetModeInput = z.infer<typeof SetModeInputSchema>
 
 /**
+ * RTSP-2: one quality's URL in a stream save. **Absent keeps** what is stored, `null` **clears** it,
+ * and a string **sets** it. A string must pass `validateRtspUrl` (rtsp:// or rtsps:// only, a host,
+ * at most 2048 characters, no whitespace or control characters). The refusal message is fixed text
+ * and never quotes the URL (CON-2): `firstIssue` reports only the path and this message.
+ */
+const RtspUrlChangeSchema = z
+  .string()
+  .refine(isValidRtspUrl, { message: 'not a valid rtsp:// or rtsps:// address' })
+  .nullable()
+  .optional()
+
+/**
+ * RTSP-1/2: create a stream (no `id`) or edit one (`id` of a stored stream). `name` is trimmed and
+ * 1–64 characters; uniqueness ignoring case is checked in main against the stored list
+ * (`validateRtspStreamName`). `urls` is per quality, see {@link RtspUrlChangeSchema}. Main refuses a
+ * save that would leave the stream with no URL at all. The reply is the whole `AppState`, whose
+ * `secretsStored.rtspUrls` says which qualities now have a URL — booleans, never the URL (rule 1).
+ */
+export const SaveRtspStreamInputSchema = z.object({
+  id: z.string().regex(RTSP_STREAM_ID_PATTERN).optional(),
+  name: z.string().trim().min(1).max(MAX_RTSP_STREAM_NAME_LENGTH),
+  urls: z
+    .object({
+      high: RtspUrlChangeSchema,
+      medium: RtspUrlChangeSchema,
+      low: RtspUrlChangeSchema,
+    })
+    .strict(),
+})
+export type SaveRtspStreamInput = z.infer<typeof SaveRtspStreamInputSchema>
+
+/** RTSP-1: delete one stream and its URLs. Views that showed it are not edited. */
+export const DeleteRtspStreamInputSchema = z.object({
+  id: z.string().regex(RTSP_STREAM_ID_PATTERN),
+})
+export type DeleteRtspStreamInput = z.infer<typeof DeleteRtspStreamInputSchema>
+
+/**
  * QUAL-1: the two app-wide quality defaults, as a pair. The same shape as `StreamsConfig`
  * (./models) — main stores the parsed input *as* the `streams` block, so a field added to one and
  * not the other is a type error there — so the request can hold nothing
@@ -913,6 +953,13 @@ export const IPC = {
    * either mode's Views are never cleared by a switch.
    */
   setMode: call('vp:app/mode', SetModeInputSchema, AppStateSchema),
+  /**
+   * RTSP-1/2: create or edit an RTSP stream: its name in `config.json`, its URLs in `secrets.bin`
+   * (write-only, CON-2). Validated again in main; never answers with a URL.
+   */
+  saveRtspStream: call('vp:rtsp/streams/save', SaveRtspStreamInputSchema, AppStateSchema),
+  /** RTSP-1: delete a stream and its URLs. Cells that showed it draw "Camera not found". */
+  deleteRtspStream: call('vp:rtsp/streams/delete', DeleteRtspStreamInputSchema, AppStateSchema),
   /** QUAL-1: persist the app-wide grid and fill quality defaults. */
   setStreams: call('vp:streams/defaults', SetStreamsInputSchema, AppStateSchema),
   /**
@@ -1103,6 +1150,10 @@ export interface ViewProtectApi {
   setLastView(input: SetLastViewInput): Promise<IpcResult<AppState>>
   /** MODE-1/4: switch the app mode, persisted at once. */
   setMode(input: SetModeInput): Promise<IpcResult<AppState>>
+  /** RTSP-1/2: create or edit an RTSP stream; URLs are write-only. */
+  saveRtspStream(input: SaveRtspStreamInput): Promise<IpcResult<AppState>>
+  /** RTSP-1: delete an RTSP stream and its URLs. */
+  deleteRtspStream(input: DeleteRtspStreamInput): Promise<IpcResult<AppState>>
   /** QUAL-1: the app-wide grid and fill quality defaults, persisted. */
   setStreams(input: SetStreamsInput): Promise<IpcResult<AppState>>
   /** QUAL-7: which RTSPS qualities exist for a camera. Booleans only. */

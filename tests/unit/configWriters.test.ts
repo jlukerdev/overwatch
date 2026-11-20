@@ -98,6 +98,8 @@ async function setup() {
       isEncryptionAvailable: () => true,
       set: () => Promise.resolve(),
       clear: () => Promise.resolve(),
+      setRtspUrls: () => Promise.resolve(),
+      clearRtspStream: () => Promise.resolve(),
     },
     pins: {
       pinnedFingerprint: () => null,

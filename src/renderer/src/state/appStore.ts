@@ -28,6 +28,7 @@ import {
   type IpcResult,
   type PinCheck,
   type RtspsAvailability,
+  type SaveRtspStreamInput,
   type SecretInput,
   type SecretKeyInput,
   type SecretsStored,
@@ -153,6 +154,10 @@ export interface AppStoreState {
    * answers with the new mode's `AppState` (its Views, inventory and status), folded in as usual.
    */
   setMode: (mode: AppMode) => Promise<IpcResult<AppState>>
+  /** RTSP-1/2: create or edit a stream. URLs are write-only; the answer carries booleans only. */
+  saveRtspStream: (input: SaveRtspStreamInput) => Promise<IpcResult<AppState>>
+  /** RTSP-1: delete a stream and its URLs. */
+  deleteRtspStream: (id: string) => Promise<IpcResult<AppState>>
 }
 
 const NO_SECRETS: SecretsStored = { protectApiKey: false, accessToken: false, rtspUrls: {} }
@@ -354,6 +359,8 @@ export const useAppStore = create<AppStoreState>()((set, get) => {
     setDoorEmergency: async (input) => bridge().setDoorEmergency(input),
     setAccessPolling: async (input) => fold(await bridge().setAccessPolling(input)),
     setMode: async (mode) => fold(await bridge().setMode({ mode })),
+    saveRtspStream: async (input) => fold(await bridge().saveRtspStream(input)),
+    deleteRtspStream: async (id) => fold(await bridge().deleteRtspStream({ id })),
   }
 })
 

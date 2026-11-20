@@ -977,6 +977,35 @@ body,
   font-size: var(--font-sm);
 }
 
+/* --- quality chips ------------------------------------------------------------------------------
+ * QUAL-7: which qualities a camera has, as small quiet chips (HIGH / MED / LOW): the Cameras
+ * screen's RTSPS streams on the console, the Streams screen's saved addresses (RTSP-1). A detail,
+ * so muted; an absent quality is dimmed rather than hidden, so the card says what is missing too.
+ */
+.qualityChips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.qualityChip {
+  padding: 0.05rem 0.4rem;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--fg);
+  font-size: var(--font-xs);
+  letter-spacing: 0.02em;
+}
+
+.qualityChip--absent {
+  border-style: dashed;
+  color: var(--muted);
+  opacity: 0.55;
+}
+
 /* --- settings bar (ui/SettingsBar.tsx) -----------------------------------------------------------
  * A screen's own settings, collapsible: the Doors screen's polling, the Cameras screen's stream
  * qualities. It is the first child of a screen with the `--screen-pad-*` padding and a 1rem flex

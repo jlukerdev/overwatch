@@ -7,7 +7,8 @@
 // subscribing again), so they cannot disagree.
 //
 // What the grid area shows, first match wins:
-//  1. "Reading the console status…" until the first status and settings have landed.
+//  1. "Loading…" until the settings have landed, then (Protect) "Reading the console status…"
+//     until the first status has.
 //  2. The setup / no-cameras empty states, by the camera list's own rules (`setupGaps`,
 //     `cameraListBody`), so this screen and that one never disagree about why there is nothing to
 //     show. "Not set up yet" lists the setup steps with the done ones ticked (`setupChecklist`).
@@ -17,6 +18,9 @@
 //     still be picked (and remembered) before the console is reached.
 //  3. "No Views yet", with a button that makes a first View of the cameras (`starterPreset`).
 //  4. The active View.
+// In **RTSP mode** (MODE-3) there is no console, so neither the console wait in 1 nor 2 applies: the camera list is the
+// streams' (main's inventory in that mode), and while it is empty the screen says "No streams" and
+// points to the Streams screen (`onOpenCameras`, which App routes there) instead of Settings.
 // 1–3 are the shared centred empty state (styles.css `.emptyState`): an icon or a spinner, a
 // title, a line of help and one action labelled for what it does.
 //
@@ -39,6 +43,7 @@
 // it leaves fill (FILL-1) and never focus mode. A press of either button moves the keyboard focus
 // to its counterpart, since the pressed one has just left the screen.
 import { useEffect, useRef, useState, type JSX, type ReactNode } from 'react'
+import type { ConnectionStatus } from '@shared/ipc'
 import type { View } from '@shared/models'
 import { useAppStore } from '../../state/appStore'
 import { cameraListBody, setupGaps, sortCameras } from '../../state/camerasStore'
@@ -78,7 +83,10 @@ export interface LiveScreenProps {
   readonly focusMode: boolean
   readonly onFocusModeChange: (on: boolean) => void
   readonly onOpenSettings: () => void
-  /** The Cameras screen is where the console is connected and its list is refreshed. */
+  /**
+   * The Cameras screen is where the console is connected and its list is refreshed; in RTSP mode
+   * App sends this to the Streams screen instead (MODE-3).
+   */
   readonly onOpenCameras: () => void
 }
 
@@ -242,13 +250,48 @@ function LiveBody({ activeView, onOpenSettings, onOpenCameras }: LiveBodyProps):
   const cameras = useAppStore((s) => s.cameras)
   const connection = useAppStore((s) => s.connection)
   const streams = useAppStore((s) => s.settings?.streams ?? null)
+  const rtsp = useAppStore((s) => s.settings?.mode === 'rtsp')
 
-  if (connection === null || streams === null) {
-    return <EmptyState busy title="Reading the console status…" />
+  // Only until the first state lands (the shell waits for it); Protect's wait for its status is
+  // `consoleNotReady`'s.
+  if (streams === null) return <EmptyState busy title="Loading…" />
+
+  const notReady = rtsp
+    ? noStreams(cameras.length, onOpenCameras)
+    : consoleNotReady(connection, cameras.length, onOpenSettings, onOpenCameras)
+  if (notReady !== null) return notReady
+
+  if (activeView === null) {
+    return <NoViews cameraIds={sortCameras(cameras).map((camera) => camera.id)} />
   }
 
+  // Not keyed by View: one GridView across switches keeps the players of shared cameras (GridView).
+  return <GridView view={activeView} cameras={cameras} streams={streams} />
+}
+
+/** RTSP mode (MODE-3): with no streams there is nothing to show, and Streams is where to add one. */
+function noStreams(cameraCount: number, onOpenStreams: () => void): JSX.Element | null {
+  if (cameraCount > 0) return null
+  return (
+    <EmptyState
+      icon={<CameraOffIcon />}
+      title="No streams"
+      hint="Add your cameras’ RTSP addresses on the Streams screen; the Views fill from its list."
+      action={{ label: 'Open Streams', icon: <CameraIcon />, onClick: onOpenStreams }}
+    />
+  )
+}
+
+/** Protect mode: the setup and no-cameras states, by the camera list's own rules (header). */
+function consoleNotReady(
+  connection: ConnectionStatus | null,
+  cameraCount: number,
+  onOpenSettings: () => void,
+  onOpenCameras: () => void,
+): JSX.Element | null {
+  if (connection === null) return <EmptyState busy title="Reading the console status…" />
   const gaps = setupGaps(connection.protect)
-  const body = cameraListBody(cameras.length, gaps)
+  const body = cameraListBody(cameraCount, gaps)
   if (body === 'setup') {
     const steps = setupChecklist(connection.protect)
     const open = openSetupSteps(steps)
@@ -281,13 +324,7 @@ function LiveBody({ activeView, onOpenSettings, onOpenCameras }: LiveBodyProps):
       />
     )
   }
-
-  if (activeView === null) {
-    return <NoViews cameraIds={sortCameras(cameras).map((camera) => camera.id)} />
-  }
-
-  // Not keyed by View: one GridView across switches keeps the players of shared cameras (GridView).
-  return <GridView view={activeView} cameras={cameras} streams={streams} />
+  return null
 }
 
 /**

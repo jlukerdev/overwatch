@@ -21,8 +21,8 @@
 // The connection indicator lives in the header, outside the switch: CON-5 asks for it to be visible
 // at all times, not only on the Settings screen. Each badge is also a way into Settings.
 //
-// **Settings** (P5.8) is not a nav tab: it holds only the console connection, and is opened by the
-// gear button at the header's very end, after the badges. That button goes through the same `go`,
+// **Settings** (P5.8) is not a nav tab: it holds the mode choice and the console connection, and is
+// opened by the gear button at the header's very end, after the badges. That button goes through the same `go`,
 // so the unsaved-editor guard applies, and it is marked `aria-current` and drawn active like a nav
 // button while Settings shows. A first run with no console still opens on Settings (`initialScreen`).
 //
@@ -32,15 +32,24 @@
 // (`focusModeApplies`), and it is dropped on leaving Live or opening the editor, so the chrome is
 // back for good. It is never stored: a launch always has its header. While the header is hidden,
 // Live shows the endpoints that are not connected itself (CON-5).
+//
+// **The two modes** (MODE-3, ./navScreens). Everything above is Protect mode. In RTSP mode the nav
+// is **Streams** then **Live**: there are no Cameras or Doors screens and no connection badges (no
+// console). A screen the current mode does not have — Cameras or Doors after a switch to RTSP,
+// Streams after a switch back, Doors once Access is saved as off — moves to Settings, where the
+// switch was made. A mode switch also closes the View editor and ends focus mode, since each mode
+// has its own Views (MODE-4).
 import { useEffect, useState, type JSX } from 'react'
 import { CameraList } from './features/cameras/CameraList'
 import { DoorsScreen } from './features/doors/DoorsScreen'
 import { LiveScreen } from './features/grid/LiveScreen'
 import { SettingsPage } from './features/settings/SettingsPage'
 import { ConnectionBadge } from './features/status/ConnectionBadge'
+import { StreamsScreen } from './features/streams/StreamsScreen'
 import { focusModeApplies } from './features/viewSwitcher/focusMode'
 import { initialScreen, type Screen } from './initialScreen'
 import { navClass } from './navClass'
+import { navScreens, screenAvailable, type NavScreen } from './navScreens'
 import { useAppStore } from './state/appStore'
 import { blockUnload, confirmLeave } from './state/unsavedGuard'
 import { ConfirmHost, confirmDialog } from './ui/ConfirmDialog'
@@ -55,6 +64,14 @@ import {
 } from './ui/icons'
 import { ToastHost } from './ui/Toast'
 
+/** The header nav's buttons. The labels are what the perf harness clicks: never rename them. */
+const NAV_ITEMS: Readonly<Record<NavScreen, { label: string; icon: JSX.Element }>> = {
+  cameras: { label: 'Cameras', icon: <CameraIcon /> },
+  doors: { label: 'Doors', icon: <DoorIcon /> },
+  streams: { label: 'Streams', icon: <CameraIcon /> },
+  grid: { label: 'Live', icon: <GridIcon /> },
+}
+
 export function App(): JSX.Element {
   const phase = useAppStore((s) => s.phase)
   const loadError = useAppStore((s) => s.loadError)
@@ -62,12 +79,22 @@ export function App(): JSX.Element {
   const subscribe = useAppStore((s) => s.subscribe)
   // DOOR-0: the saved switch, not Settings' unsaved checkbox.
   const accessEnabled = useAppStore((s) => s.settings?.console.accessEnabled ?? false)
+  // MODE-1: Protect until the first load says otherwise.
+  const mode = useAppStore((s) => s.settings?.mode ?? 'protect')
 
   const [screen, setScreen] = useState<Screen | null>(null)
   // The id of the View the editor is on, or `null` when not editing (see the header).
   const [editingViewId, setEditingViewId] = useState<string | null>(null)
   // The user asked for focus mode; whether it applies right now is `focusMode` below.
   const [focusRequested, setFocusRequested] = useState(false)
+  // The mode the editor and focus mode belong to; a switch drops both (header). Adjusted during
+  // render, so the editor is never drawn with the other mode's Views.
+  const [modeShown, setModeShown] = useState(mode)
+  if (mode !== modeShown) {
+    setModeShown(mode)
+    setEditingViewId(null)
+    setFocusRequested(false)
+  }
 
   useEffect(() => {
     window.addEventListener('beforeunload', blockUnload)
@@ -95,12 +122,13 @@ export function App(): JSX.Element {
     return unsubscribe
   }, [load, subscribe])
 
-  // DOOR-0: Doors cannot stay the chosen screen once Access is saved as off (header). Adjusted
-  // during render, so the Doors screen is not drawn even once more.
-  if (screen === 'doors' && !accessEnabled && phase === 'ready') setScreen('settings')
+  // DOOR-0, MODE-3: a screen the mode or the saved Access switch no longer offers cannot stay the
+  // chosen one (header). Adjusted during render, so that screen is not drawn even once more.
+  const available = screen !== null && screenAvailable(screen, mode, accessEnabled)
+  if (screen !== null && !available && phase === 'ready') setScreen('settings')
 
   // Settings until the load says otherwise (see the effect above).
-  const current = screen === 'doors' && !accessEnabled ? 'settings' : (screen ?? 'settings')
+  const current: Screen = available ? screen : 'settings'
   const focusMode = focusModeApplies(focusRequested, current === 'grid', editingViewId !== null)
 
   /** Switches screens, unless that would drop unsaved editor changes the user wants to keep. */
@@ -163,41 +191,23 @@ export function App(): JSX.Element {
             OverWatch
           </h1>
           <nav className="app__nav">
-            <button
-              type="button"
-              className={navClass(current === 'cameras')}
-              aria-current={current === 'cameras' ? 'page' : undefined}
-              onClick={() => {
-                go('cameras')
-              }}
-            >
-              <CameraIcon />
-              Cameras
-            </button>
-            {accessEnabled ? (
-              <button
-                type="button"
-                className={navClass(current === 'doors')}
-                aria-current={current === 'doors' ? 'page' : undefined}
-                onClick={() => {
-                  go('doors')
-                }}
-              >
-                <DoorIcon />
-                Doors
-              </button>
-            ) : null}
-            <button
-              type="button"
-              className={navClass(current === 'grid')}
-              aria-current={current === 'grid' ? 'page' : undefined}
-              onClick={() => {
-                go('grid')
-              }}
-            >
-              <GridIcon />
-              Live
-            </button>
+            {navScreens(mode, accessEnabled).map((target) => {
+              const { label, icon } = NAV_ITEMS[target]
+              return (
+                <button
+                  key={target}
+                  type="button"
+                  className={navClass(current === target)}
+                  aria-current={current === target ? 'page' : undefined}
+                  onClick={() => {
+                    go(target)
+                  }}
+                >
+                  {icon}
+                  {label}
+                </button>
+              )
+            })}
           </nav>
           <ConnectionBadge
             onOpenSettings={() => {
@@ -238,6 +248,8 @@ export function App(): JSX.Element {
               go('settings')
             }}
           />
+        ) : current === 'streams' ? (
+          <StreamsScreen />
         ) : current === 'grid' ? (
           <LiveScreen
             editingViewId={editingViewId}
@@ -248,11 +260,16 @@ export function App(): JSX.Element {
               go('settings')
             }}
             onOpenCameras={() => {
-              go('cameras')
+              // RTSP mode has no Cameras screen: its cameras are the Streams screen's (MODE-3).
+              go(mode === 'rtsp' ? 'streams' : 'cameras')
             }}
           />
         ) : (
-          <SettingsPage />
+          <SettingsPage
+            onOpenStreams={() => {
+              go('streams')
+            }}
+          />
         )}
       </main>
       <ConfirmHost />

@@ -148,6 +148,11 @@ export interface AppStoreState {
   setDoorEmergency: (input: DoorEmergencyInput) => Promise<IpcResult<DoorEmergencyResult>>
   /** DOOR-6 (P5.6): persist the Access read intervals; main applies them without a restart. */
   setAccessPolling: (input: SetAccessPollingInput) => Promise<IpcResult<AppState>>
+  /**
+   * MODE-2/4: switch the app mode. Main saves it, tears down or restores the Protect side and
+   * answers with the new mode's `AppState` (its Views, inventory and status), folded in as usual.
+   */
+  setMode: (mode: AppMode) => Promise<IpcResult<AppState>>
 }
 
 const NO_SECRETS: SecretsStored = { protectApiKey: false, accessToken: false, rtspUrls: {} }
@@ -348,6 +353,7 @@ export const useAppStore = create<AppStoreState>()((set, get) => {
     doorAction: async (input) => bridge().doorAction(input),
     setDoorEmergency: async (input) => bridge().setDoorEmergency(input),
     setAccessPolling: async (input) => fold(await bridge().setAccessPolling(input)),
+    setMode: async (mode) => fold(await bridge().setMode({ mode })),
   }
 })
 

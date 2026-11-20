@@ -15,6 +15,7 @@ import {
   describeCert,
   describeEndpointStatus,
   formatFingerprint,
+  hasUnsavedConsoleInput,
   isConsoleDirty,
   type ConsoleDraft,
   type ConsoleField,
@@ -214,6 +215,21 @@ describe('isConsoleDirty', () => {
   it('is not dirty when Access is off in both the draft and the saved config', () => {
     const off = settingsWith({ accessEnabled: false, accessBaseUrl: null })
     expect(isConsoleDirty(consoleDraftFrom(off), off)).toBe(false)
+  })
+})
+
+describe('hasUnsavedConsoleInput (MODE-2: what a switch to RTSP would discard)', () => {
+  const saved = settingsWith({ accessEnabled: true })
+
+  it.each<[string, Partial<ConsoleDraft>, boolean]>([
+    ['the draft it was seeded from', {}, false],
+    ['a changed host', { host: '192.0.2.11' }, true],
+    ['a typed API key', { protectApiKey: 'abc' }, true],
+    ['a typed Access token', { accessToken: 'tok' }, true],
+    ['only whitespace in the key fields', { protectApiKey: '  ', accessToken: ' ' }, false],
+  ])('%s → %s', (_label, overrides, expected) => {
+    const draft = { ...consoleDraftFrom(saved), ...overrides }
+    expect(hasUnsavedConsoleInput(draft, saved)).toBe(expected)
   })
 })
 

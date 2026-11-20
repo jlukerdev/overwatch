@@ -149,8 +149,7 @@ function fakeBridge(overrides: Partial<ViewProtectApi> = {}): FakeBridge {
     doorAction: unimplemented('doorAction'),
     setDoorEmergency: unimplemented('setDoorEmergency'),
     setAccessPolling: unimplemented('setAccessPolling'),
-    // F1.0.2-3 (MODE-1/4): on the bridge so the `ViewProtectApi` is complete; the mode picker that
-    // calls it is F1.0.2-4.
+    // F1.0.2-3 (MODE-1/4); the Settings mode picker calls it through the store (F1.0.2-4).
     setMode: unimplemented('setMode'),
     // P6.2 (NFR-7/8): the wall reports itself (features/power/) and the players hear `onRecover`
     // themselves; no store test drives either.
@@ -353,6 +352,47 @@ describe('mutating actions', () => {
       accessBaseUrl: null,
     })
     expect(useAppStore.getState().settings?.console.host).toBe('udm2.local')
+  })
+
+  it('switches the mode and folds in the new mode’s state (MODE-2/4)', async () => {
+    const before = appState()
+    const switched = appState({
+      settings: { ...before.settings, mode: 'rtsp', views: [], lastViewId: null },
+      cameras: [],
+    })
+    const setMode = vi.fn<ViewProtectApi['setMode']>(() =>
+      Promise.resolve<IpcResult<AppState>>({ ok: true, value: switched }),
+    )
+    fakeBridge({ setMode })
+    useAppStore.setState({ settings: before.settings, cameras: [camera('cam-1')] })
+
+    const result = await useAppStore.getState().setMode('rtsp')
+
+    expect(result.ok).toBe(true)
+    expect(setMode).toHaveBeenCalledWith({ mode: 'rtsp' })
+    expect(useAppStore.getState().settings?.mode).toBe('rtsp')
+    expect(useAppStore.getState().cameras).toEqual([])
+  })
+
+  it('keeps the mode when the switch fails', async () => {
+    fakeBridge({
+      setMode: () =>
+        Promise.resolve({
+          ok: false,
+          error: {
+            kind: 'internal',
+            message: 'The mode could not be saved.',
+            endpoint: null,
+            retryable: false,
+          },
+        }),
+    })
+    useAppStore.setState({ settings: appState().settings })
+
+    const result = await useAppStore.getState().setMode('rtsp')
+
+    expect(result.ok).toBe(false)
+    expect(useAppStore.getState().settings?.mode).toBe('protect')
   })
 
   it('leaves the store untouched when the call fails, and hands the error back', async () => {

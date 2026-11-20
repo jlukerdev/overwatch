@@ -11,10 +11,11 @@
  */
 
 /*
- * One left-aligned column of readable width (P5.8): the keystore warning when there is no
- * keystore, the Console group's controls straight on the screen (no card around them, user
- * feedback 2026-11-19), and the app version at the foot. It scrolls with `.app__body`, as the
- * other screens do; with a single group there is no section sidebar.
+ * One left-aligned column of readable width (P5.8): the mode cards (MODE-2, the shared
+ * `.choiceCards` in styles.css), the keystore warning when there is no keystore, the Console
+ * group's controls straight on the screen (no card around them, user feedback 2026-11-19) or, in
+ * RTSP mode, the Streams line, and the app version at the foot. It scrolls with `.app__body`, as
+ * the other screens do; there is no section sidebar.
  */
 .settings {
   display: flex;
@@ -38,6 +39,16 @@
 .settings__groupTitle {
   margin-bottom: 0.5rem;
   font-size: var(--font-lg);
+}
+
+/* RTSP mode's one line in place of the Console group (MODE-3): the pointer and its button. */
+.settings__streams {
+  flex-wrap: wrap;
+  gap: 0.75rem;
+}
+
+.settings__streamsText {
+  margin: 0;
 }
 
 /* The app version, quiet, at the foot of the column. */

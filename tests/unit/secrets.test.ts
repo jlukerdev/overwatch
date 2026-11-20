@@ -162,11 +162,110 @@ describe('clear', () => {
     expect(await readdir(dir)).toEqual([])
   })
 
-  it('discards a file it cannot decrypt (nothing in it is recoverable)', async () => {
+  it('clearAll still removes a file it cannot decrypt', async () => {
     await writeFile(path, 'rubbish')
     const store = createSecretsStore({ dir, crypto: fakeKeystore() })
-    await store.clear('protectApiKey')
+    await store.clearAll()
     expect(await readdir(dir)).toEqual([])
+  })
+})
+
+// A file this keystore cannot decrypt may still hold the API key, the token and every stream's
+// URLs (another keystore, a keystore that comes back). Clearing one of them must not delete it.
+describe('clearing from a secrets.bin it cannot decrypt', () => {
+  const STREAM_A = 'rtsp-0f8e1c2a-3b4d-4e5f-8a9b-0c1d2e3f4a5b'
+  const URL_HIGH = 'rtsp://admin:cam-password-ZZZZ@cam.invalid:554/stream1'
+
+  /** The real contents, as a different keystore (another marker) would have encrypted them. */
+  function otherKeystoreBlob(): Buffer {
+    const plain = JSON.stringify({
+      protectApiKey: API_KEY,
+      accessToken: TOKEN,
+      rtspUrls: { [STREAM_A]: { high: URL_HIGH } },
+    })
+    return Buffer.concat([Buffer.from('vp2:'), Buffer.from(plain, 'utf8').reverse()])
+  }
+
+  const variants: readonly (readonly [string, () => Buffer])[] = [
+    ['cannot be decrypted', otherKeystoreBlob],
+    [
+      // Decrypts, but JSON.parse fails on it (and its message would quote the API key).
+      'decrypts to something that is not the expected JSON',
+      () => Buffer.from(fakeKeystore().encryptString(`{"protectApiKey": ${API_KEY}}`)),
+    ],
+  ]
+
+  const clears: readonly (readonly [
+    string,
+    (store: ReturnType<typeof createSecretsStore>) => Promise<void>,
+  ])[] = [
+    ["clear('protectApiKey')", (store) => store.clear('protectApiKey')],
+    ["clear('accessToken')", (store) => store.clear('accessToken')],
+    ['clearRtspStream', (store) => store.clearRtspStream(STREAM_A)],
+    ['setRtspUrls with no URL', (store) => store.setRtspUrls(STREAM_A, {})],
+  ]
+
+  for (const [variant, blob] of variants) {
+    for (const [name, clear] of clears) {
+      it(`${name} refuses and leaves the file byte-for-byte as it was (${variant})`, async () => {
+        const before = blob()
+        await writeFile(path, before)
+        const store = createSecretsStore({ dir, crypto: fakeKeystore() })
+        expect((await store.read()).status).toBe('unreadable')
+
+        const err: unknown = await clear(store).catch((e: unknown) => e)
+        expect(err).toBeInstanceOf(SecretsError)
+        expect(err).toMatchObject({ name: 'SecretsError', code: 'unreadable' })
+        const after = await readFile(path)
+        expect(after.equals(before)).toBe(true)
+        expect(await readdir(dir)).toEqual([SECRETS_FILE_NAME])
+      })
+    }
+  }
+
+  it('refuses with fixed text that names the file and holds no secret (CON-2)', async () => {
+    for (const [, blob] of variants) {
+      await writeFile(path, blob())
+      const store = createSecretsStore({ dir, crypto: fakeKeystore() })
+      const err: unknown = await store.clear('accessToken').catch((e: unknown) => e)
+      expect(err).toBeInstanceOf(SecretsError)
+      if (!(err instanceof SecretsError)) continue
+      expect(err.message).toBe(
+        `${SECRETS_FILE_NAME} could not be read with this machine's keystore, so nothing ` +
+          'was removed. Check that the keystore is unlocked and OverWatch may use it, then try again.',
+      )
+      expect(err.cause).toBeUndefined()
+      const text = `${String(err)} ${err.stack ?? ''} ${inspect(err)} ${JSON.stringify(err)}`
+      for (const secret of [API_KEY, TOKEN, 'cam-password', 'cam.invalid']) {
+        expect(text).not.toContain(secret)
+      }
+    }
+  })
+
+  it('refuses the same way while the keystore is unavailable', async () => {
+    const before = otherKeystoreBlob()
+    await writeFile(path, before)
+    const store = createSecretsStore({ dir, crypto: fakeKeystore({ available: false }) })
+    await expect(store.clear('protectApiKey')).rejects.toMatchObject({ code: 'unreadable' })
+    expect((await readFile(path)).equals(before)).toBe(true)
+  })
+
+  it('is still replaced by a write: set', async () => {
+    await writeFile(path, otherKeystoreBlob())
+    const store = createSecretsStore({ dir, crypto: fakeKeystore() })
+    await store.set('accessToken', 'new-token')
+    expect(await store.read()).toEqual({ status: 'ok', secrets: { accessToken: 'new-token' } })
+  })
+
+  it('is still replaced by a write: setRtspUrls with a URL', async () => {
+    await writeFile(path, otherKeystoreBlob())
+    const store = createSecretsStore({ dir, crypto: fakeKeystore() })
+    const url = 'rtsps://cam.invalid:7441/NewStream'
+    await store.setRtspUrls(STREAM_A, { low: url })
+    expect(await store.read()).toEqual({
+      status: 'ok',
+      secrets: { rtspUrls: { [STREAM_A]: { low: url } } },
+    })
   })
 })
 

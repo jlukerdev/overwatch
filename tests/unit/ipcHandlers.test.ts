@@ -872,6 +872,21 @@ describe('setSecret / clearSecret (CON-1/2)', () => {
     expect(result.ok).toBe(true)
   })
 
+  it('reports a refused clear on an undecryptable secrets.bin and keeps the credential', async () => {
+    const error = new SecretsError(
+      'unreadable',
+      "secrets.bin could not be read with this machine's keystore, so nothing was removed. " +
+        'Check that the keystore is unlocked and OverWatch may use it, then try again.',
+    )
+    h.secrets.clear.mockRejectedValueOnce(error)
+    const result = await h.call(IPC.clearSecret, { key: 'protectApiKey' })
+    expect(failure(result).kind).toBe('internal')
+    expect(failure(result).message).toBe(error.message)
+    // Nothing was removed on disk, so nothing is forgotten in memory and nothing is stopped.
+    expect(h.services.credentials.protectApiKey).toBe(API_KEY)
+    expect(h.manager.credentialCleared).not.toHaveBeenCalled()
+  })
+
   it('reports a keystore failure as a value, not as a throw', async () => {
     h.secrets.set.mockRejectedValueOnce(
       new SecretsError('crypto-failed', 'The OS keystore failed to encrypt secrets.bin.'),
@@ -2464,6 +2479,33 @@ describe('saveRtspStream / deleteRtspStream (RTSP-1/2, F1.0.2-5)', () => {
     expect((await remove(id)).ok).toBe(true)
     expect(h.services.credentials.rtspUrls).toBeUndefined()
     expect(h.secretsDisk).toEqual({})
+  })
+
+  it('still deletes the stream when secrets.bin cannot be decrypted, keeping its URLs in memory', async () => {
+    const id = await create('Garden', { high: HIGH })
+    h.secrets.clearRtspStream.mockRejectedValueOnce(
+      new SecretsError(
+        'unreadable',
+        "secrets.bin could not be read with this machine's keystore, so nothing was removed. " +
+          'Check that the keystore is unlocked and OverWatch may use it, then try again.',
+      ),
+    )
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+    try {
+      const result = await remove(id)
+      if (!result.ok) throw new Error(result.error.message)
+      expect(h.disk.rtsp.streams).toEqual([])
+      expect(result.value.settings.rtsp.streams).toEqual([])
+      expect(h.secrets.clearRtspStream).toHaveBeenCalledWith(id)
+      // One fixed line; the URLs stay in memory so the log redactor keeps covering them.
+      expect(logged).toHaveBeenCalledTimes(1)
+      expect(String(logged.mock.calls[0]?.[0])).toContain('could not be read with this machine')
+      for (const url of URLS) expect(JSON.stringify(logged.mock.calls)).not.toContain(url)
+      expect(h.services.credentials.rtspUrls).toEqual({ [id]: { high: HIGH } })
+    } finally {
+      logged.mockRestore()
+    }
+    expectNoUrlInReplies()
   })
 
   it('refuses setting a URL while the keystore is unavailable, and writes nothing (CON-2)', async () => {

@@ -291,9 +291,109 @@ export const AccessPollingSchema = z
   .catch(() => defaultAccessPolling())
 export type AccessPolling = z.infer<typeof AccessPollingSchema>
 
+// -------------------------------------------------------------------------------------------------
+// App mode and RTSP streams (MODE-1, MODE-4, RTSP-2)
+
+/**
+ * MODE-1: which kind of cameras the app shows. `protect` is the app as it was before RTSP mode
+ * existed; `rtsp` makes no Protect or Access call at all (MODE-4) and plays the streams in
+ * `rtsp.streams` instead.
+ */
+export const APP_MODES = ['protect', 'rtsp'] as const
+export const AppModeSchema = z.enum(APP_MODES)
+export type AppMode = z.infer<typeof AppModeSchema>
+
+/** MODE-1: an existing install, and a first run, start in Protect mode. */
+export const DEFAULT_APP_MODE: AppMode = 'protect'
+
+/**
+ * The persisted mode. **Lenient on purpose** (rule 1 at the top of this file): an unknown value — a
+ * hand edit, or a file from a later build with a third mode — falls back to Protect rather than
+ * rejecting the file, because a rejected config is moved aside and costs every View (VIEW-6).
+ * Protect is the safe fallback: it is what the app did before modes existed, and it connects on its
+ * own only when CON-4's launch rule allows it.
+ */
+const PersistedAppModeSchema = AppModeSchema.default(DEFAULT_APP_MODE).catch(DEFAULT_APP_MODE)
+
+/** RTSP-2: a stream id's prefix, so it can never be confused with a Protect camera id. */
+export const RTSP_STREAM_ID_PREFIX = 'rtsp-'
+
+/**
+ * RTSP-2: `rtsp-<uuid>`, lower-case hex in the 8-4-4-4-12 layout of `crypto.randomUUID()`. URL-safe
+ * and free of `:`, so it also survives being a go2rtc stream name and cannot be mistaken for a
+ * doorbell's `<cameraId>:package` source (CAM-4). The version and variant nibbles are not checked:
+ * the id only has to be unique and well-formed, and a hand-written one should not cost a stream.
+ */
+export const RTSP_STREAM_ID_PATTERN =
+  /^rtsp-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
+
+/**
+ * A fresh stream id (RTSP-2). `crypto.randomUUID()` is a global in Electron's main process (Node)
+ * and in the renderer (Chromium, secure context), so this needs no import and stays renderer-safe.
+ */
+export function newRtspStreamId(): string {
+  return `${RTSP_STREAM_ID_PREFIX}${crypto.randomUUID()}`
+}
+
+/** RTSP-1: a stream's display name is 1–64 characters once trimmed. */
+export const MAX_RTSP_STREAM_NAME_LENGTH = 64
+
+/**
+ * One configured RTSP stream (RTSP-1/2). **No URL**: the URLs are secrets and live encrypted in
+ * secrets.bin under `rtspUrls[id]` (CON-2), never in config.json.
+ *
+ * The name is trimmed on parse. Names unique ignoring case is a **write-time** rule
+ * (`vp:rtsp/streams/save`, F1.0.2-5), not checked here: rejecting a hand-edited file over two equal
+ * names would cost every View (VIEW-6) for a problem the user can fix on the Streams screen.
+ */
+export const RtspStreamSchema = z.object({
+  id: z.string().regex(RTSP_STREAM_ID_PATTERN),
+  name: z.string().trim().min(1).max(MAX_RTSP_STREAM_NAME_LENGTH),
+})
+export type RtspStream = z.infer<typeof RtspStreamSchema>
+
+/**
+ * `rtsp.streams` on load: each entry is parsed on its own and a malformed one is **dropped**, not
+ * the whole list. A stream has no dependants that would break without it (a cell naming a missing
+ * stream draws "Camera not found", RTSP-1), and its URLs stay in secrets.bin, so losing one bad
+ * entry is far cheaper than moving the whole config aside (VIEW-6). A value that is not an array at
+ * all loads as no streams.
+ */
+const PersistedRtspStreamsSchema = z
+  .array(z.unknown())
+  .default(() => [])
+  .catch(() => [])
+  .transform((entries) =>
+    entries.flatMap((entry) => {
+      const parsed = RtspStreamSchema.safeParse(entry)
+      return parsed.success ? [parsed.data] : []
+    }),
+  )
+
+/**
+ * The RTSP mode's own block (RTSP-2, MODE-4): its streams, and its own Views and last View, kept
+ * apart from Protect's so neither mode's Views ever show the other mode's cameras. `views` and
+ * `lastViewId` follow exactly the rules of the top-level (Protect) pair in `SettingsSchema` below,
+ * so the View switcher, editor and grid work unchanged on either list.
+ *
+ * Defaulted as a whole (`prefault`), so a config written before RTSP mode existed loads with an
+ * empty block and needs no `schemaVersion` bump or migration (like `accessPolling`).
+ */
+export const RtspConfigSchema = z
+  .object({
+    streams: PersistedRtspStreamsSchema,
+    views: z.array(ViewSchema).default(() => []),
+    lastViewId: z.string().min(1).nullable().default(null),
+  })
+  .prefault({})
+export type RtspConfig = z.infer<typeof RtspConfigSchema>
+
 /**
  * Everything the app persists apart from `schemaVersion`, which is a storage detail
  * (src/main/config/schema.ts adds it). This is the shape that crosses IPC to the renderer (P1.5).
+ *
+ * `views` / `lastViewId` here are the **Protect** mode's; the RTSP mode keeps its own pair in
+ * `rtsp` (MODE-4). Main shows the renderer the active mode's pair under these two names.
  *
  * `lastViewId` is **not** checked against `views[]`. A dangling id is a normal state (the View was
  * deleted elsewhere) and the View switcher falls back to the first View (VIEW-6); rejecting the
@@ -308,6 +408,10 @@ export const SettingsSchema = z.object({
   ui: UiConfigSchema,
   /** DOOR-6 (P5.6): the Access read intervals. Used only while Access is on (DOOR-0). */
   accessPolling: AccessPollingSchema,
+  /** MODE-1: `protect` unless the user switched. An unknown value loads as `protect`. */
+  mode: PersistedAppModeSchema,
+  /** RTSP-2, MODE-4: the RTSP streams and the RTSP mode's own Views. Absent loads empty. */
+  rtsp: RtspConfigSchema,
 })
 export type Settings = z.infer<typeof SettingsSchema>
 

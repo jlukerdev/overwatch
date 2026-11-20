@@ -36,6 +36,7 @@ import {
   RtspsAvailabilitySchema,
   SetDoorLinksInputSchema,
   SetLastViewInputSchema,
+  SetModeInputSchema,
   SetStreamsInputSchema,
   SetViewsInputSchema,
   SnapshotInputSchema,
@@ -71,9 +72,19 @@ function sampleState(): AppState {
       lastViewId: null,
       streams: {},
       ui: {},
+      mode: 'rtsp',
+      rtsp: {
+        streams: [{ id: 'rtsp-0f8e1c2a-3b4d-4e5f-8a9b-0c1d2e3f4a5b', name: 'Garden' }],
+      },
     },
     keystoreAvailable: true,
-    secretsStored: { protectApiKey: true, accessToken: true },
+    secretsStored: {
+      protectApiKey: true,
+      accessToken: true,
+      rtspUrls: {
+        'rtsp-0f8e1c2a-3b4d-4e5f-8a9b-0c1d2e3f4a5b': { high: true, medium: false, low: true },
+      },
+    },
     connection: {
       protect: { endpoint: 'protect', phase: 'connected', updatedAt: 1 },
       access: { endpoint: 'access', phase: 'disabled', updatedAt: 1 },
@@ -252,19 +263,23 @@ describe('request schemas', () => {
       { col: 0, row: 0 },
       { col: 1, row: 0 },
     ])
-    const parsed = SetViewsInputSchema.parse({ views: [good], lastViewId: 'v1' })
+    const parsed = SetViewsInputSchema.parse({ views: [good], lastViewId: 'v1', mode: 'protect' })
     // Defaults are filled in here, so main stores exactly what the contract produced.
     expect(parsed.views[0]).toMatchObject({ aspect: { w: 16, h: 9 }, gap: 0, fit: 'contain' })
-    expect(SetViewsInputSchema.parse({ views: [], lastViewId: null }).views).toEqual([])
+    expect(
+      SetViewsInputSchema.parse({ views: [], lastViewId: null, mode: 'protect' }).views,
+    ).toEqual([])
 
     const holey = SetViewsInputSchema.safeParse({
       views: [view('v1', [{ col: 0, row: 0 }])],
       lastViewId: null,
+      mode: 'protect',
     })
     expect(holey.success).toBe(false)
     const spanned = SetViewsInputSchema.safeParse({
       views: [view('v1', [{ col: 0, row: 0, colSpan: 2 }])],
       lastViewId: null,
+      mode: 'protect',
     })
     expect(spanned.success).toBe(true)
   })
@@ -274,6 +289,7 @@ describe('request schemas', () => {
     const dup = SetViewsInputSchema.safeParse({
       views: [view('a'), view('b'), view('a')],
       lastViewId: 'a',
+      mode: 'protect',
     })
     expect(dup.success).toBe(false)
     if (!dup.success) {
@@ -281,19 +297,58 @@ describe('request schemas', () => {
       expect(dup.error.issues[0]?.path).toEqual(['views', 2, 'id'])
       expect(dup.error.issues[0]?.message).toContain('views[0]')
     }
-    const dangling = SetViewsInputSchema.safeParse({ views: [view('a')], lastViewId: 'b' })
+    const dangling = SetViewsInputSchema.safeParse({
+      views: [view('a')],
+      lastViewId: 'b',
+      mode: 'protect',
+    })
     expect(dangling.success).toBe(false)
     if (!dangling.success) expect(dangling.error.issues[0]?.path).toEqual(['lastViewId'])
-    expect(SetViewsInputSchema.safeParse({ views: [view('a')], lastViewId: '' }).success).toBe(
-      false,
-    )
+    expect(
+      SetViewsInputSchema.safeParse({ views: [view('a')], lastViewId: '', mode: 'protect' })
+        .success,
+    ).toBe(false)
+    // MODE-4: the mode whose list was edited is required, and must be one of the two.
+    expect(SetViewsInputSchema.safeParse({ views: [], lastViewId: null }).success).toBe(false)
+    expect(
+      SetViewsInputSchema.safeParse({ views: [], lastViewId: null, mode: 'nvr' }).success,
+    ).toBe(false)
   })
 
   it('takes a View id or null for setLastView', () => {
-    expect(SetLastViewInputSchema.parse({ viewId: 'v1' })).toEqual({ viewId: 'v1' })
-    expect(SetLastViewInputSchema.parse({ viewId: null })).toEqual({ viewId: null })
-    expect(SetLastViewInputSchema.safeParse({ viewId: '' }).success).toBe(false)
+    expect(SetLastViewInputSchema.parse({ viewId: 'v1', mode: 'protect' })).toEqual({
+      viewId: 'v1',
+      mode: 'protect',
+    })
+    expect(SetLastViewInputSchema.parse({ viewId: null, mode: 'rtsp' })).toEqual({
+      viewId: null,
+      mode: 'rtsp',
+    })
+    expect(SetLastViewInputSchema.safeParse({ viewId: '', mode: 'protect' }).success).toBe(false)
     expect(SetLastViewInputSchema.safeParse({}).success).toBe(false)
+    // MODE-4: the mode the id was picked in is required.
+    expect(SetLastViewInputSchema.safeParse({ viewId: 'v1' }).success).toBe(false)
+  })
+
+  it('takes one of the two app modes for setMode, and nothing else (MODE-1/4)', () => {
+    expect(IPC.setMode.channel).toBe('vp:app/mode')
+    expect(IPC.setMode.request).toBe(SetModeInputSchema)
+    // Answers the whole state: the Views the renderer shows change with the mode.
+    expect(IPC.setMode.value).toBe(AppStateSchema)
+    for (const mode of ['protect', 'rtsp'] as const) {
+      expect(SetModeInputSchema.parse({ mode })).toEqual({ mode })
+    }
+    // Strict, unlike config.json's lenient fallback to Protect: a request names a real mode.
+    for (const bad of [
+      { mode: 'RTSP' },
+      { mode: 'unifi' },
+      { mode: '' },
+      { mode: null },
+      {},
+      'rtsp',
+    ]) {
+      expect(SetModeInputSchema.safeParse(bad).success, JSON.stringify(bad)).toBe(false)
+    }
   })
 
   it('takes both QUAL-1 defaults as qualities, and never defaults a missing one', () => {
@@ -821,6 +876,18 @@ describe('AppState (CON-2, NFR-9)', () => {
       // "audio is available". The moment one holds a string it is carrying the thing itself.
       expect(typeof value, `${path} must be a boolean, not a value`).toBe('boolean')
     }
+  })
+
+  it('refuses a stream URL in place of a "stored" boolean (RTSP-2)', () => {
+    const state = { ...sampleState() } as Record<string, unknown>
+    state.secretsStored = {
+      protectApiKey: true,
+      accessToken: true,
+      rtspUrls: {
+        'rtsp-x': { high: 'rtsp://user:pass@cam.local/live', medium: false, low: false },
+      },
+    }
+    expect(AppStateSchema.safeParse(state).success).toBe(false)
   })
 
   it('exposes the two certificate fingerprints, which are public values, not secrets (SPEC §6)', () => {

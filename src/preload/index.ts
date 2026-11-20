@@ -131,6 +131,7 @@ const impl: ViewProtectApi = {
   ensureStream: (input): Promise<IpcResult<StreamHandle>> => call(IPC.ensureStream, input),
   setViews: (input): Promise<IpcResult<AppState>> => call(IPC.setViews, input),
   setLastView: (input): Promise<IpcResult<AppState>> => call(IPC.setLastView, input),
+  setMode: (input): Promise<IpcResult<AppState>> => call(IPC.setMode, input),
   setStreams: (input): Promise<IpcResult<AppState>> => call(IPC.setStreams, input),
   cameraStreamQualities: (input): Promise<IpcResult<RtspsAvailability>> =>
     call(IPC.cameraStreamQualities, input),

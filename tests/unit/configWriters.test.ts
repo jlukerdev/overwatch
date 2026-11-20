@@ -148,7 +148,9 @@ async function setup() {
     setViews(): Promise<IpcResult<AppState>> {
       const handler = router.get(IPC.setViews.channel)
       if (handler === undefined) throw new Error('no setViews handler')
-      return handler({ views: [VIEW], lastViewId: 'v1' }) as Promise<IpcResult<AppState>>
+      return handler({ views: [VIEW], lastViewId: 'v1', mode: 'protect' }) as Promise<
+        IpcResult<AppState>
+      >
     },
     setHost(host: string): Promise<void> {
       return manager.applyConsoleChange({ ...services.current.console, host })

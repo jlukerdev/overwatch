@@ -35,8 +35,17 @@ import {
   type IpcResult,
   type PinCheck,
 } from '@shared/ipc'
-import { SettingsSchema, type ConsoleConfig, type Settings } from '@shared/models'
+import { SettingsSchema, type AppMode, type ConsoleConfig, type Settings } from '@shared/models'
+import { rtspUrlsStored } from '@shared/rtsp'
 import type { z } from 'zod'
+import { AppModeError, MODE_SWITCHED_MESSAGE, RTSP_MODE_MESSAGES, isRtspMode } from '../appMode'
+import {
+  activeViews,
+  settingsForRenderer,
+  viewsOf,
+  withViewsOf,
+  type ModeViews,
+} from '../config/modeViews'
 import type { Config } from '../config/schema'
 import type { ConfigStore } from '../config/store'
 import { accessEndpoint, protectEndpoint, type ConsoleEndpoint } from '../console/endpoints'
@@ -135,6 +144,12 @@ export interface IpcRouterDeps {
    * value back and persist the harness's quality as the user's own. Absent in normal runs.
    */
   readonly streamsWritesBlocked?: () => string | null
+  /**
+   * The same for `vp:app/mode` (MODE-1/4). A perf run measures Protect streams with its own Views
+   * and quality shown in memory; a mode switch would tear down the very streams it measures and
+   * persist a mode the user did not choose. Absent in normal runs.
+   */
+  readonly modeWritesBlocked?: () => string | null
 }
 
 /** Everything a handler body may assume exists, having passed rule 2. */
@@ -239,6 +254,9 @@ function toPinCheck(result: PinCheckResult): PinCheck {
  *
  * `SettingsSchema.parse` is what drops the `schemaVersion` envelope: zod strips unknown keys, so the
  * storage detail cannot reach the UI and the reply is a copy rather than main's own object.
+ * `settingsForRenderer` then puts the **active mode's** Views under `views` / `lastViewId` and sends
+ * the `rtsp` block without any (MODE-4), before the perf harness's `settingsView` — which replaces
+ * the Views the renderer sees, whichever mode they came from.
  */
 function appState(
   ready: Ready,
@@ -248,12 +266,14 @@ function appState(
   const { services, manager } = ready
   return {
     version,
-    settings: settingsView(SettingsSchema.parse(services.current)),
+    settings: settingsView(settingsForRenderer(SettingsSchema.parse(services.current))),
     keystoreAvailable: services.secrets.isEncryptionAvailable(),
     // CON-2, NFR-9: whether a credential is stored, never a character of it.
     secretsStored: {
       protectApiKey: (services.credentials.protectApiKey ?? '') !== '',
       accessToken: (services.credentials.accessToken ?? '') !== '',
+      // RTSP-2: per stream and quality, whether a URL is stored — booleans, never the URL.
+      rtspUrls: rtspUrlsStored(services.credentials.rtspUrls),
     },
     connection: manager.status(),
     cameras: manager.cachedCameras(),
@@ -375,7 +395,17 @@ export function createIpcRouter(deps: IpcRouterDeps): ReadonlyMap<string, IpcHan
     ready.manager.accessInputsChanged('a certificate was accepted', { trustChanged: true })
   }
 
+  /**
+   * MODE-4: the three certificate calls open a TLS connection to the console, which is a Protect or
+   * Access contact like any other, so in RTSP mode they are refused before anything is read.
+   * Thrown, so `toIpcError` maps it to `bad-request` like every other RTSP-mode refusal.
+   */
+  const requireProtectMode = (ready: Ready): void => {
+    if (isRtspMode(ready.services.current)) throw new AppModeError(RTSP_MODE_MESSAGES.protect)
+  }
+
   on(IPC.checkCertificate, async (input, ready) => {
+    requireProtectMode(ready)
     const endpoint = endpointFor(input.endpoint, ready.services)
     if (storedPinIsUsable(ready.services.pins, endpoint)) {
       const result = await ready.services.pins.checkEndpoint(endpoint.host, endpoint.port)
@@ -403,6 +433,7 @@ export function createIpcRouter(deps: IpcRouterDeps): ReadonlyMap<string, IpcHan
   })
 
   on(IPC.acceptCertificate, async (input, ready) => {
+    requireProtectMode(ready)
     const { endpoint, check, refusal } = await confirmPresented(input, ready)
     if (refusal !== null) return refusal
     if (check.state !== 'no-pin') {
@@ -424,6 +455,7 @@ export function createIpcRouter(deps: IpcRouterDeps): ReadonlyMap<string, IpcHan
   })
 
   on(IPC.repinCertificate, async (input, ready) => {
+    requireProtectMode(ready)
     const endpoint = endpointFor(input.endpoint, ready.services)
     // The leaf is read **directly**, not through `checkEndpoint`: that compares against the stored
     // pin and throws when the stored value is unusable, which is one of the two states a re-pin
@@ -469,22 +501,32 @@ export function createIpcRouter(deps: IpcRouterDeps): ReadonlyMap<string, IpcHan
     const refused = viewWriteRefusal()
     if (refused) return refused
     // `input` has already passed `ViewSchema` for every View (tiling included), unique ids and a
-    // `lastViewId` that names one of them (SetViewsInputSchema).
-    await saveFields(ready, { views: input.views, lastViewId: input.lastViewId })
+    // `lastViewId` that names one of them (SetViewsInputSchema). MODE-4: into the list of the mode
+    // the renderer edited (`input.mode`), and only while that is still the stored mode
+    // (`saveFields`): a save built from one mode's list that lands after a switch is refused.
+    await saveFields(
+      ready,
+      {},
+      { mode: input.mode, patch: { views: input.views, lastViewId: input.lastViewId } },
+    )
     return state(ready)
   })
 
   on(IPC.setLastView, async (input, ready) => {
     const refused = viewWriteRefusal()
     if (refused) return refused
-    const { viewId } = input
-    if (viewId !== null && !ready.services.current.views.some((view) => view.id === viewId)) {
+    const { viewId, mode } = input
+    // MODE-4: a switch made from the other mode's list (the mode changed since the renderer read
+    // it) is refused, not checked against the wrong list. `saveFields` checks again inside the write.
+    if (mode !== ready.services.current.mode) throw new AppModeError(MODE_SWITCHED_MESSAGE)
+    const { views } = activeViews(ready.services.current)
+    if (viewId !== null && !views.some((view) => view.id === viewId)) {
       // A switch to a View that is not stored is a stale id on the renderer's side (the View was
       // deleted in between). Refused rather than stored: a dangling `lastViewId` is tolerated on
       // load (VIEW-6), but there is no reason to *write* one.
       return ipcFail('not-found', 'That View no longer exists.')
     }
-    await saveFields(ready, { lastViewId: viewId })
+    await saveFields(ready, {}, { mode, patch: { lastViewId: viewId } })
     return state(ready)
   })
 
@@ -496,6 +538,46 @@ export function createIpcRouter(deps: IpcRouterDeps): ReadonlyMap<string, IpcHan
     await saveFields(ready, { streams: input })
     return state(ready)
   })
+
+  /**
+   * MODE-1/4: `setMode` calls run one at a time, each after the previous one has saved its mode and
+   * finished its teardown. Without this, the same-mode check below could read `current.mode` before
+   * an earlier switch's save had landed: protect→rtsp followed quickly by rtsp→protect would see
+   * "already Protect", answer without saving, and leave the app in RTSP mode.
+   */
+  let modeQueue: Promise<unknown> = Promise.resolve()
+  const serializeMode = <T>(task: () => Promise<T>): Promise<T> => {
+    const run = modeQueue.then(task, task)
+    modeQueue = run.catch(() => undefined)
+    return run
+  }
+
+  on(IPC.setMode, (input, ready) =>
+    serializeMode(async () => {
+      // MODE-1/4. The same mode again changes nothing and tears nothing down: it only answers.
+      // Read inside the queue, so it is the mode the previous switch committed.
+      if (input.mode === ready.services.current.mode) return state(ready)
+      const refused = writeRefusal(deps.modeWritesBlocked)
+      if (refused) return refused
+      // Only `mode` is written. The console block, the pins, the door links, both modes' Views and
+      // every secret stay exactly as stored (MODE-4): a switch is never a reset.
+      await saveFields(ready, { mode: input.mode })
+      // Decided from the committed mode. Both halves start at once: `modeChanged` stops the door
+      // monitor and the feeds before it queues behind any connect in progress, and the go2rtc
+      // streams go now rather than after that connect (MODE-4). Neither rejects.
+      if (isRtspMode(ready.services.current)) {
+        // Absent before the sidecar is built, when there is nothing registered anyway.
+        await Promise.all([ready.manager.modeChanged(), deps.getRegistry()?.unregisterAll()])
+      } else {
+        await ready.manager.modeChanged()
+        // MODE-4: back in Protect mode, a launch (CON-4): connects only when the launch rule
+        // allows. Not awaited — the answer must not wait out a connect — and it never rejects; a
+        // failure shows in the status the usual way.
+        void ready.manager.connectOnLaunch()
+      }
+      return state(ready)
+    }),
+  )
 
   on(IPC.setDoorLinks, async (input, ready) => {
     // DOOR-2: local config only, so no Access call and no DOOR-0 refusal — the links are kept while
@@ -597,31 +679,61 @@ export function createIpcRouter(deps: IpcRouterDeps): ReadonlyMap<string, IpcHan
 }
 
 /**
- * VIEW-6, QUAL-1, DOOR-2, DOOR-6: persists top-level settings fields (the View list, the active
- * View, the stream quality defaults, the door links, the Access read intervals), then makes them
- * the live config.
+ * VIEW-6, QUAL-1, DOOR-2, DOOR-6, MODE-1/4: persists settings fields (the stream quality defaults,
+ * the door links, the Access read intervals, the app mode, and one mode's View list and active
+ * View), then makes them the live config.
  *
- * Both halves touch only the fields in `patch`. On disk, `config.update` applies them to the latest
+ * Both halves touch only the fields being saved. On disk, `config.update` applies them to the latest
  * stored config inside the store's write queue, so a console or pin write queued ahead of this one
  * is kept rather than overwritten with the console block as it was when this call started. In
  * memory, only those fields are taken from the result and merged onto `services.current` **as it
  * is after the write**: the whole result would be wrong, because the pin store puts an accepted pin
  * into `current` before its own write is queued, so `current` can be ahead of anything this write
  * returned.
+ *
+ * **Views go to one mode's slot** (MODE-4): the top-level pair for Protect, `rtsp.views` /
+ * `rtsp.lastViewId` for RTSP (`withViewsOf`), and only the fields given — the rest of the `rtsp`
+ * block (its streams, the other field) is taken from `latest` inside the write, never from the
+ * `current` this call started with. `views.mode` is the mode whose list the renderer edited (the
+ * request's own `mode`, from the `AppState` it built the list from). Inside the write it is
+ * compared with the mode **stored at that moment**: if a mode switch was written in between, the
+ * write is refused (`AppModeError`, `bad-request`) and nothing is saved. Writing to the new mode's
+ * slot would put one mode's Views (Protect camera ids) into the other's list, and writing to the old
+ * slot would save a list the user is no longer looking at; the renderer, which has the new state by
+ * then, can simply do it again. The slot written is therefore always the one that was read, and the
+ * in-memory merge writes that same slot, so a switch landing after the write cannot misroute it
+ * either. A `views` save and a `mode` change never travel in one call.
  */
-type SavedField = 'views' | 'lastViewId' | 'streams' | 'doorLinks' | 'accessPolling'
+type SavedField = 'streams' | 'doorLinks' | 'accessPolling' | 'mode'
 
-async function saveFields(ready: Ready, patch: Partial<Pick<Config, SavedField>>): Promise<void> {
+async function saveFields(
+  ready: Ready,
+  patch: Partial<Pick<Config, SavedField>>,
+  views?: { readonly mode: AppMode; readonly patch: Partial<ModeViews> },
+): Promise<void> {
   const { services } = ready
-  const saved = await services.config.update((latest) => ({ ...latest, ...patch }))
-  services.current = {
+  const saved = await services.config.update((latest) => {
+    if (views === undefined) return { ...latest, ...patch }
+    if (latest.mode !== views.mode) throw new AppModeError(MODE_SWITCHED_MESSAGE)
+    return { ...withViewsOf(latest, views.mode, views.patch), ...patch }
+  })
+  const merged: Config = {
     ...services.current,
-    ...('views' in patch ? { views: saved.views } : {}),
-    ...('lastViewId' in patch ? { lastViewId: saved.lastViewId } : {}),
     ...('streams' in patch ? { streams: saved.streams } : {}),
     ...('doorLinks' in patch ? { doorLinks: saved.doorLinks } : {}),
     ...('accessPolling' in patch ? { accessPolling: saved.accessPolling } : {}),
+    ...('mode' in patch ? { mode: saved.mode } : {}),
   }
+  if (views === undefined) {
+    services.current = merged
+    return
+  }
+  // The saved values of the fields written, from the slot written, onto the same slot in memory.
+  const written = viewsOf(saved, views.mode)
+  services.current = withViewsOf(merged, views.mode, {
+    ...('views' in views.patch ? { views: written.views } : {}),
+    ...('lastViewId' in views.patch ? { lastViewId: written.lastViewId } : {}),
+  })
 }
 
 /**

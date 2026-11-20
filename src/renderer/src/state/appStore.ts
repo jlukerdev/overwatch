@@ -42,6 +42,7 @@ import {
   type UnlockDoorInput,
   type UnlockResult,
 } from '@shared/ipc'
+import type { AppMode } from '@shared/models'
 
 /** Whether the first `getState()` has landed. The UI shows a spinner, the error, or itself. */
 export type LoadPhase = 'loading' | 'ready' | 'failed'
@@ -103,8 +104,11 @@ export interface AppStoreState {
    * which computes the list; this only sends it and folds the answer, like every other mutation.
    */
   setViews: (input: SetViewsInput) => Promise<IpcResult<AppState>>
-  /** VIEW-4/6: switch the active View. */
-  setLastView: (viewId: string | null) => Promise<IpcResult<AppState>>
+  /**
+   * VIEW-4/6: switch the active View. `mode` is the app mode of the list `viewId` was picked from
+   * (MODE-4), refused by main once it is no longer the stored mode.
+   */
+  setLastView: (viewId: string | null, mode: AppMode) => Promise<IpcResult<AppState>>
   /** DOOR-2: persist the whole camera → door map. */
   setDoorLinks: (input: SetDoorLinksInput) => Promise<IpcResult<AppState>>
   /**
@@ -146,7 +150,7 @@ export interface AppStoreState {
   setAccessPolling: (input: SetAccessPollingInput) => Promise<IpcResult<AppState>>
 }
 
-const NO_SECRETS: SecretsStored = { protectApiKey: false, accessToken: false }
+const NO_SECRETS: SecretsStored = { protectApiKey: false, accessToken: false, rtspUrls: {} }
 
 /** One object for "no door state known", so emptying an empty map re-renders nothing. */
 const NO_DOOR_STATES: DoorStates = {}
@@ -292,7 +296,7 @@ export const useAppStore = create<AppStoreState>()((set, get) => {
     cameraStreamQualities: async (cameraId) => bridge().cameraStreamQualities({ cameraId }),
     setStreams: async (input) => fold(await bridge().setStreams(input)),
     setViews: async (input) => fold(await bridge().setViews(input)),
-    setLastView: async (viewId) => fold(await bridge().setLastView({ viewId })),
+    setLastView: async (viewId, mode) => fold(await bridge().setLastView({ viewId, mode })),
     setDoorLinks: async (input) => fold(await bridge().setDoorLinks(input)),
     unlockDoor: async (input) => bridge().unlockDoor(input),
 

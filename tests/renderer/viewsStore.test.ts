@@ -71,9 +71,11 @@ function appState(views: View[], lastViewId: string | null): AppState {
       streams: { defaultGridQuality: 'low', defaultFillQuality: 'high' },
       ui: { overlayAutoHideSec: 3 },
       accessPolling: { withSocketSec: 5, withoutSocketSec: 2, unlockedSec: 1, detailsSec: 30 },
+      mode: 'protect',
+      rtsp: { streams: [], views: [], lastViewId: null },
     },
     keystoreAvailable: true,
-    secretsStored: { protectApiKey: true, accessToken: false },
+    secretsStored: { protectApiKey: true, accessToken: false, rtspUrls: {} },
     connection: null as unknown as AppState['connection'],
     cameras: [],
   }
@@ -167,9 +169,10 @@ describe('list operations (VIEW-3)', () => {
     for (const preset of LAYOUT_PRESETS) {
       const created = createViewFromPreset('id-1', 'New', preset)
       expect(created).toMatchObject({ cols: preset.cols, rows: preset.rows, gap: 0 })
-      expect(SetViewsInputSchema.safeParse({ views: [created], lastViewId: 'id-1' }).success).toBe(
-        true,
-      )
+      expect(
+        SetViewsInputSchema.safeParse({ views: [created], lastViewId: 'id-1', mode: 'protect' })
+          .success,
+      ).toBe(true)
     }
   })
 })
@@ -218,9 +221,10 @@ describe('starter View (the Live screen’s "Create a View")', () => {
       [1, 1, ['c5']],
       [1, 2, []],
     ])
-    expect(SetViewsInputSchema.safeParse({ views: [created], lastViewId: 'id-1' }).success).toBe(
-      true,
-    )
+    expect(
+      SetViewsInputSchema.safeParse({ views: [created], lastViewId: 'id-1', mode: 'protect' })
+        .success,
+    ).toBe(true)
   })
 
   it('a starter View for 20 cameras shows the first 16', () => {
@@ -455,9 +459,22 @@ describe('viewsActions', () => {
     const main = installFakeMain([view('a'), view('b')], 'a')
     const result = await viewsActions.setActiveView('b')
     expect(result.ok).toBe(true)
-    expect(main.setLastView).toHaveBeenCalledWith({ viewId: 'b' })
+    expect(main.setLastView).toHaveBeenCalledWith({ viewId: 'b', mode: 'protect' })
     expect(main.setViews).not.toHaveBeenCalled()
     expect(storeActive()?.id).toBe('b')
+  })
+
+  it('sends the mode of the list each write was built from (MODE-4)', async () => {
+    const main = installFakeMain([view('a'), view('b')], 'a')
+    // The renderer is showing RTSP mode's list.
+    const settings = useAppStore.getState().settings
+    if (settings === null) throw new Error('not loaded')
+    useAppStore.setState({ settings: { ...settings, mode: 'rtsp' } })
+    expect((await viewsActions.renameView('a', 'Garage')).ok).toBe(true)
+    expect(main.setViews.mock.calls[0]?.[0]).toMatchObject({ mode: 'rtsp', lastViewId: 'a' })
+    // The answer folded in Protect mode (the fake main's): the next write says so.
+    expect((await viewsActions.setActiveView('b')).ok).toBe(true)
+    expect(main.setLastView).toHaveBeenCalledWith({ viewId: 'b', mode: 'protect' })
   })
 
   it('runs mutations one at a time, each on the result of the one before', async () => {

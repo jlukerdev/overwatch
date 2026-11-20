@@ -45,6 +45,7 @@ import {
   type IpcMainLike,
 } from '../../src/main/ipc/handlers'
 import { AccessApiError } from '../../src/main/access/client'
+import { AppModeError, RTSP_MODE_MESSAGES } from '../../src/main/appMode'
 import { ConsoleEndpointError } from '../../src/main/console/endpoints'
 import { toIpcError } from '../../src/main/ipc/errors'
 import { ProtectApiError } from '../../src/main/protect/errors'
@@ -120,6 +121,8 @@ interface SetupOptions {
   readonly viewWritesBlocked?: () => string | null
   /** The perf harness's QUAL-1 defaults write block. */
   readonly streamsWritesBlocked?: () => string | null
+  /** The perf harness's MODE-1/4 mode write block. */
+  readonly modeWritesBlocked?: () => string | null
 }
 
 function setup(options: SetupOptions = {}) {
@@ -252,6 +255,8 @@ function setup(options: SetupOptions = {}) {
       return Promise.resolve()
     }),
     connectOnLaunch: vi.fn(() => Promise.resolve()),
+    // MODE-4: the real manager's teardown is tested in connectionManagerMode.test.ts.
+    modeChanged: vi.fn(() => Promise.resolve()),
     credentialCleared: vi.fn(() => Promise.resolve()),
     credentialReplaced: vi.fn(() => Promise.resolve()),
     shutdown: vi.fn(() => Promise.resolve()),
@@ -267,6 +272,7 @@ function setup(options: SetupOptions = {}) {
       Promise.resolve(streamHandle({ cameraId, quality, port: GO2RTC_PORT, epoch: GO2RTC_EPOCH })),
     ),
     invalidate: vi.fn(),
+    unregisterAll: vi.fn(() => Promise.resolve()),
     shutdown: vi.fn(),
   } satisfies StreamRegistry
 
@@ -294,6 +300,9 @@ function setup(options: SetupOptions = {}) {
     ...(options.streamsWritesBlocked === undefined
       ? {}
       : { streamsWritesBlocked: options.streamsWritesBlocked }),
+    ...(options.modeWritesBlocked === undefined
+      ? {}
+      : { modeWritesBlocked: options.modeWritesBlocked }),
   })
 
   return {
@@ -426,14 +435,26 @@ describe('request validation (CLAUDE.md)', () => {
     },
     {
       channel: IPC.setViews.channel,
-      payload: { views: [testView('v1', { cells: [] })], lastViewId: null },
+      payload: { views: [testView('v1', { cells: [] })], lastViewId: null, mode: 'protect' },
       why: 'a View whose cells do not tile its grid',
     },
     {
+      channel: IPC.setViews.channel,
+      payload: { views: [], lastViewId: null },
+      why: 'no mode (MODE-4: the mode whose list was edited)',
+    },
+    {
       channel: IPC.setLastView.channel,
-      payload: { viewId: '' },
+      payload: { viewId: '', mode: 'protect' },
       why: 'an empty View id',
     },
+    {
+      channel: IPC.setLastView.channel,
+      payload: { viewId: null, mode: 'nvr' },
+      why: 'a mode that does not exist',
+    },
+    { channel: IPC.setMode.channel, payload: { mode: 'nvr' }, why: 'a mode that does not exist' },
+    { channel: IPC.setMode.channel, payload: {}, why: 'no mode' },
     {
       channel: IPC.setStreams.channel,
       payload: { defaultGridQuality: 'package', defaultFillQuality: 'high' },
@@ -618,9 +639,11 @@ function payloadFor(channel: string): unknown {
     case IPC.ensureStream.channel:
       return { cameraId: 'cam-1', quality: 'low' }
     case IPC.setViews.channel:
-      return { views: [], lastViewId: null }
+      return { views: [], lastViewId: null, mode: 'protect' }
     case IPC.setLastView.channel:
-      return { viewId: null }
+      return { viewId: null, mode: 'protect' }
+    case IPC.setMode.channel:
+      return { mode: 'rtsp' }
     case IPC.setDoorLinks.channel:
       return { links: {} }
     case IPC.unlockDoor.channel:
@@ -650,7 +673,7 @@ describe('getState (contract rule 3)', () => {
       value: {
         version: '0.1.0',
         keystoreAvailable: true,
-        secretsStored: { protectApiKey: true, accessToken: false },
+        secretsStored: { protectApiKey: true, accessToken: false, rtspUrls: {} },
       },
     })
   })
@@ -661,6 +684,19 @@ describe('getState (contract rule 3)', () => {
     expect(value).not.toBeNull()
     expect(JSON.stringify(value)).not.toContain('schemaVersion')
     expect(JSON.stringify(value)).not.toContain(API_KEY)
+  })
+
+  it('reports which stream qualities have a URL, as booleans only (RTSP-2, CON-2)', async () => {
+    const url = 'rtsp://admin:cam-password@cam.invalid:554/stream1'
+    h.services.credentials.rtspUrls = {
+      'rtsp-0f8e1c2a-3b4d-4e5f-8a9b-0c1d2e3f4a5b': { high: url, low: url },
+    }
+    const result = await h.call<AppState>(IPC.getState)
+    expect(result.ok && result.value.secretsStored.rtspUrls).toEqual({
+      'rtsp-0f8e1c2a-3b4d-4e5f-8a9b-0c1d2e3f4a5b': { high: true, medium: false, low: true },
+    })
+    expect(JSON.stringify(result)).not.toContain('cam-password')
+    expect(JSON.stringify(result)).not.toContain('rtsp://')
   })
 })
 
@@ -1042,6 +1078,7 @@ describe('setViews / setLastView (P3.1, VIEW-3/4/6)', () => {
     const result = await h.call<AppState>(IPC.setViews, {
       views: [testView('v1'), testView('v2', { gap: 4 })],
       lastViewId: 'v2',
+      mode: 'protect',
     })
     expect(h.config.update).toHaveBeenCalledTimes(1)
     expect(h.disk).toMatchObject({
@@ -1064,6 +1101,7 @@ describe('setViews / setLastView (P3.1, VIEW-3/4/6)', () => {
     const result = await h.call(IPC.setViews, {
       views: [testView('v1'), testView('v1')],
       lastViewId: 'v1',
+      mode: 'protect',
     })
     expect(failure(result).kind).toBe('invalid-request')
     expect(failure(result).message).toContain('views.1.id')
@@ -1080,14 +1118,22 @@ describe('setViews / setLastView (P3.1, VIEW-3/4/6)', () => {
         { col: 1, row: 1 },
       ],
     })
-    const result = await h.call(IPC.setViews, { views: [overlapping], lastViewId: null })
+    const result = await h.call(IPC.setViews, {
+      views: [overlapping],
+      lastViewId: null,
+      mode: 'protect',
+    })
     expect(failure(result).kind).toBe('invalid-request')
     expect(failure(result).message).toContain('views.0.cells.1')
     expect(h.config.update).not.toHaveBeenCalled()
   })
 
   it('refuses a lastViewId that names none of the Views sent', async () => {
-    const result = await h.call(IPC.setViews, { views: [testView('v1')], lastViewId: 'gone' })
+    const result = await h.call(IPC.setViews, {
+      views: [testView('v1')],
+      lastViewId: 'gone',
+      mode: 'protect',
+    })
     expect(failure(result).message).toContain('lastViewId')
     expect(h.config.update).not.toHaveBeenCalled()
   })
@@ -1102,7 +1148,11 @@ describe('setViews / setLastView (P3.1, VIEW-3/4/6)', () => {
           }
         }),
     )
-    const pending = h.call<AppState>(IPC.setViews, { views: [testView('v1')], lastViewId: 'v1' })
+    const pending = h.call<AppState>(IPC.setViews, {
+      views: [testView('v1')],
+      lastViewId: 'v1',
+      mode: 'protect',
+    })
     await Promise.resolve()
     // A certificate accepted (or a host saved) meanwhile replaces `current`.
     h.services.current = { ...h.services.current, console: { ...h.console, host: 'udm.local' } }
@@ -1114,9 +1164,13 @@ describe('setViews / setLastView (P3.1, VIEW-3/4/6)', () => {
   })
 
   it('switches the active View with setLastView, keeping the Views as stored', async () => {
-    await h.call(IPC.setViews, { views: [testView('v1'), testView('v2')], lastViewId: 'v1' })
+    await h.call(IPC.setViews, {
+      views: [testView('v1'), testView('v2')],
+      lastViewId: 'v1',
+      mode: 'protect',
+    })
     h.config.update.mockClear()
-    const result = await h.call<AppState>(IPC.setLastView, { viewId: 'v2' })
+    const result = await h.call<AppState>(IPC.setLastView, { viewId: 'v2', mode: 'protect' })
     expect(result.ok && result.value.settings.lastViewId).toBe('v2')
     expect(h.config.update).toHaveBeenCalledTimes(1)
     expect(h.disk.views.map((v) => v.id)).toEqual(['v1', 'v2'])
@@ -1124,14 +1178,14 @@ describe('setViews / setLastView (P3.1, VIEW-3/4/6)', () => {
   })
 
   it('refuses to switch to a View that is not stored', async () => {
-    const result = await h.call(IPC.setLastView, { viewId: 'nope' })
+    const result = await h.call(IPC.setLastView, { viewId: 'nope', mode: 'protect' })
     expect(failure(result).kind).toBe('not-found')
     expect(h.config.update).not.toHaveBeenCalled()
   })
 
   it('reports a failed save as a failure, not a throw', async () => {
     h.config.update.mockRejectedValueOnce(new Error('disk full'))
-    const result = await h.call(IPC.setLastView, { viewId: null })
+    const result = await h.call(IPC.setLastView, { viewId: null, mode: 'protect' })
     expect(result.ok).toBe(false)
   })
 })
@@ -1141,12 +1195,16 @@ describe('viewWritesBlocked (P3.2 perf harness)', () => {
   // user's Views, so both View channels are refused and nothing reaches the config store.
   it('refuses setViews and setLastView with the reason, writing nothing', async () => {
     const p = setup({ viewWritesBlocked: () => 'Views cannot be changed during a perf run.' })
-    const views = await p.call(IPC.setViews, { views: [testView('perf')], lastViewId: 'perf' })
+    const views = await p.call(IPC.setViews, {
+      views: [testView('perf')],
+      lastViewId: 'perf',
+      mode: 'protect',
+    })
     expect(failure(views)).toMatchObject({
       kind: 'bad-request',
       message: 'Views cannot be changed during a perf run.',
     })
-    const last = await p.call(IPC.setLastView, { viewId: null })
+    const last = await p.call(IPC.setLastView, { viewId: null, mode: 'protect' })
     expect(failure(last).kind).toBe('bad-request')
     expect(p.config.update).not.toHaveBeenCalled()
     expect(p.services.current.views).toEqual([])
@@ -1155,11 +1213,362 @@ describe('viewWritesBlocked (P3.2 perf harness)', () => {
   it('lets View writes through while it answers null', async () => {
     let blocked: string | null = 'blocked'
     const p = setup({ viewWritesBlocked: () => blocked })
-    expect((await p.call(IPC.setLastView, { viewId: null })).ok).toBe(false)
+    expect((await p.call(IPC.setLastView, { viewId: null, mode: 'protect' })).ok).toBe(false)
     blocked = null
-    const result = await p.call(IPC.setViews, { views: [testView('v1')], lastViewId: 'v1' })
+    const result = await p.call(IPC.setViews, {
+      views: [testView('v1')],
+      lastViewId: 'v1',
+      mode: 'protect',
+    })
     expect(result.ok).toBe(true)
     expect(p.config.update).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('per-mode Views (MODE-4)', () => {
+  /** Puts the live config (and the fake disk, through a write) into `mode`. */
+  async function switchTo(p: Harness, mode: 'protect' | 'rtsp'): Promise<void> {
+    const result = await p.call(IPC.setMode, { mode })
+    expect(result.ok).toBe(true)
+  }
+
+  it('writes setViews into the active mode`s list and leaves the other one alone', async () => {
+    await h.call(IPC.setViews, { views: [testView('p1')], lastViewId: 'p1', mode: 'protect' })
+    await switchTo(h, 'rtsp')
+    const result = await h.call<AppState>(IPC.setViews, {
+      views: [testView('r1'), testView('r2')],
+      lastViewId: 'r2',
+      mode: 'rtsp',
+    })
+    expect(result.ok).toBe(true)
+    // On disk: Protect's pair at the top level, RTSP's in the block, each where it belongs.
+    expect(h.disk.views.map((v) => v.id)).toEqual(['p1'])
+    expect(h.disk.lastViewId).toBe('p1')
+    expect(h.disk.rtsp.views.map((v) => v.id)).toEqual(['r1', 'r2'])
+    expect(h.disk.rtsp.lastViewId).toBe('r2')
+    // And in memory, the same.
+    expect(h.services.current.views.map((v) => v.id)).toEqual(['p1'])
+    expect(h.services.current.rtsp.views.map((v) => v.id)).toEqual(['r1', 'r2'])
+  })
+
+  it('shows the renderer only the active mode`s Views, never the other list', async () => {
+    await h.call(IPC.setViews, { views: [testView('p1')], lastViewId: 'p1', mode: 'protect' })
+    await switchTo(h, 'rtsp')
+    await h.call(IPC.setViews, { views: [testView('r1')], lastViewId: 'r1', mode: 'rtsp' })
+
+    const rtsp = await h.call<AppState>(IPC.getState)
+    if (!rtsp.ok) throw new Error('getState failed')
+    expect(rtsp.value.settings.mode).toBe('rtsp')
+    expect(rtsp.value.settings.views.map((v) => v.id)).toEqual(['r1'])
+    expect(rtsp.value.settings.lastViewId).toBe('r1')
+    // The RTSP list is not sent twice, and the Protect list not at all.
+    expect(rtsp.value.settings.rtsp.views).toEqual([])
+    expect(rtsp.value.settings.rtsp.lastViewId).toBeNull()
+    expect(JSON.stringify(rtsp.value)).not.toContain('"p1"')
+
+    await switchTo(h, 'protect')
+    const protect = await h.call<AppState>(IPC.getState)
+    if (!protect.ok) throw new Error('getState failed')
+    expect(protect.value.settings.views.map((v) => v.id)).toEqual(['p1'])
+    expect(protect.value.settings.lastViewId).toBe('p1')
+    expect(protect.value.settings.rtsp.views).toEqual([])
+    expect(JSON.stringify(protect.value)).not.toContain('"r1"')
+  })
+
+  it('keeps each mode`s list and last View across switches', async () => {
+    await h.call(IPC.setViews, {
+      views: [testView('p1'), testView('p2')],
+      lastViewId: 'p1',
+      mode: 'protect',
+    })
+    await h.call(IPC.setLastView, { viewId: 'p2', mode: 'protect' })
+    await switchTo(h, 'rtsp')
+    await h.call(IPC.setViews, {
+      views: [testView('r1'), testView('r2')],
+      lastViewId: 'r1',
+      mode: 'rtsp',
+    })
+    await h.call(IPC.setLastView, { viewId: 'r2', mode: 'rtsp' })
+    await switchTo(h, 'protect')
+    await switchTo(h, 'rtsp')
+    expect(h.disk).toMatchObject({ lastViewId: 'p2', rtsp: { lastViewId: 'r2' } })
+    expect(h.disk.views.map((v) => v.id)).toEqual(['p1', 'p2'])
+    expect(h.disk.rtsp.views.map((v) => v.id)).toEqual(['r1', 'r2'])
+  })
+
+  it('checks setLastView against the active mode`s list only', async () => {
+    await h.call(IPC.setViews, { views: [testView('p1')], lastViewId: 'p1', mode: 'protect' })
+    await switchTo(h, 'rtsp')
+    h.config.update.mockClear()
+    // `p1` exists, but in the Protect list: from RTSP mode it is not a View that can be switched to.
+    const result = await h.call(IPC.setLastView, { viewId: 'p1', mode: 'rtsp' })
+    expect(failure(result).kind).toBe('not-found')
+    expect(h.config.update).not.toHaveBeenCalled()
+  })
+
+  it('keeps the RTSP streams the block holds when its Views are written', async () => {
+    const stream = { id: 'rtsp-00000000-0000-4000-8000-000000000001', name: 'Garage' }
+    await switchTo(h, 'rtsp')
+    // A stream saved by another writer, already on disk but not yet in `current`.
+    let saved: Config | null = null
+    h.config.update.mockImplementationOnce((mutate: (latest: Config) => Config) => {
+      const latest = ConfigSchema.parse({ ...h.disk, rtsp: { ...h.disk.rtsp, streams: [stream] } })
+      saved = ConfigSchema.parse(mutate(latest))
+      return Promise.resolve(saved)
+    })
+    await h.call(IPC.setViews, { views: [testView('r1')], lastViewId: 'r1', mode: 'rtsp' })
+    // Built from `latest` inside the write, so the stream survives next to the new Views.
+    expect(saved).toMatchObject({
+      rtsp: { streams: [stream], views: [{ id: 'r1' }], lastViewId: 'r1' },
+    })
+  })
+
+  it('refuses a View write whose mode was switched before it was applied, saving nothing', async () => {
+    await h.call(IPC.setViews, { views: [testView('p1')], lastViewId: 'p1', mode: 'protect' })
+    let release = (): void => undefined
+    h.config.update.mockImplementationOnce(
+      (mutate: (latest: Config) => Config) =>
+        new Promise<Config>((resolve, reject) => {
+          release = () => {
+            // A mode switch was written while this one waited in the queue.
+            const latest = ConfigSchema.parse({ ...h.disk, mode: 'rtsp' })
+            try {
+              resolve(ConfigSchema.parse(mutate(latest)))
+            } catch (err) {
+              reject(err instanceof Error ? err : new Error(String(err)))
+            }
+          }
+        }),
+    )
+    const pending = h.call(IPC.setViews, {
+      views: [testView('x1')],
+      lastViewId: 'x1',
+      mode: 'protect',
+    })
+    await Promise.resolve()
+    release()
+    const result = await pending
+    expect(failure(result)).toMatchObject({ kind: 'bad-request', retryable: false })
+    expect(failure(result).message).toContain('mode changed')
+    // Neither list took it.
+    expect(h.services.current.views.map((v) => v.id)).toEqual(['p1'])
+    expect(h.services.current.rtsp.views).toEqual([])
+  })
+})
+
+describe('setMode (MODE-1/4)', () => {
+  it('saves the mode, stands the Protect side down and unregisters every stream (to RTSP)', async () => {
+    h.services.current = {
+      ...h.services.current,
+      doorLinks: { 'cam-1': 'door-1' },
+      console: { ...h.console, accessEnabled: true, connectOnLaunch: true },
+    }
+    await h.call(IPC.setViews, { views: [testView('p1')], lastViewId: 'p1', mode: 'protect' })
+    const before = structuredClone(h.services.current)
+    const beforeDisk = structuredClone(h.disk)
+    const result = await h.call<AppState>(IPC.setMode, { mode: 'rtsp' })
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    expect(result.value.settings.mode).toBe('rtsp')
+    expect(h.disk.mode).toBe('rtsp')
+    expect(h.services.current.mode).toBe('rtsp')
+    expect(h.manager.modeChanged).toHaveBeenCalledTimes(1)
+    expect(h.registry.unregisterAll).toHaveBeenCalledTimes(1)
+    expect(h.manager.connectOnLaunch).not.toHaveBeenCalled()
+    // Nothing else changed: console (pins and launch flag included), door links, Protect's Views.
+    expect(h.services.current.console).toEqual(before.console)
+    expect(h.services.current.doorLinks).toEqual(before.doorLinks)
+    expect(h.services.current.views).toEqual(before.views)
+    expect(h.services.current.lastViewId).toBe('p1')
+    expect(h.disk).toEqual({ ...beforeDisk, mode: 'rtsp' })
+    // No secret was touched.
+    expect(h.secrets.set).not.toHaveBeenCalled()
+    expect(h.secrets.clear).not.toHaveBeenCalled()
+    expect(h.services.credentials.protectApiKey).toBe(API_KEY)
+  })
+
+  it('behaves like a launch when switching back to Protect (CON-4)', async () => {
+    await h.call(IPC.setMode, { mode: 'rtsp' })
+    h.manager.modeChanged.mockClear()
+    h.registry.unregisterAll.mockClear()
+    const result = await h.call<AppState>(IPC.setMode, { mode: 'protect' })
+    expect(result.ok && result.value.settings.mode).toBe('protect')
+    expect(h.disk.mode).toBe('protect')
+    expect(h.manager.modeChanged).toHaveBeenCalledTimes(1)
+    expect(h.manager.connectOnLaunch).toHaveBeenCalledTimes(1)
+    expect(h.registry.unregisterAll).not.toHaveBeenCalled()
+  })
+
+  it('does not wait for, or fail on, the launch connect', async () => {
+    await h.call(IPC.setMode, { mode: 'rtsp' })
+    h.manager.connectOnLaunch.mockImplementationOnce(() => new Promise<void>(() => undefined))
+    const result = await h.call(IPC.setMode, { mode: 'protect' })
+    expect(result.ok).toBe(true)
+  })
+
+  it('answers the state and does nothing else for the mode it is already in', async () => {
+    const result = await h.call<AppState>(IPC.setMode, { mode: 'protect' })
+    expect(result.ok && result.value.settings.mode).toBe('protect')
+    expect(h.config.update).not.toHaveBeenCalled()
+    expect(h.manager.modeChanged).not.toHaveBeenCalled()
+    expect(h.manager.connectOnLaunch).not.toHaveBeenCalled()
+    expect(h.registry.unregisterAll).not.toHaveBeenCalled()
+  })
+
+  it('is refused during a perf run, before anything is written or torn down', async () => {
+    const p = setup({
+      modeWritesBlocked: () => 'The app mode cannot be changed during a perf run.',
+    })
+    const result = await p.call(IPC.setMode, { mode: 'rtsp' })
+    expect(failure(result)).toMatchObject({
+      kind: 'bad-request',
+      message: 'The app mode cannot be changed during a perf run.',
+    })
+    expect(p.config.update).not.toHaveBeenCalled()
+    expect(p.manager.modeChanged).not.toHaveBeenCalled()
+    expect(p.registry.unregisterAll).not.toHaveBeenCalled()
+    expect(p.services.current.mode).toBe('protect')
+  })
+
+  it('refuses an invalid mode before anything happens', async () => {
+    const result = await h.call(IPC.setMode, { mode: 'RTSP' })
+    expect(failure(result).kind).toBe('invalid-request')
+    expect(h.config.update).not.toHaveBeenCalled()
+    expect(h.manager.modeChanged).not.toHaveBeenCalled()
+  })
+
+  it('reports a failed save as a failure and tears nothing down', async () => {
+    h.config.update.mockRejectedValueOnce(new Error('disk full'))
+    const result = await h.call(IPC.setMode, { mode: 'rtsp' })
+    expect(result.ok).toBe(false)
+    expect(h.services.current.mode).toBe('protect')
+    expect(h.manager.modeChanged).not.toHaveBeenCalled()
+    expect(h.registry.unregisterAll).not.toHaveBeenCalled()
+  })
+
+  it('still switches before the stream registry exists', async () => {
+    const router = createIpcRouter({
+      getServices: () => h.services,
+      getManager: () => h.manager,
+      getRegistry: () => null,
+      appVersion: () => '0.1.0',
+    })
+    const result = await handlerFor(router, IPC.setMode.channel)({ mode: 'rtsp' })
+    expect(result.ok).toBe(true)
+    expect(h.services.current.mode).toBe('rtsp')
+  })
+})
+
+describe('setMode ordering and teardown (MODE-1/4)', () => {
+  it('runs quick switches one after another, so protect→rtsp→protect ends in Protect', async () => {
+    // The first save is held, as a slow disk would: the second call must see its committed mode.
+    let release = (): void => undefined
+    h.config.update.mockImplementationOnce(
+      (mutate: (latest: Config) => Config) =>
+        new Promise<Config>((resolve) => {
+          release = () => {
+            resolve(ConfigSchema.parse(mutate(h.disk)))
+          }
+        }),
+    )
+    const toRtsp = h.call<AppState>(IPC.setMode, { mode: 'rtsp' })
+    const toProtect = h.call<AppState>(IPC.setMode, { mode: 'protect' })
+    await vi.waitFor(() => {
+      expect(h.config.update).toHaveBeenCalledTimes(1)
+    })
+    release()
+    expect((await toRtsp).ok).toBe(true)
+    const result = await toProtect
+    expect(result.ok && result.value.settings.mode).toBe('protect')
+    expect(h.services.current.mode).toBe('protect')
+    expect(h.config.update).toHaveBeenCalledTimes(2)
+    expect(h.manager.modeChanged).toHaveBeenCalledTimes(2)
+    expect(h.registry.unregisterAll).toHaveBeenCalledTimes(1)
+    expect(h.manager.connectOnLaunch).toHaveBeenCalledTimes(1)
+  })
+
+  it('unregisters the go2rtc streams without waiting for the manager`s queue', async () => {
+    // A connect in progress holds the manager's queue: the streams must go regardless.
+    let release = (): void => undefined
+    h.manager.modeChanged.mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve) => {
+          release = resolve
+        }),
+    )
+    const pending = h.call(IPC.setMode, { mode: 'rtsp' })
+    await vi.waitFor(() => {
+      expect(h.registry.unregisterAll).toHaveBeenCalledTimes(1)
+    })
+    expect(h.manager.modeChanged).toHaveBeenCalledTimes(1)
+    release()
+    expect((await pending).ok).toBe(true)
+  })
+})
+
+describe('certificate calls in RTSP mode (MODE-4)', () => {
+  it('refuses check, accept and re-pin before any TLS contact', async () => {
+    await h.call(IPC.setMode, { mode: 'rtsp' })
+    const results = [
+      await h.call(IPC.checkCertificate, { endpoint: 'protect' }),
+      await h.call(IPC.acceptCertificate, { endpoint: 'access', fingerprint256: FP_A }),
+      await h.call(IPC.repinCertificate, { endpoint: 'protect', fingerprint256: FP_A }),
+    ]
+    for (const result of results) {
+      expect(failure(result)).toMatchObject({ kind: 'bad-request', retryable: false })
+      expect(failure(result).message).toContain('RTSP streams mode')
+    }
+    expect(h.pins.checkEndpoint).not.toHaveBeenCalled()
+    expect(h.readLeaf).not.toHaveBeenCalled()
+    expect(h.pins.acceptPin).not.toHaveBeenCalled()
+    expect(h.pins.repin).not.toHaveBeenCalled()
+    expect(h.manager.accessInputsChanged).not.toHaveBeenCalled()
+  })
+
+  it('still answers them in Protect mode', async () => {
+    const result = await h.call(IPC.checkCertificate, { endpoint: 'protect' })
+    expect(result.ok).toBe(true)
+  })
+})
+
+describe('View writes made against a mode that is no longer stored (MODE-4)', () => {
+  it('refuses a setViews built from the Protect list once the app is in RTSP mode', async () => {
+    await h.call(IPC.setViews, { views: [testView('p1')], lastViewId: 'p1', mode: 'protect' })
+    await h.call(IPC.setMode, { mode: 'rtsp' })
+    h.config.update.mockClear()
+    // A late save from the Protect list: Protect camera ids must not become RTSP Views.
+    const result = await h.call(IPC.setViews, {
+      views: [testView('p1'), testView('p2')],
+      lastViewId: 'p2',
+      mode: 'protect',
+    })
+    expect(failure(result)).toMatchObject({ kind: 'bad-request', retryable: false })
+    expect(failure(result).message).toContain('mode changed')
+    expect(h.services.current.rtsp.views).toEqual([])
+    expect(h.services.current.views.map((v) => v.id)).toEqual(['p1'])
+    expect(h.disk.rtsp.views).toEqual([])
+  })
+
+  it('refuses a setLastView picked from the other mode`s list, before any lookup or write', async () => {
+    await h.call(IPC.setViews, { views: [testView('p1')], lastViewId: 'p1', mode: 'protect' })
+    h.config.update.mockClear()
+    const result = await h.call(IPC.setLastView, { viewId: 'p1', mode: 'rtsp' })
+    expect(failure(result)).toMatchObject({ kind: 'bad-request', retryable: false })
+    expect(failure(result).message).toContain('mode changed')
+    expect(h.config.update).not.toHaveBeenCalled()
+  })
+
+  it('refuses a setLastView whose mode was switched while the write waited', async () => {
+    await h.call(IPC.setViews, { views: [testView('p1')], lastViewId: null, mode: 'protect' })
+    h.config.update.mockImplementationOnce((mutate: (latest: Config) => Config) => {
+      // A mode switch was written ahead of this one in the store's queue.
+      const latest = ConfigSchema.parse({ ...h.disk, mode: 'rtsp' })
+      return Promise.resolve(ConfigSchema.parse(mutate(latest)))
+    })
+    const result = await h.call(IPC.setLastView, { viewId: 'p1', mode: 'protect' })
+    expect(failure(result).kind).toBe('bad-request')
+    expect(h.services.current.lastViewId).toBeNull()
+    expect(h.services.current.rtsp.lastViewId).toBeNull()
   })
 })
 
@@ -1855,6 +2264,13 @@ describe('toIpcError (src/main/ipc/errors.ts)', () => {
     endpoint?: string | null
     retryable?: boolean
   }[] = [
+    {
+      name: 'a call the app mode does not make is a bad request, never retryable (MODE-4)',
+      error: new AppModeError(RTSP_MODE_MESSAGES.protect),
+      kind: 'bad-request',
+      endpoint: null,
+      retryable: false,
+    },
     {
       name: 'an endpoint with no accepted certificate yet runs the CON-3 dialog',
       error: new PinRequiredError('192.0.2.10:443'),

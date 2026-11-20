@@ -47,6 +47,7 @@ import type { IpcErrorKind } from '@shared/ipc'
 import type { StreamQuality } from '@shared/quality'
 import { parseStreamName, streamHandle, streamName, type StreamHandle } from '@shared/streams'
 import type { Camera } from '@shared/models'
+import { RTSP_MODE_MESSAGES } from '../appMode'
 import type { ProtectClient } from '../protect/client'
 import { sourceHostIs, toGo2rtcSource } from './go2rtcConfig'
 import type { Go2rtcManager } from './go2rtcManager'
@@ -87,7 +88,10 @@ export interface StreamRegistryOptions {
    * The go2rtc sidecar (P2.1). `start()` is called on every `ensureStream` because it is idempotent
    * and because go2rtc starts **lazily**: a user who only opens Settings never spawns one.
    */
-  readonly manager: Pick<Go2rtcManager, 'start' | 'runtime' | 'addStream'>
+  readonly manager: Pick<
+    Go2rtcManager,
+    'start' | 'runtime' | 'addStream' | 'removeStream' | 'streams'
+  >
   /**
    * The Protect client for the console **as configured right now**, read per call rather than
    * captured: `src/main/index.ts` rebuilds it when the address changes.
@@ -105,6 +109,13 @@ export interface StreamRegistryOptions {
    * refused (R4).
    */
   readonly consoleHost: () => string | null
+  /**
+   * MODE-4: whether the app is in UniFi Protect mode, read per call. While it answers `false` (RTSP
+   * streams mode) `ensureStream` refuses with `bad-request` before anything is read or sent: this
+   * registry only knows Protect cameras, and RTSP mode makes no Protect call of any kind. Default:
+   * always Protect.
+   */
+  readonly protectMode?: () => boolean
   /** Safe lines only — no URL, no alias, no credential (CON-2, NFR-9). Default: no-op. */
   readonly log?: (line: string) => void
 }
@@ -132,6 +143,15 @@ export interface StreamRegistry {
    */
   invalidate(cameraId?: string): void
   /**
+   * MODE-4: switching to RTSP mode. **Unregisters every stream from go2rtc** (`removeStream` for
+   * each name in the desired set, so a running go2rtc drops it and no later restart replays it),
+   * forgets every cached URL and every in-flight request, and makes a request that was already past
+   * its read when this was called fail instead of registering its stream afterwards. Players attached
+   * to a removed stream lose it; that is the point of the switch. go2rtc itself keeps running.
+   * Never rejects: a stream go2rtc would not drop is logged (the desired set still forgets it).
+   */
+  unregisterAll(): Promise<void>
+  /**
    * App shutdown: forget every cached URL and every in-flight request, so nothing holds an alias
    * after the window is gone. The sidecar is **not** stopped here — `manager.stop()` owns that, and
    * `will-quit` calls it alongside this (`src/main/index.ts`).
@@ -158,6 +178,29 @@ export function createStreamRegistry(options: StreamRegistryOptions): StreamRegi
 
   /** Stream name → the single in-flight `ensureStream`, so a 10-cell View makes one GET per pair. */
   const inFlight = new Map<string, Promise<StreamHandle>>()
+
+  /**
+   * Bumped by every {@link StreamRegistry.unregisterAll}. An `ensureOnce` that started under an
+   * earlier generation refuses rather than registering its stream after everything was removed.
+   */
+  let generation = 0
+
+  const protectMode = options.protectMode ?? ((): boolean => true)
+
+  /** MODE-4: refuses while the app is in RTSP streams mode. Nothing is read or sent first. */
+  function requireProtectMode(): void {
+    if (protectMode()) return
+    throw new StreamRegistryError(RTSP_MODE_MESSAGES.stream, { kind: 'bad-request' })
+  }
+
+  /** MODE-4: the mode was switched while this request was waiting, so it must not register. */
+  function requireGeneration(started: number): void {
+    if (started === generation) return
+    throw new StreamRegistryError(
+      'The app mode changed while the stream was being opened, so it was not opened.',
+      { kind: 'bad-request' },
+    )
+  }
 
   /**
    * Refuses the pair unless main's cached inventory (CAM-1) has that camera and that camera can
@@ -259,6 +302,8 @@ export function createStreamRegistry(options: StreamRegistryOptions): StreamRegi
   }
 
   async function ensureOnce(cameraId: string, quality: StreamQuality): Promise<StreamHandle> {
+    const started = generation
+    requireProtectMode()
     requireStreamable(cameraId, quality)
     const name = streamName(cameraId, quality)
 
@@ -277,12 +322,16 @@ export function createStreamRegistry(options: StreamRegistryOptions): StreamRegi
     }
     if (source === undefined) {
       source = await readSource(cameraId, quality)
+      requireGeneration(started)
       requirePinnedHost(source, cameraId, quality)
       // Cached only once it is known good, and only for this session (SPEC §5.1).
       sources.set(name, source)
     }
 
     const runtime = await requireRuntime()
+    // After the last await before `addStream`: a switch to RTSP mode during the GET or the go2rtc
+    // start has already unregistered everything, and this stream must not come back after it.
+    requireGeneration(started)
     try {
       // Records the stream in the desired set and, since go2rtc is up, registers it live. Replayed
       // into every later (re)start by the manager, so a restart needs nothing from here.
@@ -310,7 +359,8 @@ export function createStreamRegistry(options: StreamRegistryOptions): StreamRegi
       // R9/NFR-6: ten cells on one camera at startup share this one promise.
       if (pending !== undefined) return pending
       const promise = ensureOnce(cameraId, quality).finally(() => {
-        inFlight.delete(name)
+        // Only its own entry: `unregisterAll` may have dropped it and a newer request taken its place.
+        if (inFlight.get(name) === promise) inFlight.delete(name)
       })
       inFlight.set(name, promise)
       return promise
@@ -326,6 +376,23 @@ export function createStreamRegistry(options: StreamRegistryOptions): StreamRegi
         if (parseStreamName(name)?.cameraId === cameraId) sources.delete(name)
       }
       log(`dropped the cached stream URLs for camera ${cameraId} (QUAL-8)`)
+    },
+
+    async unregisterAll() {
+      generation += 1
+      sources.clear()
+      inFlight.clear()
+      const names = Object.keys(manager.streams())
+      // `removeStream` never rejects; it answers whether the running go2rtc dropped the stream. A
+      // rejection is still counted, so an injected manager that throws cannot make this reject.
+      const results = await Promise.allSettled(names.map((name) => manager.removeStream(name)))
+      const failed = results.filter(
+        (result) => result.status === 'rejected' || !result.value,
+      ).length
+      log(
+        `unregistered ${String(names.length)} stream(s) from go2rtc (MODE-4)` +
+          (failed === 0 ? '' : `; ${String(failed)} could not be removed from the running go2rtc`),
+      )
     },
 
     shutdown() {

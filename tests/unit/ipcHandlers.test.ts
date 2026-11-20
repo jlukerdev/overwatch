@@ -276,6 +276,8 @@ function setup(options: SetupOptions = {}) {
     modeChanged: vi.fn(() => Promise.resolve()),
     credentialCleared: vi.fn(() => Promise.resolve()),
     credentialReplaced: vi.fn(() => Promise.resolve()),
+    // RTSP-3: the real manager's push is tested in connectionManagerMode.test.ts.
+    rtspStreamsChanged: vi.fn<() => void>(),
     shutdown: vi.fn(() => Promise.resolve()),
   } satisfies ConnectionManager
 
@@ -290,6 +292,8 @@ function setup(options: SetupOptions = {}) {
     ),
     invalidate: vi.fn(),
     unregisterAll: vi.fn(() => Promise.resolve()),
+    rtspSource: vi.fn((): string | null => null),
+    rtspStreamChanged: vi.fn<(streamId: string) => Promise<void>>(() => Promise.resolve()),
     shutdown: vi.fn(),
   } satisfies StreamRegistry
 
@@ -1427,7 +1431,7 @@ describe('setMode (MODE-1/4)', () => {
     expect(h.services.credentials.protectApiKey).toBe(API_KEY)
   })
 
-  it('behaves like a launch when switching back to Protect (CON-4)', async () => {
+  it('behaves like a launch, after unregistering every RTSP stream, when switching back to Protect (CON-4, RTSP-5)', async () => {
     await h.call(IPC.setMode, { mode: 'rtsp' })
     h.manager.modeChanged.mockClear()
     h.registry.unregisterAll.mockClear()
@@ -1436,7 +1440,12 @@ describe('setMode (MODE-1/4)', () => {
     expect(h.disk.mode).toBe('protect')
     expect(h.manager.modeChanged).toHaveBeenCalledTimes(1)
     expect(h.manager.connectOnLaunch).toHaveBeenCalledTimes(1)
-    expect(h.registry.unregisterAll).not.toHaveBeenCalled()
+    // The RTSP sources must not linger in go2rtc's desired set: a restart in Protect mode would
+    // replay them into the pinned-host check and fail (RTSP-5, R4).
+    expect(h.registry.unregisterAll).toHaveBeenCalledTimes(1)
+    expect(h.registry.unregisterAll.mock.invocationCallOrder[0]).toBeLessThan(
+      h.manager.connectOnLaunch.mock.invocationCallOrder[0] ?? 0,
+    )
   })
 
   it('does not wait for, or fail on, the launch connect', async () => {
@@ -1523,7 +1532,7 @@ describe('setMode ordering and teardown (MODE-1/4)', () => {
     expect(h.services.current.mode).toBe('protect')
     expect(h.config.update).toHaveBeenCalledTimes(2)
     expect(h.manager.modeChanged).toHaveBeenCalledTimes(2)
-    expect(h.registry.unregisterAll).toHaveBeenCalledTimes(1)
+    expect(h.registry.unregisterAll).toHaveBeenCalledTimes(2)
     expect(h.manager.connectOnLaunch).toHaveBeenCalledTimes(1)
   })
 
@@ -2507,6 +2516,130 @@ describe('saveRtspStream / deleteRtspStream (RTSP-1/2, F1.0.2-5)', () => {
     expect(failure(result).kind).toBe('invalid-request')
     expect(JSON.stringify(result)).not.toContain(bad)
     expectNoUrlInReplies()
+  })
+
+  /** Lets the work a save or delete runs just after its reply finish (`afterRtspReply`). */
+  async function afterReply(): Promise<void> {
+    for (let i = 0; i < 2; i++) await new Promise<void>((resolve) => setImmediate(resolve))
+  }
+
+  /** Creates a stream, lets its after-reply work run, and clears the RTSP-3 mocks. */
+  async function createSettled(name: string, urls: Record<string, string>): Promise<string> {
+    const id = await create(name, urls)
+    await afterReply()
+    h.registry.rtspStreamChanged.mockClear()
+    h.manager.rtspStreamsChanged.mockClear()
+    return id
+  }
+
+  it('answers a save before it drops the go2rtc registrations and pushes the inventory (RTSP-3)', async () => {
+    const id = await createSettled('Garden', { high: HIGH })
+    // The renderer works out the served quality from the reply's `secretsStored.rtspUrls`, so the
+    // reply must land first: nothing has run when it resolves.
+    const result = await save({ id, name: 'Garden', urls: { medium: MEDIUM } })
+    expect(result.ok).toBe(true)
+    expect(h.registry.rtspStreamChanged).not.toHaveBeenCalled()
+    expect(h.manager.rtspStreamsChanged).not.toHaveBeenCalled()
+    await afterReply()
+    expect(h.registry.rtspStreamChanged).toHaveBeenCalledExactlyOnceWith(id)
+    expect(h.manager.rtspStreamsChanged).toHaveBeenCalledTimes(1)
+    // The drop before the push.
+    expect(h.registry.rtspStreamChanged.mock.invocationCallOrder[0]).toBeLessThan(
+      h.manager.rtspStreamsChanged.mock.invocationCallOrder[0] ?? 0,
+    )
+  })
+
+  it('pushes the inventory and drops the go2rtc registrations after a save that changed the URLs (RTSP-3)', async () => {
+    const id = await create('Garden', { high: HIGH })
+    await afterReply()
+    expect(h.manager.rtspStreamsChanged).toHaveBeenCalledTimes(1)
+    expect(h.registry.rtspStreamChanged).toHaveBeenCalledWith(id)
+    // After the write: the config is saved by the time either runs.
+    expect(h.config.update.mock.invocationCallOrder[0]).toBeLessThan(
+      h.manager.rtspStreamsChanged.mock.invocationCallOrder[0] ?? 0,
+    )
+    h.registry.rtspStreamChanged.mockClear()
+    h.manager.rtspStreamsChanged.mockClear()
+    expect((await save({ id, name: 'Garden', urls: { medium: MEDIUM } })).ok).toBe(true)
+    await afterReply()
+    expect(h.registry.rtspStreamChanged).toHaveBeenCalledExactlyOnceWith(id)
+    expect(h.manager.rtspStreamsChanged).toHaveBeenCalledTimes(1)
+  })
+
+  it('runs a save`s deferred drop before the next save or delete starts', async () => {
+    const id = await createSettled('Garden', { high: HIGH })
+    let releaseDrop = (): void => undefined
+    h.registry.rtspStreamChanged.mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve) => {
+          releaseDrop = resolve
+        }),
+    )
+    expect((await save({ id, name: 'Garden', urls: { high: OTHER } })).ok).toBe(true)
+    // The deferred drop is now running and held; the delete queued behind it must wait.
+    await afterReply()
+    expect(h.registry.rtspStreamChanged).toHaveBeenCalledTimes(1)
+    const updates = h.config.update.mock.calls.length
+    const deleting = remove(id)
+    await afterReply()
+    expect(h.config.update.mock.calls.length).toBe(updates)
+    releaseDrop()
+    expect((await deleting).ok).toBe(true)
+    expect(h.config.update.mock.calls.length).toBe(updates + 1)
+  })
+
+  it('pushes the inventory but keeps the registrations after a rename alone (RTSP-3)', async () => {
+    const id = await createSettled('Garden', { high: HIGH })
+    expect((await save({ id, name: 'Back garden', urls: {} })).ok).toBe(true)
+    await afterReply()
+    expect(h.manager.rtspStreamsChanged).toHaveBeenCalledTimes(1)
+    expect(h.registry.rtspStreamChanged).not.toHaveBeenCalled()
+  })
+
+  it('drops the registrations before a delete answers, and pushes the inventory after (RTSP-3)', async () => {
+    const id = await createSettled('Garden', { high: HIGH })
+    expect((await remove(id)).ok).toBe(true)
+    // A deleted stream is out of the list, so a re-ask is not-found, never a fallback handle: the
+    // drop does not wait for the reply, and its URLs leave memory only once go2rtc dropped them.
+    expect(h.registry.rtspStreamChanged).toHaveBeenCalledExactlyOnceWith(id)
+    expect(h.registry.rtspStreamChanged.mock.invocationCallOrder[0]).toBeLessThan(
+      h.secrets.clearRtspStream.mock.invocationCallOrder[0] ?? 0,
+    )
+    expect(h.manager.rtspStreamsChanged).not.toHaveBeenCalled()
+    await afterReply()
+    expect(h.manager.rtspStreamsChanged).toHaveBeenCalledTimes(1)
+  })
+
+  it('neither pushes nor drops anything for a refused save or delete', async () => {
+    expect((await save({ name: 'Garden', urls: { high: null } })).ok).toBe(false)
+    expect((await remove(UNKNOWN_ID)).ok).toBe(false)
+    await afterReply()
+    expect(h.manager.rtspStreamsChanged).not.toHaveBeenCalled()
+    expect(h.registry.rtspStreamChanged).not.toHaveBeenCalled()
+  })
+
+  it('drops the registrations made with the abandoned URL when the config write fails (RTSP-3)', async () => {
+    const id = await createSettled('Garden', { high: HIGH })
+    h.config.update.mockImplementationOnce(() => Promise.reject(new Error('disk full')))
+    expect((await save({ id, name: 'Garden', urls: { high: OTHER } })).ok).toBe(false)
+    // The URLs are back as they were, and only then is the stream dropped from go2rtc: at once,
+    // before the reply (nothing in the reply changed, so there is no race to wait out).
+    expect(h.services.credentials.rtspUrls?.[id]).toEqual({ high: HIGH })
+    expect(h.registry.rtspStreamChanged).toHaveBeenCalledExactlyOnceWith(id)
+    expect(h.secrets.setRtspUrls.mock.invocationCallOrder.at(-1)).toBeLessThan(
+      h.registry.rtspStreamChanged.mock.invocationCallOrder[0] ?? 0,
+    )
+    // Nothing was saved, so there is no new inventory to push.
+    await afterReply()
+    expect(h.manager.rtspStreamsChanged).not.toHaveBeenCalled()
+  })
+
+  it('drops nothing when a failed save did not change the URLs', async () => {
+    const id = await createSettled('Garden', { high: HIGH })
+    h.config.update.mockImplementationOnce(() => Promise.reject(new Error('disk full')))
+    expect((await save({ id, name: 'Back garden', urls: {} })).ok).toBe(false)
+    await afterReply()
+    expect(h.registry.rtspStreamChanged).not.toHaveBeenCalled()
   })
 
   it('maps RtspStreamError to its own kind, never retryable', () => {

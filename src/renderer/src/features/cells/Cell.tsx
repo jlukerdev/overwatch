@@ -34,7 +34,9 @@
 // per quality, so a cell with a picker has no quality badge; only the package-channel cell, which
 // has no picker, keeps the badge (`PKG`) so it still says what it plays. This file only reports
 // picks upward with the slot's key — saving a cell override, keeping fill's session pick and saving
-// it for the View are `<GridView>`'s.
+// it for the View are `<GridView>`'s. For an RTSP stream (RTSP-3) the pickers get its `availability`
+// and list a quality with no URL disabled, "(not set)"; `quality` is then already the one served,
+// so the colour shows what plays.
 //
 // **Strip order.** In fill, left to right: zoom reset (disabled at 1×), back, position, mute, volume,
 // quality picker and its Save. In the grid: position, mute, quality picker. The badge, where there
@@ -91,6 +93,7 @@
 import { memo, useCallback, useMemo, useState, type JSX } from 'react'
 import type { Fit } from '@shared/models'
 import type { Quality, StreamQuality } from '@shared/quality'
+import type { QualityAvailability } from '../quality/qualityChoice'
 import { LivePlayer } from '../../player/LivePlayer'
 import { ZoomResetIcon } from '../../ui/icons'
 import { MuteToggle, VolumeSlider } from './AudioControls'
@@ -137,6 +140,11 @@ export interface CellProps {
   readonly inheritedQuality: Quality | null
   /** QUAL-5: while filled, show the fill picker's Save (a pick changed what plays, `canSaveFillQuality`). */
   readonly canSaveFillQuality: boolean
+  /**
+   * RTSP-3: which qualities the stream has a URL for, for the pickers; `null` in Protect mode. The
+   * store's own object, so the memo's shallow compare holds until the secrets change.
+   */
+  readonly availability: QualityAvailability
   /** QUAL-4: a new override for this cell (`null` clears it). Stable, like `onClickEvent`. */
   readonly onQualityChange: (slotKey: string, quality: Quality | null) => void
   /** QUAL-5: a quality picked while filled, for this fill only. Stable. */
@@ -208,6 +216,7 @@ export const Cell = memo(function Cell({
   cellQuality,
   inheritedQuality,
   canSaveFillQuality,
+  availability,
   onQualityChange,
   onFillQualityPick,
   onSaveFillQuality,
@@ -286,6 +295,7 @@ export const Cell = memo(function Cell({
       <FillQualityPicker
         shown={quality}
         canSave={canSaveFillQuality}
+        availability={availability}
         onPick={(picked) => {
           onFillQualityPick(slotKey, picked)
         }}
@@ -298,6 +308,7 @@ export const Cell = memo(function Cell({
         override={cellQuality}
         inherited={inheritedQuality}
         playing={quality}
+        availability={availability}
         onChange={(picked) => {
           onQualityChange(slotKey, picked)
         }}

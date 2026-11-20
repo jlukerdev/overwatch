@@ -90,7 +90,12 @@ function feedFactory() {
 interface SetupOptions {
   readonly mode?: AppMode
   readonly connectOnLaunch?: boolean
+  readonly rtspStreams?: readonly { readonly id: string; readonly name: string }[]
 }
+
+/** Two RTSP streams, stored out of name order (RTSP-3 sorts them). */
+const PORCH = { id: 'rtsp-11111111-1111-4111-8111-111111111111', name: 'porch' }
+const GARDEN = { id: 'rtsp-22222222-2222-4222-8222-222222222222', name: 'Garden' }
 
 /**
  * Access on with a token and a linked door, Protect pinned with a key: everything is in place for
@@ -107,6 +112,7 @@ function setup(options: SetupOptions = {}) {
       connectOnLaunch: options.connectOnLaunch ?? false,
     }),
     doorLinks: { 'cam-1': FRONT },
+    rtsp: { streams: options.rtspStreams ?? [] },
   })
   const pinned = new Set([PROTECT])
 
@@ -208,6 +214,9 @@ function setup(options: SetupOptions = {}) {
     setMode(mode: AppMode) {
       current = { ...current, mode }
     },
+    setRtspStreams(streams: readonly { readonly id: string; readonly name: string }[]) {
+      current = { ...current, rtsp: { ...current.rtsp, streams: [...streams] } }
+    },
     payloads(channel: string): unknown[] {
       return emitted.filter((e) => e.channel === channel).map((e) => e.payload)
     },
@@ -242,7 +251,7 @@ describe('in RTSP mode, no Protect or Access call of any kind (MODE-4)', () => {
       'bad-request',
     )
     expect(await rejectionKind(h.manager.streamQualities('cam-1'))).toBe('bad-request')
-    // The camera list is what main holds (nothing, in RTSP mode for now), with no request.
+    // The camera list is the configured streams (none here), with no request (RTSP-3).
     await expect(h.manager.cameras()).resolves.toEqual([])
     expect(h.requests()).toBe(0)
     expect(h.resolveProtect).not.toHaveBeenCalled()
@@ -391,11 +400,14 @@ describe('switching to RTSP mode (MODE-4)', () => {
     expect(h.manager.cachedCameras()).toEqual([])
   })
 
-  it('does nothing when the mode is Protect (switching back is the caller`s connectOnLaunch)', async () => {
+  it('only pushes the Protect inventory when the mode is Protect (switching back is the caller`s connectOnLaunch)', async () => {
     const h = await running()
+    h.emitted.length = 0
     await h.manager.modeChanged()
     expect(h.devices.feeds[0]?.stops).toBe(0)
     expect(h.manager.cachedCameras()).toHaveLength(2)
+    expect(h.payloads(IPC_EVENTS.cameras.channel)).toEqual([h.manager.cachedCameras()])
+    expect(h.payloads(IPC_EVENTS.connection.channel)).toEqual([])
   })
 
   it('keeps every stored setting: no config write at all', async () => {
@@ -407,6 +419,75 @@ describe('switching to RTSP mode (MODE-4)', () => {
     await h.manager.modeChanged()
     expect(update).not.toHaveBeenCalled()
     expect(h.services.current).toEqual({ ...before, mode: 'rtsp' })
+  })
+})
+
+describe('the RTSP inventory (RTSP-3)', () => {
+  const asCamera = (stream: { id: string; name: string }): Camera => ({
+    id: stream.id,
+    name: stream.name,
+    model: 'RTSP stream',
+    state: 'CONNECTED',
+    hasMic: false,
+    micEnabled: false,
+    hasSpeaker: false,
+    smartDetectTypes: [],
+    supportsFullHdSnapshot: false,
+    hasPackageCamera: false,
+  })
+
+  it('is the configured streams in name order, ignoring case, with no request', async () => {
+    const h = setup({ mode: 'rtsp', rtspStreams: [PORCH, GARDEN] })
+    const expected = [asCamera(GARDEN), asCamera(PORCH)]
+    expect(h.manager.cachedCameras()).toEqual(expected)
+    await expect(h.manager.cameras()).resolves.toEqual(expected)
+    for (const entry of expected) expect(CameraSchema.parse(entry)).toEqual(entry)
+    expect(h.requests()).toBe(0)
+    expect(h.resolveProtect).not.toHaveBeenCalled()
+  })
+
+  it('follows the live config: a stream saved a moment ago is in the next read', () => {
+    const h = setup({ mode: 'rtsp', rtspStreams: [PORCH] })
+    h.setRtspStreams([PORCH, GARDEN])
+    expect(h.manager.cachedCameras().map((c) => c.id)).toEqual([GARDEN.id, PORCH.id])
+  })
+
+  it('is pushed by rtspStreamsChanged in RTSP mode, and not at all in Protect mode', () => {
+    const h = setup({ mode: 'rtsp', rtspStreams: [PORCH] })
+    h.setRtspStreams([PORCH, GARDEN])
+    h.manager.rtspStreamsChanged()
+    expect(h.payloads(IPC_EVENTS.cameras.channel)).toEqual([[asCamera(GARDEN), asCamera(PORCH)]])
+
+    const p = setup({ mode: 'protect', rtspStreams: [PORCH] })
+    p.manager.rtspStreamsChanged()
+    expect(p.payloads(IPC_EVENTS.cameras.channel)).toEqual([])
+    // In Protect mode the streams are not the inventory.
+    expect(p.manager.cachedCameras()).toEqual([])
+  })
+
+  it('is what a switch to RTSP pushes, in place of the Protect cameras', async () => {
+    const h = setup({ rtspStreams: [PORCH, GARDEN] })
+    await h.manager.connect()
+    expect(h.manager.cachedCameras()).toHaveLength(2)
+    h.emitted.length = 0
+    h.setMode('rtsp')
+    await h.manager.modeChanged()
+    expect(h.payloads(IPC_EVENTS.cameras.channel)).toEqual([[asCamera(GARDEN), asCamera(PORCH)]])
+  })
+
+  it('leaves the renderer at once on a switch back: the Protect inventory (empty) is pushed', async () => {
+    const h = setup({ rtspStreams: [PORCH] })
+    await h.manager.connect()
+    h.setMode('rtsp')
+    await h.manager.modeChanged()
+    h.emitted.length = 0
+    const before = h.requests()
+    h.setMode('protect')
+    await h.manager.modeChanged()
+    expect(h.payloads(IPC_EVENTS.cameras.channel)).toEqual([[]])
+    expect(h.manager.cachedCameras()).toEqual([])
+    // The push is what main holds: nothing is re-read until the next connect.
+    expect(h.requests()).toBe(before)
   })
 })
 

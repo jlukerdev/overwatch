@@ -18,6 +18,7 @@
 //    is what the caller gets when go2rtc cannot be started at all.
 import { StreamHandleSchema, type StreamHandle } from '@shared/streams'
 import type { StreamQuality } from '@shared/quality'
+import type { RtspStreamUrls } from '@shared/rtsp'
 import type { Camera } from '@shared/models'
 import { CameraSchema } from '@shared/models'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
@@ -157,6 +158,10 @@ interface Harness {
   setHost(next: string | null): void
   /** MODE-4: the app mode the registry is told about. */
   setProtectMode(next: boolean): void
+  /** RTSP-3: the configured streams (`config.rtsp.streams`). */
+  setRtspStreams(next: readonly { id: string; name: string }[]): void
+  /** RTSP-2: the decrypted URLs main holds (`credentials.rtspUrls`). */
+  setRtspUrls(next: Record<string, RtspStreamUrls> | undefined): void
 }
 
 function setup(
@@ -171,6 +176,8 @@ function setup(
   let cameras: readonly Camera[] = options.cameras ?? [camera('cam-1')]
   let host: string | null = HOST
   let protectMode = true
+  let rtspStreams: readonly { id: string; name: string }[] = []
+  let rtspUrls: Record<string, RtspStreamUrls> | undefined
 
   const registry = createStreamRegistry({
     manager: go2rtc.manager,
@@ -178,6 +185,8 @@ function setup(
     cameras: () => cameras,
     consoleHost: () => host,
     protectMode: () => protectMode,
+    rtspStreams: () => rtspStreams,
+    rtspUrls: () => rtspUrls,
     log: (line) => lines.push(line),
   })
 
@@ -194,6 +203,12 @@ function setup(
     },
     setProtectMode(next) {
       protectMode = next
+    },
+    setRtspStreams(next) {
+      rtspStreams = next
+    },
+    setRtspUrls(next) {
+      rtspUrls = next
     },
   }
 }
@@ -531,13 +546,12 @@ describe('no secret ever leaves the registry (CON-2, NFR-9, SPEC §6.1)', () => 
 })
 
 describe('RTSP streams mode (MODE-4)', () => {
-  it('refuses ensureStream with bad-request and makes no Protect call', async () => {
+  it('treats a Protect camera id as an unknown stream and makes no Protect call', async () => {
     const h = setup()
     h.setProtectMode(false)
     const err = await refusal(h.registry.ensureStream('cam-1', 'high'))
-    expect(err.kind).toBe('bad-request')
+    expect(err.kind).toBe('not-found')
     expect(err.retryable).toBe(false)
-    expect(err.message).toContain('RTSP streams mode')
     expect(h.protect.rtspsStreams).not.toHaveBeenCalled()
     expect(h.protect.createRtspsStreams).not.toHaveBeenCalled()
     expect(h.go2rtc.start).not.toHaveBeenCalled()
@@ -604,5 +618,318 @@ describe('RTSP streams mode (MODE-4)', () => {
     await h.registry.ensureStream('cam-1', 'high')
     await h.registry.unregisterAll()
     expect(h.lines.some((line) => line.includes('could not be removed'))).toBe(false)
+  })
+})
+
+// --- RTSP streams mode playback (RTSP-3, RTSP-5) -------------------------------------------------
+
+describe('ensureStream in RTSP streams mode (RTSP-3, RTSP-5)', () => {
+  const GARDEN = 'rtsp-22222222-2222-4222-8222-222222222222'
+  const PORCH = 'rtsp-11111111-1111-4111-8111-111111111111'
+  /** Credentials and hosts that must never appear in a handle, a message or a log line (CON-2). */
+  const HIGH = 'rtsps://admin:garden-pass-1@cam-a.invalid:7441/high?x=1'
+  const LOW = 'rtsp://admin:garden-pass-3@cam-a.invalid:554/low'
+  const PORCH_MED = 'rtsp://admin:porch-pass@cam-b.invalid/live'
+
+  function rtspHarness(
+    urls: Record<string, RtspStreamUrls> = { [GARDEN]: { high: HIGH, low: LOW } },
+  ) {
+    const r = setup()
+    r.setProtectMode(false)
+    // No console is configured: RTSP mode needs none.
+    r.setHost(null)
+    r.setRtspStreams([
+      { id: GARDEN, name: 'Garden' },
+      { id: PORCH, name: 'Porch' },
+    ])
+    r.setRtspUrls(urls)
+    return r
+  }
+
+  /** CON-2: no URL, nor any part of one, in a handle, an error or the log. */
+  function expectNoUrl(r: Harness, ...values: unknown[]): void {
+    const text = [
+      ...values.map((v) => (v instanceof Error ? v.message : JSON.stringify(v))),
+      ...r.lines,
+    ].join('\n')
+    expect(text).not.toMatch(/rtsp[sx]?:\/\//i)
+    expect(text).not.toContain('pass')
+    expect(text).not.toContain('cam-a.invalid')
+    expect(text).not.toContain('cam-b.invalid')
+    expect(text).not.toContain('admin')
+  }
+
+  it('registers the asked quality from the secrets, rtsps:// as rtspx://, and makes no Protect call', async () => {
+    const r = rtspHarness()
+    const handle = await r.registry.ensureStream(GARDEN, 'high')
+    expect(StreamHandleSchema.parse(handle)).toEqual(handle)
+    expect(handle).toMatchObject({ cameraId: GARDEN, quality: 'high', name: `${GARDEN}_high` })
+    expect(handle.port).toBe(PORT)
+    // The scheme changes and only enableSrtp would be dropped; other parameters are kept.
+    expect(r.go2rtc.registered.get(`${GARDEN}_high`)).toBe(
+      'rtspx://admin:garden-pass-1@cam-a.invalid:7441/high?x=1',
+    )
+    expect(r.registry.rtspSource(`${GARDEN}_high`)).toBe(r.go2rtc.registered.get(`${GARDEN}_high`))
+    expect(r.protect.rtspsStreams).not.toHaveBeenCalled()
+    expect(r.protect.createRtspsStreams).not.toHaveBeenCalled()
+    expectNoUrl(r, handle)
+  })
+
+  it('passes rtsp:// as is', async () => {
+    const r = rtspHarness()
+    await r.registry.ensureStream(GARDEN, 'low')
+    expect(r.go2rtc.registered.get(`${GARDEN}_low`)).toBe(LOW)
+  })
+
+  it('serves the closest stored quality and names it in the handle (lower on a tie)', async () => {
+    const r = rtspHarness()
+    // medium has no URL: high and low are equally close, so the lower one plays.
+    const handle = await r.registry.ensureStream(GARDEN, 'medium')
+    expect(handle).toMatchObject({ quality: 'low', name: `${GARDEN}_low` })
+    expect([...r.go2rtc.registered.keys()]).toEqual([`${GARDEN}_low`])
+
+    const p = rtspHarness({ [PORCH]: { medium: PORCH_MED } })
+    expect((await p.registry.ensureStream(PORCH, 'high')).quality).toBe('medium')
+    expect((await p.registry.ensureStream(PORCH, 'low')).quality).toBe('medium')
+  })
+
+  it('records the source before go2rtc is asked, so the manager`s RTSP-5 check can accept it', async () => {
+    const r = rtspHarness()
+    const seen: (string | null)[] = []
+    r.go2rtc.addStream.mockImplementationOnce((name: string, source: string) => {
+      seen.push(r.registry.rtspSource(name) === source ? 'match' : null)
+      r.go2rtc.registered.set(name, source)
+      return Promise.resolve()
+    })
+    await r.registry.ensureStream(GARDEN, 'high')
+    expect(seen).toEqual(['match'])
+    expect(r.registry.rtspSource(`${PORCH}_high`)).toBeNull()
+  })
+
+  it('coalesces calls that are served by the same stream into one registration', async () => {
+    const r = rtspHarness()
+    const handles = await Promise.all([
+      r.registry.ensureStream(GARDEN, 'low'),
+      r.registry.ensureStream(GARDEN, 'medium'),
+      r.registry.ensureStream(GARDEN, 'low'),
+    ])
+    expect(handles.map((x) => x.name)).toEqual([`${GARDEN}_low`, `${GARDEN}_low`, `${GARDEN}_low`])
+    expect(r.go2rtc.addStream).toHaveBeenCalledTimes(1)
+  })
+
+  it('refuses a stream that is not configured: not-found, not retryable', async () => {
+    const r = rtspHarness({ [PORCH]: { medium: PORCH_MED } })
+    // URLs stored, but the stream is not in the list (deleted): the list is the authority.
+    r.setRtspStreams([{ id: GARDEN, name: 'Garden' }])
+    const err = await refusal(r.registry.ensureStream(PORCH, 'medium'))
+    expect(err).toMatchObject({ kind: 'not-found', retryable: false })
+    expect(r.go2rtc.start).not.toHaveBeenCalled()
+    expect(r.go2rtc.addStream).not.toHaveBeenCalled()
+    expectNoUrl(r, err)
+  })
+
+  it('refuses the package channel', async () => {
+    const r = rtspHarness()
+    const err = await refusal(r.registry.ensureStream(GARDEN, 'package'))
+    expect(err.kind).toBe('bad-request')
+    expect(r.go2rtc.addStream).not.toHaveBeenCalled()
+  })
+
+  it('refuses a stream with no URL stored as not-configured', async () => {
+    const r = rtspHarness()
+    const err = await refusal(r.registry.ensureStream(PORCH, 'high'))
+    expect(err).toMatchObject({ kind: 'not-configured', retryable: false })
+    r.setRtspUrls(undefined)
+    expect((await refusal(r.registry.ensureStream(GARDEN, 'high'))).kind).toBe('not-configured')
+    expect(r.go2rtc.addStream).not.toHaveBeenCalled()
+  })
+
+  it('refuses a stored URL that fails RTSP-2`s rules, without quoting it (RTSP-5, CON-2)', async () => {
+    for (const bad of [
+      'exec:/bin/sh -c "curl evil"',
+      'http://admin:pass@cam-a.invalid/x',
+      'rtspx://admin:pass@cam-a.invalid/x',
+      'rtsp://admin:pass@cam-a.invalid/x\nstreams:',
+    ]) {
+      const r = rtspHarness({ [GARDEN]: { high: bad } })
+      const err = await refusal(r.registry.ensureStream(GARDEN, 'high'))
+      expect(err.kind).toBe('bad-request')
+      expect(err.message).not.toContain(bad)
+      expect(r.go2rtc.addStream).not.toHaveBeenCalled()
+      expect(r.registry.rtspSource(`${GARDEN}_high`)).toBeNull()
+      expect(err.message).not.toContain('pass')
+      expect(r.lines.join('\n')).not.toContain('pass')
+    }
+  })
+
+  it('reports gateway-down when go2rtc will not take the stream, and forgets the source', async () => {
+    const r = rtspHarness()
+    r.go2rtc.failAdd(new Error('go2rtc: could not register stream'))
+    const err = await refusal(r.registry.ensureStream(GARDEN, 'high'))
+    expect(err).toMatchObject({ kind: 'gateway-down', retryable: true })
+    expect(r.registry.rtspSource(`${GARDEN}_high`)).toBeNull()
+    expectNoUrl(r, err)
+  })
+
+  it('unregisterAll forgets every RTSP source', async () => {
+    const r = rtspHarness()
+    await r.registry.ensureStream(GARDEN, 'high')
+    await r.registry.unregisterAll()
+    expect(r.go2rtc.registered.size).toBe(0)
+    expect(r.registry.rtspSource(`${GARDEN}_high`)).toBeNull()
+  })
+
+  it('keeps the RTSP sources through an inventory invalidate', async () => {
+    const r = rtspHarness()
+    await r.registry.ensureStream(GARDEN, 'high')
+    r.registry.invalidate()
+    expect(r.registry.rtspSource(`${GARDEN}_high`)).not.toBeNull()
+  })
+})
+
+describe('rtspStreamChanged (RTSP-3)', () => {
+  const GARDEN = 'rtsp-22222222-2222-4222-8222-222222222222'
+  const PORCH = 'rtsp-11111111-1111-4111-8111-111111111111'
+  const OLD = 'rtsp://admin:old-pass@cam-a.invalid/high'
+  const NEW = 'rtsp://admin:new-pass@cam-a.invalid/high'
+
+  function rtspHarness() {
+    const r = setup()
+    r.setProtectMode(false)
+    r.setRtspStreams([
+      { id: GARDEN, name: 'Garden' },
+      { id: PORCH, name: 'Porch' },
+    ])
+    r.setRtspUrls({ [GARDEN]: { high: OLD, low: OLD }, [PORCH]: { high: OLD } })
+    return r
+  }
+
+  it('removes every registration of that stream, and only that stream', async () => {
+    const r = rtspHarness()
+    await r.registry.ensureStream(GARDEN, 'high')
+    await r.registry.ensureStream(GARDEN, 'low')
+    await r.registry.ensureStream(PORCH, 'high')
+    await r.registry.rtspStreamChanged(GARDEN)
+    expect([...r.go2rtc.registered.keys()]).toEqual([`${PORCH}_high`])
+    expect(r.registry.rtspSource(`${GARDEN}_high`)).toBeNull()
+    expect(r.registry.rtspSource(`${GARDEN}_low`)).toBeNull()
+    expect(r.registry.rtspSource(`${PORCH}_high`)).not.toBeNull()
+    // The next ask reads the new URL.
+    r.setRtspUrls({ [GARDEN]: { high: NEW }, [PORCH]: { high: OLD } })
+    await r.registry.ensureStream(GARDEN, 'high')
+    expect(r.go2rtc.registered.get(`${GARDEN}_high`)).toBe(NEW)
+    expect(r.lines.join('\n')).not.toContain('pass')
+  })
+
+  it('keeps an ensure already in flight from registering the old URL afterwards', async () => {
+    const r = rtspHarness()
+    let release = (): void => undefined
+    r.go2rtc.start.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          release = () => {
+            resolve({ port: PORT, epoch: EPOCH })
+          }
+        }),
+    )
+    const pending = r.registry.ensureStream(GARDEN, 'high')
+    await Promise.resolve()
+    await r.registry.rtspStreamChanged(GARDEN)
+    release()
+    const err = await refusal(pending)
+    // Retryable: the player asks again and picks up the new URL.
+    expect(err).toMatchObject({ kind: 'bad-request', retryable: true })
+    expect(r.go2rtc.addStream).not.toHaveBeenCalled()
+    expect(r.go2rtc.registered.size).toBe(0)
+    expect(r.registry.rtspSource(`${GARDEN}_high`)).toBeNull()
+    // And a new ask is not handed the stale in-flight promise.
+    r.setRtspUrls({ [GARDEN]: { high: NEW } })
+    await r.registry.ensureStream(GARDEN, 'high')
+    expect(r.go2rtc.registered.get(`${GARDEN}_high`)).toBe(NEW)
+  })
+
+  it('removes a registration that landed while it ran, rather than leave the old URL playing', async () => {
+    const r = rtspHarness()
+    let release = (): void => undefined
+    r.go2rtc.addStream.mockImplementationOnce((name: string, source: string) => {
+      r.go2rtc.registered.set(name, source)
+      return new Promise<void>((resolve) => {
+        release = resolve
+      })
+    })
+    const pending = r.registry.ensureStream(GARDEN, 'high')
+    await vi.waitFor(() => {
+      expect(r.go2rtc.addStream).toHaveBeenCalledTimes(1)
+    })
+    // The change runs while go2rtc is still answering the PUT; the PUT then lands.
+    await r.registry.rtspStreamChanged(GARDEN)
+    r.go2rtc.registered.set(`${GARDEN}_high`, 'rtsp://admin:old-pass@cam-a.invalid/high')
+    release()
+    expect((await refusal(pending)).kind).toBe('bad-request')
+    expect(r.go2rtc.registered.size).toBe(0)
+    expect(r.registry.rtspSource(`${GARDEN}_high`)).toBeNull()
+  })
+
+  it('keeps the record of a newer ensure that registered while the removals were awaited', async () => {
+    const r = rtspHarness()
+    await r.registry.ensureStream(GARDEN, 'high')
+    // The name leaves the desired set at once, but go2rtc takes its time answering the DELETE.
+    let releaseRemoval = (): void => undefined
+    r.go2rtc.removeStream.mockImplementationOnce((name: string) => {
+      r.go2rtc.registered.delete(name)
+      return new Promise<boolean>((resolve) => {
+        releaseRemoval = () => {
+          resolve(true)
+        }
+      })
+    })
+    const changing = r.registry.rtspStreamChanged(GARDEN)
+    r.setRtspUrls({ [GARDEN]: { high: NEW } })
+    await r.registry.ensureStream(GARDEN, 'high')
+    releaseRemoval()
+    await changing
+    // The manager holds the new source, and the registry still vouches for exactly that one, so a
+    // later go2rtc (re)start accepts it.
+    expect(r.go2rtc.registered.get(`${GARDEN}_high`)).toBe(NEW)
+    expect(r.registry.rtspSource(`${GARDEN}_high`)).toBe(NEW)
+  })
+
+  it('a stale ensure leaves alone an identical registration a newer ensure made', async () => {
+    const r = rtspHarness()
+    let release = (): void => undefined
+    r.go2rtc.addStream.mockImplementationOnce((name: string, source: string) => {
+      r.go2rtc.registered.set(name, source)
+      return new Promise<void>((resolve) => {
+        release = resolve
+      })
+    })
+    const stale = r.registry.ensureStream(GARDEN, 'high')
+    await vi.waitFor(() => {
+      expect(r.go2rtc.addStream).toHaveBeenCalledTimes(1)
+    })
+    // Only the low URL changed: the high source the newer ensure registers is the same as before.
+    r.setRtspUrls({ [GARDEN]: { high: OLD, low: NEW }, [PORCH]: { high: OLD } })
+    await r.registry.rtspStreamChanged(GARDEN)
+    await r.registry.ensureStream(GARDEN, 'high')
+    release()
+    expect((await refusal(stale)).retryable).toBe(true)
+    expect(r.go2rtc.registered.get(`${GARDEN}_high`)).toBe(OLD)
+    expect(r.registry.rtspSource(`${GARDEN}_high`)).toBe(OLD)
+    // Only the change's own removal: the stale ensure removed nothing.
+    expect(r.go2rtc.removeStream).toHaveBeenCalledTimes(1)
+  })
+
+  it('never rejects, even when go2rtc will not drop a stream', async () => {
+    const r = rtspHarness()
+    await r.registry.ensureStream(GARDEN, 'high')
+    r.go2rtc.removeStream.mockRejectedValueOnce(new Error('go2rtc is restarting'))
+    await expect(r.registry.rtspStreamChanged(GARDEN)).resolves.toBeUndefined()
+    expect(r.lines.some((line) => line.includes('could not be removed'))).toBe(true)
+  })
+
+  it('is a no-op for a stream with no registration', async () => {
+    const r = rtspHarness()
+    await expect(r.registry.rtspStreamChanged(PORCH)).resolves.toBeUndefined()
+    expect(r.go2rtc.removeStream).not.toHaveBeenCalled()
   })
 })

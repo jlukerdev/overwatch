@@ -100,6 +100,7 @@ import {
   editorSnapshotPlan,
   inUseRefs,
   paletteSnapshots,
+  snapshotCameras,
 } from './editorThumbnails'
 import {
   addCellCamera,
@@ -370,20 +371,30 @@ function DraftEditor({
   // A camera a Cameras-tab load in flight covers is left to it. The editor asks for the snapshot
   // only, never the feed state. Opening the editor tries each failed / unavailable head camera once
   // more (`editorRetryPlan`, computed once per mount, so a draft change never retries).
+  // RTSP streams mode has no snapshots (MODE-4, RTSP-3): the rules get no camera, so nothing is
+  // asked and every cell stays text-only.
+  const appMode = useAppStore((s) => s.settings?.mode)
+  const snapshotSources = useMemo(() => snapshotCameras(cameras, appMode), [cameras, appMode])
   const thumbnailEntries = useThumbnails((s) => s.thumbnails.entries)
   const thumbnailLoad = useThumbnails((s) => s.thumbnails.load)
   const packageSnapshots = useThumbnails((s) => s.packages)
   const [retryPlan] = useState(() => {
     const { thumbnails, packages } = useThumbnails.getState()
-    return editorRetryPlan(saved.cells, cameras, thumbnails.entries, packages)
+    return editorRetryPlan(saved.cells, snapshotSources, thumbnails.entries, packages)
   })
   useEffect(() => {
     forgetFailed(retryPlan)
   }, [retryPlan])
   const snapshotPlan = useMemo(
     () =>
-      editorSnapshotPlan(draft.cells, cameras, thumbnailEntries, packageSnapshots, thumbnailLoad),
-    [draft.cells, cameras, thumbnailEntries, packageSnapshots, thumbnailLoad],
+      editorSnapshotPlan(
+        draft.cells,
+        snapshotSources,
+        thumbnailEntries,
+        packageSnapshots,
+        thumbnailLoad,
+      ),
+    [draft.cells, snapshotSources, thumbnailEntries, packageSnapshots, thumbnailLoad],
   )
   useEffect(() => {
     requestCameras(snapshotPlan.cameraIds, { streams: false })
@@ -393,19 +404,21 @@ function DraftEditor({
   const inUse = useMemo(() => inUseRefs(draft.cells), [draft.cells])
   const cellSnapshots = useMemo(
     () =>
-      draft.cells.map((cell) => cellSnapshot(cell, cameras, thumbnailEntries, packageSnapshots)),
-    [draft.cells, cameras, thumbnailEntries, packageSnapshots],
+      draft.cells.map((cell) =>
+        cellSnapshot(cell, snapshotSources, thumbnailEntries, packageSnapshots),
+      ),
+    [draft.cells, snapshotSources, thumbnailEntries, packageSnapshots],
   )
   // The palette's thumbnails: whatever the cache holds already, nothing fetched for them.
   const paletteImages = useMemo(
     () =>
       paletteSnapshots(
         choices.map((choice) => choice.ref),
-        cameras,
+        snapshotSources,
         thumbnailEntries,
         packageSnapshots,
       ),
-    [choices, cameras, thumbnailEntries, packageSnapshots],
+    [choices, snapshotSources, thumbnailEntries, packageSnapshots],
   )
 
   // Tell the app shell, so leaving Live or closing the window asks first (unsavedGuard).

@@ -31,8 +31,6 @@ export const RTSP_MODE_MESSAGES = {
   door: `${IN_RTSP_MODE}, so nothing was sent to the door. ${SWITCH_BACK}`,
   /** The Doors screen's reason nothing is read. */
   doors: `${IN_RTSP_MODE}, so the doors are not read. ${SWITCH_BACK}`,
-  /** A Protect stream asked for while in RTSP mode (RTSP playback is its own path, RTSP-3). */
-  stream: `${IN_RTSP_MODE}, so UniFi Protect cameras are not streamed. ${SWITCH_BACK}`,
 } as const
 
 /**

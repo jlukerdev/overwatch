@@ -580,14 +580,15 @@ export function createIpcRouter(deps: IpcRouterDeps): ReadonlyMap<string, IpcHan
       // Only `mode` is written. The console block, the pins, the door links, both modes' Views and
       // every secret stay exactly as stored (MODE-4): a switch is never a reset.
       await saveFields(ready, { mode: input.mode })
-      // Decided from the committed mode. Both halves start at once: `modeChanged` stops the door
-      // monitor and the feeds before it queues behind any connect in progress, and the go2rtc
-      // streams go now rather than after that connect (MODE-4). Neither rejects.
-      if (isRtspMode(ready.services.current)) {
-        // Absent before the sidecar is built, when there is nothing registered anyway.
-        await Promise.all([ready.manager.modeChanged(), deps.getRegistry()?.unregisterAll()])
-      } else {
-        await ready.manager.modeChanged()
+      // Both halves start at once: `modeChanged` stops the door monitor and the feeds before it
+      // queues behind any connect in progress (entering RTSP) and pushes the new mode's inventory,
+      // and the go2rtc streams go now rather than after that connect (MODE-4). Neither rejects.
+      // Every stream is unregistered in **both** directions: the other mode's sources would fail
+      // the manager's check for this one (R4 / RTSP-5), and a go2rtc restart replays the whole
+      // desired set and asserts every entry. The registry is absent before the sidecar is built,
+      // when there is nothing registered anyway.
+      await Promise.all([ready.manager.modeChanged(), deps.getRegistry()?.unregisterAll()])
+      if (!isRtspMode(ready.services.current)) {
         // MODE-4: back in Protect mode, a launch (CON-4): connects only when the launch rule
         // allows. Not awaited — the answer must not wait out a connect — and it never rejects; a
         // failure shows in the status the usual way.
@@ -603,10 +604,53 @@ export function createIpcRouter(deps: IpcRouterDeps): ReadonlyMap<string, IpcHan
    * other's name check reading a list the first has not saved yet).
    */
   let rtspQueue: Promise<unknown> = Promise.resolve()
+  /** The work a task left for after its reply ({@link afterRtspReply}), picked up by the queue. */
+  let rtspAfterReply: Promise<void> | null = null
   const serializeRtsp = <T>(task: () => Promise<T>): Promise<T> => {
     const run = rtspQueue.then(task, task)
-    rtspQueue = run.catch(() => undefined)
+    // The next save or delete also waits for this one's after-reply work, so it can never
+    // overtake a deferred drop of the same stream.
+    rtspQueue = run
+      .catch(() => undefined)
+      .then(() => {
+        const deferred = rtspAfterReply
+        rtspAfterReply = null
+        return deferred
+      })
     return run
+  }
+
+  /**
+   * RTSP-3: runs `work` just **after** the current task's reply has gone out (`setImmediate`: the
+   * reply is sent from the promise chain, which settles before any macrotask). The renderer works
+   * out a stream's served quality from `secretsStored.rtspUrls`, which only changes when the reply
+   * lands, so a go2rtc drop or a `cameras` push before it would make a cell re-ask for the old
+   * quality and get a fallback handle. Never rejects. One per task, at most.
+   */
+  const afterRtspReply = (work: () => Promise<void> | void): void => {
+    rtspAfterReply = new Promise<void>((resolve) => {
+      setImmediate(() => {
+        void (async () => {
+          try {
+            await work()
+          } catch {
+            // Fixed text: nothing from the error, which could in theory carry a URL (CON-2).
+            console.error('[rtsp] The work after a stream save or delete failed.')
+          } finally {
+            resolve()
+          }
+        })()
+      })
+    })
+  }
+
+  /**
+   * RTSP-3, after a stream save has been written and answered: the stream's go2rtc registrations
+   * dropped when the URLs it plays changed, then the inventory push. Neither rejects.
+   */
+  const rtspStreamSaved = async (ready: Ready, id: string, urlsChanged: boolean): Promise<void> => {
+    if (urlsChanged) await deps.getRegistry()?.rtspStreamChanged(id)
+    ready.manager.rtspStreamsChanged()
   }
 
   // RTSP-1/2. Config and secrets only: no Protect or Access call, so no mode gate (a stream can be
@@ -616,8 +660,13 @@ export function createIpcRouter(deps: IpcRouterDeps): ReadonlyMap<string, IpcHan
   // CON-2: no URL is ever in a message, a log line or an error from here; every refusal is a fixed
   // sentence (src/main/streams/rtspStreams.ts), and the reply carries booleans only.
   //
-  // F1.0.2-6 will push the RTSP inventory to the renderer and drop the stream's go2rtc
-  // registrations when its URLs change or it is deleted; nothing is registered from RTSP mode yet.
+  // RTSP-3: after a successful write, a save or delete pushes the new RTSP inventory as `cameras`
+  // (in RTSP mode only: `rtspStreamsChanged`), and a save that changed the URLs, or a delete, drops
+  // every go2rtc registration of that stream (`rtspStreamChanged`), so the next `ensureStream`
+  // reads the new URL. A rename alone keeps the registrations: the URL they play is unchanged.
+  // A save does both just after its reply (`afterRtspReply`, which says why); a delete drops before
+  // its reply (the stream is already out of the list, so a re-ask is `not-found`, never a fallback
+  // handle, and its URLs must stay in memory until go2rtc no longer plays them) and pushes after.
   on(IPC.saveRtspStream, (input, ready) =>
     serializeRtsp(async () => {
       const { services } = ready
@@ -670,9 +719,16 @@ export function createIpcRouter(deps: IpcRouterDeps): ReadonlyMap<string, IpcHan
       } catch (err) {
         // The config write failed or was refused: put the URLs back as they were, so a new stream
         // leaves no orphan entry in secrets.bin and an edit is not half applied.
-        if (urlsChanged) await restoreRtspUrls(secrets, credentials, id, previous)
+        if (urlsChanged) {
+          await restoreRtspUrls(secrets, credentials, id, previous)
+          // RTSP-3: a cell may have registered the abandoned URL while it was in memory; it must
+          // not keep playing. Never rejects.
+          await deps.getRegistry()?.rtspStreamChanged(id)
+        }
         throw err
       }
+      // Just after the reply, which carries the new `secretsStored.rtspUrls` (RTSP-3).
+      afterRtspReply(() => rtspStreamSaved(ready, id, urlsChanged))
       return state(ready)
     }),
   )
@@ -691,6 +747,12 @@ export function createIpcRouter(deps: IpcRouterDeps): ReadonlyMap<string, IpcHan
           throw new RtspStreamError('not-found', RTSP_STREAM_MESSAGES.notFound)
         }
         return latest.filter((stream) => stream.id !== input.id)
+      })
+      // Gone from the list: out of go2rtc before its URLs leave secrets.bin and memory (the log
+      // redactor covers a URL only while it is in memory), and off the screen just after the reply.
+      await deps.getRegistry()?.rtspStreamChanged(input.id)
+      afterRtspReply(() => {
+        ready.manager.rtspStreamsChanged()
       })
       // Nothing stored for it: no secrets.bin read or write at all. A clear on a file the keystore
       // cannot decrypt removes the file (secrets.ts), so it is only risked when there is something

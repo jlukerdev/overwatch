@@ -5,7 +5,11 @@
 // CON-2: a stream URL is a secret. Every message here is a fixed sentence: none quotes a URL, a
 // stream id or any part of either, so a refusal is safe to show and to log as is.
 //
+// RTSP-3/5 (playback): the inventory main builds from the streams in RTSP mode, and the transform
+// from a stored URL to the go2rtc source the registry registers.
+//
 // No Electron and no I/O: a plain module the tests import as is.
+import type { Camera } from '@shared/models'
 import { RTSP_QUALITIES, type RtspStreamUrls } from '@shared/rtsp'
 
 /** The refusals, one sentence each, worded for the Streams screen. */
@@ -20,6 +24,20 @@ export const RTSP_STREAM_MESSAGES = {
   keystore:
     'Secure storage (Keychain or DPAPI) is not available, so the stream address could not be ' +
     'saved. Addresses are never stored as plain text.',
+  /** A stream asked to play that is not in the list (deleted, or never was). RTSP-3. */
+  playNotFound: 'This stream is not in OverWatch’s stream list any more, so it cannot play.',
+  /** The package channel asked of an RTSP stream: only a Protect doorbell has one (CAM-4). */
+  playPackage: 'An RTSP stream has no package camera, so there is no package channel to play.',
+  /** No quality of the stream has an address stored (RTSP-2, RTSP-3). */
+  playNoUrl:
+    'No address is saved for this stream, so there is nothing to play. Add one on the Streams ' +
+    'screen.',
+  /** The stored address fails RTSP-2's rules (a hand-edited or damaged secrets file). RTSP-5. */
+  playInvalidUrl:
+    'The saved address for this stream is not a valid RTSP address, so OverWatch will not open ' +
+    'it. Replace it on the Streams screen.',
+  /** `rtspStreamChanged` ran while this stream was being opened (RTSP-3). */
+  playChanged: 'This stream was changed while it was being opened, so it was not opened.',
 } as const
 
 /**
@@ -69,4 +87,61 @@ export function sameRtspUrls(
 /** Whether a set holds any URL at all. */
 export function hasRtspUrl(urls: RtspStreamUrls): boolean {
   return RTSP_QUALITIES.some((quality) => (urls[quality] ?? '') !== '')
+}
+
+// --- playback (RTSP-3, RTSP-5) ------------------------------------------------------------------
+
+/** The `model` every RTSP stream shows in the inventory (RTSP-3). */
+export const RTSP_STREAM_MODEL = 'RTSP stream'
+
+/**
+ * RTSP-3: main's camera inventory in RTSP mode, built from `config.rtsp.streams`. Each stream is a
+ * {@link Camera} with its id and name, model {@link RTSP_STREAM_MODEL}, always `CONNECTED` (RTSP has
+ * no presence feed: a stream that cannot connect shows "Stream could not start" instead), and every
+ * Protect-only flag false or empty. In name order ignoring case, like the Streams screen. A fresh
+ * array of fresh objects; `streams` is not touched.
+ */
+export function rtspInventory(
+  streams: readonly { readonly id: string; readonly name: string }[],
+): Camera[] {
+  return [...streams]
+    .sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }))
+    .map((stream) => ({
+      id: stream.id,
+      name: stream.name,
+      model: RTSP_STREAM_MODEL,
+      state: 'CONNECTED',
+      hasMic: false,
+      micEnabled: false,
+      hasSpeaker: false,
+      smartDetectTypes: [],
+      supportsFullHdSnapshot: false,
+      hasPackageCamera: false,
+    }))
+}
+
+/**
+ * RTSP-3/5: a stored stream URL → its go2rtc source. `rtsps://` becomes go2rtc's `rtspx://` (TLS
+ * without certificate verification: go2rtc cannot pin, SPEC R12), matched ignoring case; `rtsp://`
+ * keeps its scheme. Anything else is returned unchanged: the caller has already validated the URL
+ * (`validateRtspUrl`), so this is not a second validator.
+ *
+ * One query parameter is dropped, **`enableSrtp`** (name matched ignoring case): a UniFi console's
+ * own RTSPS address ends in `?enableSrtp`, and with it the console expects SRTP and go2rtc's
+ * RTSP-over-TLS session fails (go2rtc issue #81, SPEC §5.3) — the same rule as Protect's
+ * `toGo2rtcSource`. Everything else (userinfo, host, path, other parameters, a fragment) is kept
+ * verbatim, because a camera expects its own URL as entered.
+ */
+export function toRtspGo2rtcSource(url: string): string {
+  const source = /^rtsps:\/\//i.test(url) ? `rtspx://${url.slice('rtsps://'.length)}` : url
+  const hash = source.indexOf('#')
+  const beforeHash = hash === -1 ? source : source.slice(0, hash)
+  const fragment = hash === -1 ? '' : source.slice(hash)
+  const q = beforeHash.indexOf('?')
+  if (q === -1) return source
+  const kept = beforeHash
+    .slice(q + 1)
+    .split('&')
+    .filter((p) => p !== '' && p.split('=')[0]?.toLowerCase() !== 'enablesrtp')
+  return `${beforeHash.slice(0, q)}${kept.length > 0 ? `?${kept.join('&')}` : ''}${fragment}`
 }

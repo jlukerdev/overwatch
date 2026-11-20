@@ -16,6 +16,8 @@
 //  - (P3.7, QUAL-5) the fill picker's session pick applies only to the slot filled now in the View
 //    on screen, so every way out of fill and filling another slot drop it; it overrides the chain
 //    but never the package channel; Save is offered only when it changes the View.
+//  - (RTSP-3) in RTSP mode the filled cell plays the quality served for what it asks (the closest
+//    one with a URL), while Save is still decided on the quality asked for; Protect is unchanged.
 import { PACKAGE_CHANNEL, QUALITIES } from '@shared/quality'
 import { describe, expect, it } from 'vitest'
 import {
@@ -24,6 +26,7 @@ import {
   effectiveFillQuality,
   FILL_FIT,
   fillClickStep,
+  filledQuality,
   filledSlotKey,
   isFillExitKey,
   pickAfterFillSave,
@@ -47,6 +50,7 @@ const SLOTS: GridSlot[] = [
     name: 'Front',
     quality: 'low',
     fillQuality: 'high',
+    availability: null,
     fit: 'cover',
     qualityChoice: { override: null, inherited: 'low' },
     position: { index: 0, count: 1 },
@@ -323,6 +327,26 @@ describe('fill quality session pick (QUAL-5)', () => {
     expect(canSaveFillQuality(medium, high)).toBe(true)
     expect(canSaveFillQuality(high, high)).toBe(false)
     expect(canSaveFillQuality(PACKAGE_CHANNEL, PACKAGE_CHANNEL)).toBe(false)
+  })
+
+  it('plays the served quality in RTSP mode, deciding Save on the quality asked for (RTSP-3)', () => {
+    const noHigh = { high: false, medium: true, low: true }
+    // The View fills at high, which has no URL: medium plays, and there is nothing to save.
+    expect(filledQuality(high, null, noHigh)).toEqual({ shown: medium, canSave: false })
+    // A pick of a quality with a URL plays as is and can be saved.
+    expect(filledQuality(high, low, noHigh)).toEqual({ shown: low, canSave: true })
+    // No URL at all: the asked quality is kept (main refuses it, the cell shows its error).
+    const none = { high: false, medium: false, low: false }
+    expect(filledQuality(high, null, none)).toEqual({ shown: high, canSave: false })
+    expect(filledQuality(PACKAGE_CHANNEL, low, noHigh)).toEqual({
+      shown: PACKAGE_CHANNEL,
+      canSave: false,
+    })
+  })
+
+  it('leaves the filled quality alone in Protect mode', () => {
+    expect(filledQuality(high, null, null)).toEqual({ shown: high, canSave: false })
+    expect(filledQuality(high, low, null)).toEqual({ shown: low, canSave: true })
   })
 
   it('drops the pick a Save saved once it lands', () => {

@@ -2,13 +2,22 @@
 // `vp:rtsp/streams/save` and `vp:rtsp/streams/delete` payload schemas (src/shared/ipc.ts), the
 // name rule shared by the Add/Edit dialog and main (src/shared/rtsp.ts), and how a save's
 // per-quality changes combine with the stored URLs (src/main/streams/rtspStreams.ts).
+// RTSP-3 (F1.0.2-6): the RTSP inventory and the stored-URL → go2rtc source transform.
 //
 // CON-2: a refusal never quotes the URL, which usually carries a camera password.
 import { describe, expect, it } from 'vitest'
 import { DeleteRtspStreamInputSchema, SaveRtspStreamInputSchema } from '../../src/shared/ipc'
 import { MAX_RTSP_STREAM_NAME_LENGTH } from '../../src/shared/models'
 import { MAX_RTSP_URL_LENGTH, validateRtspStreamName } from '../../src/shared/rtsp'
-import { hasRtspUrl, mergeRtspUrls, sameRtspUrls } from '../../src/main/streams/rtspStreams'
+import { CameraSchema } from '../../src/shared/models'
+import {
+  RTSP_STREAM_MESSAGES,
+  hasRtspUrl,
+  mergeRtspUrls,
+  rtspInventory,
+  sameRtspUrls,
+  toRtspGo2rtcSource,
+} from '../../src/main/streams/rtspStreams'
 
 const ID = 'rtsp-0f8e1c2a-3b4d-4e5f-8a9b-0c1d2e3f4a5b'
 const OTHER_ID = 'rtsp-1a2b3c4d-5e6f-4a7b-8c9d-0e1f2a3b4c5d'
@@ -166,5 +175,83 @@ describe('mergeRtspUrls (RTSP-2)', () => {
     expect(sameRtspUrls(stored, { ...stored })).toBe(true)
     expect(sameRtspUrls(stored, { high: stored.high })).toBe(false)
     expect(sameRtspUrls(undefined, {})).toBe(true)
+  })
+})
+
+describe('rtspInventory (RTSP-3)', () => {
+  it('makes each stream a connected camera with no Protect features, in name order ignoring case', () => {
+    const cameras = rtspInventory([
+      { id: OTHER_ID, name: 'porch' },
+      { id: ID, name: 'Garden' },
+    ])
+    expect(cameras.map((c) => [c.id, c.name])).toEqual([
+      [ID, 'Garden'],
+      [OTHER_ID, 'porch'],
+    ])
+    for (const camera of cameras) {
+      expect(CameraSchema.parse(camera)).toEqual(camera)
+      expect(camera).toMatchObject({
+        model: 'RTSP stream',
+        state: 'CONNECTED',
+        hasMic: false,
+        micEnabled: false,
+        hasSpeaker: false,
+        smartDetectTypes: [],
+        supportsFullHdSnapshot: false,
+        hasPackageCamera: false,
+      })
+    }
+  })
+
+  it('does not reorder the list it was given', () => {
+    const streams = [
+      { id: OTHER_ID, name: 'b' },
+      { id: ID, name: 'A' },
+    ]
+    rtspInventory(streams)
+    expect(streams.map((s) => s.name)).toEqual(['b', 'A'])
+    expect(rtspInventory([])).toEqual([])
+  })
+})
+
+describe('toRtspGo2rtcSource (RTSP-3, RTSP-5)', () => {
+  it('turns rtsps:// into rtspx://, matching the scheme ignoring case, and keeps the rest verbatim', () => {
+    expect(toRtspGo2rtcSource('rtsps://u:p@cam.invalid:7441/a/b?x=1&y')).toBe(
+      'rtspx://u:p@cam.invalid:7441/a/b?x=1&y',
+    )
+    expect(toRtspGo2rtcSource('RTSPS://Cam.Invalid/Live')).toBe('rtspx://Cam.Invalid/Live')
+  })
+
+  it('passes rtsp:// as is', () => {
+    expect(toRtspGo2rtcSource(URL_A)).toBe(URL_A)
+    expect(toRtspGo2rtcSource('RTSP://cam.invalid/x')).toBe('RTSP://cam.invalid/x')
+  })
+
+  it('drops enableSrtp (a UniFi console address) and keeps every other parameter', () => {
+    expect(toRtspGo2rtcSource('rtsps://console.invalid:7441/AbCdEf?enableSrtp')).toBe(
+      'rtspx://console.invalid:7441/AbCdEf',
+    )
+    expect(toRtspGo2rtcSource('rtsps://cam.invalid/a?x=1&EnableSRTP=true&y=2')).toBe(
+      'rtspx://cam.invalid/a?x=1&y=2',
+    )
+    expect(toRtspGo2rtcSource('rtsp://cam.invalid/a?enableSrtp#frag')).toBe(
+      'rtsp://cam.invalid/a#frag',
+    )
+    expect(toRtspGo2rtcSource('rtsp://cam.invalid/a?enableSrtpX=1')).toBe(
+      'rtsp://cam.invalid/a?enableSrtpX=1',
+    )
+  })
+
+  it('only rewrites the scheme at the start', () => {
+    expect(toRtspGo2rtcSource('rtsp://cam.invalid/rtsps://x')).toBe('rtsp://cam.invalid/rtsps://x')
+  })
+})
+
+describe('the playback refusals (RTSP-3, CON-2)', () => {
+  it('are fixed sentences that name no URL', () => {
+    for (const message of Object.values(RTSP_STREAM_MESSAGES)) {
+      expect(message).not.toMatch(/rtsp[sx]?:\/\/\w/)
+      expect(message).not.toContain('rtsp-')
+    }
   })
 })

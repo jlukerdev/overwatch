@@ -65,6 +65,13 @@
 //    audio rule's identity (slot + camera id) exact, since a package ref shares its camera's id: a
 //    switch between `<id>` and `<id>:package` in one cell still mutes, because the package side is
 //    never an audio source.
+//  - **In RTSP mode a slot plays what has a URL** (RTSP-3). `rtspUrls` (the store's booleans, `null`
+//    in Protect mode) gives each camera slot its stream's `availability`, and the grid quality and
+//    the pre-warm's quality are what main will *serve* (`servedQuality`, features/quality/
+//    qualityChoice.ts): the player asks for exactly the quality the handle will name, and the
+//    picker's colour shows it. `fillQuality` and the picker's data stay on the quality *asked for*,
+//    because fill's Save compares the pick with the View's own (`canSaveFillQuality`) and an
+//    override is saved as picked; fill maps its own played quality (`filledQuality`, fillMode.ts).
 import { packageRef, parseCameraRef, type CameraRef } from '@shared/cameraRef'
 import type { Camera } from '@shared/ipc'
 import type { Fit, View } from '@shared/models'
@@ -77,8 +84,14 @@ import {
   type StreamQuality,
 } from '@shared/quality'
 import type { CellPlacement } from '@shared/viewLayout'
+import type { RtspUrlsStored } from '@shared/rtsp'
 import { cameraDisplayName } from '../../state/camerasStore'
 import { cameraCanBeHeard } from '../audio/cameraAudio'
+import {
+  servedQuality,
+  streamAvailability,
+  type QualityAvailability,
+} from '../quality/qualityChoice'
 import type { SchedulerEntry } from '../cells/schedulerSet'
 
 // -------------------------------------------------------------------------------------------------
@@ -104,13 +117,18 @@ export type GridSlot =
        */
       readonly ref: string
       readonly name: string
-      /** The **effective** stream: QUAL-3's chain, or the package channel (CAM-4). Never a literal. */
+      /**
+       * The **effective** stream: QUAL-3's chain, or the package channel (CAM-4). Never a literal.
+       * In RTSP mode, the quality served for it (RTSP-3, header).
+       */
       readonly quality: StreamQuality
       /**
        * The stream when this cell is filled (FILL-2): QUAL-5's chain, or the package channel again
-       * for a package ref. Never a literal.
+       * for a package ref. Never a literal. The quality *asked for*, also in RTSP mode (header).
        */
       readonly fillQuality: StreamQuality
+      /** RTSP-3: which qualities the stream has a URL for; `null` in Protect mode (header). */
+      readonly availability: QualityAvailability
       /** VIEW-5: how the camera sits in its cell when its shape is not the View's `aspect`. */
       readonly fit: Fit
       /** QUAL-4's picker for this cell, or `null` for a package ref, which has none (header). */
@@ -147,7 +165,10 @@ export interface SlotPosition {
 /** A camera to open hidden in a slot ahead of its rotation step (P4.4, header). */
 export interface SlotPrewarm {
   readonly cameraId: string
-  /** What it will play once shown in the grid: the cell's grid quality, or the package channel. */
+  /**
+   * What it will play once shown in the grid: the cell's grid quality (in RTSP mode, the one served
+   * for it), or the package channel.
+   */
   readonly quality: StreamQuality
 }
 
@@ -231,8 +252,14 @@ export function buildViewSlots(input: {
    * or a ref that cannot play, pre-warms nothing (header).
    */
   readonly prewarm?: ReadonlyMap<string, string>
+  /**
+   * RTSP-3: `secretsStored.rtspUrls` in RTSP mode, `null` or absent in Protect mode. Maps the grid
+   * and pre-warm qualities to the ones served (header).
+   */
+  readonly rtspUrls?: RtspUrlsStored | null
 }): GridSlot[] {
   const { view, cameras, streams, shown, prewarm } = input
+  const rtspUrls = input.rtspUrls ?? null
   const byId = new Map(cameras.map((camera) => [camera.id, camera]))
   const keys = cellSlotKeys(view)
   return view.cells.map((cell, i): GridSlot => {
@@ -255,7 +282,12 @@ export function buildViewSlots(input: {
     const ref = parseCameraRef(refText)
     const camera = byId.get(ref.cameraId)
     const gridQuality = (r: CameraRef): StreamQuality =>
-      r.packageChannel ? PACKAGE_CHANNEL : resolveGridQuality({ cell, view, streams })
+      r.packageChannel
+        ? PACKAGE_CHANNEL
+        : servedQuality(
+            resolveGridQuality({ cell, view, streams }),
+            streamAvailability(rtspUrls, r.cameraId),
+          )
     if (camera === undefined) {
       return {
         kind: 'missing',
@@ -280,6 +312,7 @@ export function buildViewSlots(input: {
       name: slotName(camera, ref),
       quality: gridQuality(ref),
       fillQuality: ref.packageChannel ? PACKAGE_CHANNEL : resolveFillQuality({ view, streams }),
+      availability: streamAvailability(rtspUrls, ref.cameraId),
       fit: view.fit,
       qualityChoice: ref.packageChannel
         ? null

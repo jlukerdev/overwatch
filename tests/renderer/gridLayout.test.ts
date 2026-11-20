@@ -23,6 +23,9 @@
 //    ref to a camera without `hasPackageCamera`.
 //  - (P5.1, AUD-1) a camera slot has audio only when its camera has a mic and it is on, and never
 //    for a package ref.
+//  - (RTSP-3) in RTSP mode a camera slot carries its stream's availability, and its grid quality
+//    and pre-warm quality are the ones served (closest with a URL); fill quality and the picker's
+//    data stay on the quality asked for. Protect mode (no `rtspUrls`) is unchanged.
 import type { Camera } from '@shared/ipc'
 import type { Cell, View } from '@shared/models'
 import { PACKAGE_CHANNEL, type QualityDefaults } from '@shared/quality'
@@ -510,5 +513,47 @@ describe('buildViewSlots: audio (P5.1, AUD-1)', () => {
 
   it('never has audio on a package ref', () => {
     expect(cameraSlot(slots(view(1, 1, [`on:${PACKAGE_CHANNEL}`]), cameras)[0]).audio).toBe(false)
+  })
+})
+
+describe('buildViewSlots: RTSP quality fallback (RTSP-3)', () => {
+  const key = cameraSlotKey('a', 0)
+  // `a` has no low URL, `b` only a high one.
+  const rtspUrls = {
+    a: { high: true, medium: true, low: false },
+    b: { high: true, medium: false, low: false },
+  }
+  const build = (v: View, extra: Partial<Parameters<typeof buildViewSlots>[0]> = {}): GridSlot[] =>
+    buildViewSlots({ view: v, cameras: INVENTORY, streams: STREAMS, ...extra })
+
+  it('plays the quality served, and keeps fill and the picker on the quality asked for', () => {
+    const slot = cameraSlot(build(view(1, 1, ['a']), { rtspUrls })[0])
+    expect(slot.availability).toBe(rtspUrls.a)
+    expect(slot.quality).toBe('medium') // asked low (STREAMS), low has no URL
+    expect(slot.fillQuality).toBe('high')
+    expect(slot.qualityChoice).toEqual({ override: null, inherited: 'low' })
+  })
+
+  it('serves the pre-warm from the pre-warmed stream’s own URLs', () => {
+    const v = view(1, 1, [['a', 'b']])
+    const slot = cameraSlot(build(v, { rtspUrls, prewarm: new Map([[key, 'b']]) })[0])
+    expect(slot.prewarm).toEqual({ cameraId: 'b', quality: 'high' })
+    // The same quality the slot has once the step shows `b`.
+    const after = cameraSlot(build(v, { rtspUrls, shown: new Map([[key, 1]]) })[0])
+    expect(after.quality).toBe(slot.prewarm?.quality)
+  })
+
+  it('keeps the asked quality for a stream with no URL at all', () => {
+    const slot = cameraSlot(build(view(1, 1, ['m']), { rtspUrls })[0])
+    expect(slot.availability).toEqual({ high: false, medium: false, low: false })
+    expect(slot.quality).toBe('low')
+  })
+
+  it('changes nothing in Protect mode', () => {
+    for (const extra of [{}, { rtspUrls: null }]) {
+      const slot = cameraSlot(build(view(1, 1, ['a']), extra)[0])
+      expect(slot.availability).toBeNull()
+      expect(slot.quality).toBe('low')
+    }
   })
 })

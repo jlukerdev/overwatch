@@ -100,10 +100,9 @@ import { shownIndices, type StepDirection } from '../cells/schedulerSet'
 import { useCellSchedulers } from '../cells/useCellSchedulers'
 import {
   activeFillPick,
-  canSaveFillQuality,
-  effectiveFillQuality,
   FILL_FIT,
   fillClickStep,
+  filledQuality,
   filledSlotKey,
   isFillExitKey,
   pickAfterFillSave,
@@ -198,10 +197,16 @@ export function GridView({ view, cameras, streams }: GridViewProps): JSX.Element
   } = useCellSchedulers(entries, pinnedKey)
   const shown = useMemo(() => shownIndices(schedulerViewsByKey), [schedulerViewsByKey])
 
+  // RTSP-3: which qualities each stream has a URL for, `null` in Protect mode. The store's own
+  // object, so this is stable until the secrets change.
+  const rtspUrls = useAppStore((s) =>
+    s.settings?.mode === 'rtsp' ? s.secretsStored.rtspUrls : null,
+  )
+
   // `prewarm` is stable while its targets are, so this rebuilds only when one starts or ends.
   const slots = useMemo(
-    () => buildViewSlots({ view, cameras, streams, shown, prewarm }),
-    [view, cameras, streams, shown, prewarm],
+    () => buildViewSlots({ view, cameras, streams, shown, prewarm, rtspUrls }),
+    [view, cameras, streams, shown, prewarm, rtspUrls],
   )
 
   const filledKey = filledSlotKey(fill, view.id, slots)
@@ -552,9 +557,10 @@ function SlotContent({
 }): JSX.Element {
   switch (slot.kind) {
     case 'camera': {
-      // Filled: the fill stream (the session pick over QUAL-5's chain) and fit. A change of
-      // `quality` is the player's seamless swap (FILL-2, QUAL-6); the badge shows it (QUAL-7).
-      const fillQuality = effectiveFillQuality(slot.fillQuality, fillPick)
+      // Filled: the fill stream (the session pick over QUAL-5's chain, in RTSP mode the quality
+      // served for it, RTSP-3) and fit. A change of `quality` is the player's seamless swap
+      // (FILL-2, QUAL-6); the picker's colour shows it (QUAL-7).
+      const fill = filledQuality(slot.fillQuality, fillPick, slot.availability)
       return (
         <Cell
           slotKey={slot.key}
@@ -562,7 +568,7 @@ function SlotContent({
           cameraRef={slot.ref}
           name={slot.name}
           showName={showNames}
-          quality={filled ? fillQuality : slot.quality}
+          quality={filled ? fill.shown : slot.quality}
           fit={filled ? FILL_FIT : slot.fit}
           overlayAutoHideMs={autoHideMs}
           filled={filled}
@@ -570,7 +576,8 @@ function SlotContent({
           onBack={onBack}
           cellQuality={slot.qualityChoice?.override ?? null}
           inheritedQuality={slot.qualityChoice?.inherited ?? null}
-          canSaveFillQuality={filled && canSaveFillQuality(fillQuality, slot.fillQuality)}
+          canSaveFillQuality={filled && fill.canSave}
+          availability={slot.availability}
           onQualityChange={onQualityChange}
           onFillQualityPick={onFillQualityPick}
           onSaveFillQuality={onSaveFillQuality}

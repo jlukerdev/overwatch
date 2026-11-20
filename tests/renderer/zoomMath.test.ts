@@ -10,6 +10,9 @@
 //    part of) is swallowed; an ordinary click is not.
 //  - only a primary modifier + double-click resets.
 //  - an unchanged step returns the same object, so the hook skips the frame.
+//  - the rect the hook's canvas draws the video into is exactly where the old `translate · scale`
+//    transform of a `contain`ed video put it, letterbox included, at every point of the cell
+//    (F1.0.2-9).
 import { describe, expect, it } from 'vitest'
 import {
   DRAG_THRESHOLD_PX,
@@ -27,11 +30,14 @@ import {
   pinchStep,
   wheelZoomFactor,
   zoomAt,
-  zoomTransform,
+  containRect,
+  zoomDrawRect,
   type ClickGuardEvent,
   type ClickGuardState,
   type ZoomBox,
+  type ZoomNaturalSize,
   type ZoomPoint,
+  type ZoomRect,
   type ZoomState,
 } from '../../src/renderer/src/features/zoom/zoomMath'
 
@@ -366,15 +372,162 @@ describe('isZoomResetDblClick (ZOOM-2)', () => {
   })
 })
 
-describe('isZoomed / zoomTransform (ZOOM-3)', () => {
-  it('the identity is not zoomed and has no transform', () => {
+describe('isZoomed (ZOOM-3)', () => {
+  it('the identity is not zoomed', () => {
     expect(isZoomed(ZOOM_IDENTITY)).toBe(false)
-    expect(zoomTransform(ZOOM_IDENTITY)).toBe('')
   })
 
-  it('a zoomed state is a translate then a scale', () => {
-    const state: ZoomState = { scale: 2.5, x: -100, y: -40.5 }
-    expect(isZoomed(state)).toBe(true)
-    expect(zoomTransform(state)).toBe('translate(-100px, -40.5px) scale(2.5)')
+  it('a scale above 1 is zoomed', () => {
+    expect(isZoomed({ scale: 2.5, x: -100, y: -40.5 })).toBe(true)
+  })
+})
+
+/**
+ * The old drawing: the screen point's content point (through the transform), as a fraction of the
+ * natural picture `contain`ed in the box. Outside [0, 1] is the letterbox.
+ */
+function viaTransform(
+  state: ZoomState,
+  box: ZoomBox,
+  natural: ZoomNaturalSize,
+  screen: ZoomPoint,
+): ZoomPoint {
+  const p = contentAt(state, screen)
+  const fit = Math.min(box.width / natural.width, box.height / natural.height)
+  const width = natural.width * fit
+  const height = natural.height * fit
+  return {
+    x: (p.x - (box.width - width) / 2) / width,
+    y: (p.y - (box.height - height) / 2) / height,
+  }
+}
+
+/** The new drawing: `drawImage` maps the natural picture linearly onto the destination rect. */
+function viaDrawRect(rect: ZoomRect, screen: ZoomPoint): ZoomPoint {
+  return { x: (screen.x - rect.left) / rect.width, y: (screen.y - rect.top) / rect.height }
+}
+
+const HD: ZoomNaturalSize = { width: 1920, height: 1080 }
+
+describe('containRect (F1.0.2-9; ZOOM-3)', () => {
+  it('fills a box of the same aspect', () => {
+    expect(containRect(BOX, HD)).toEqual({ left: 0, top: 0, width: 1600, height: 900 })
+  })
+
+  it('letterboxes a wide camera above and below', () => {
+    // 16:9 in 4:3: a 675 px tall picture with 112.5 px bars.
+    expect(containRect({ width: 1200, height: 900 }, HD)).toEqual({
+      left: 0,
+      top: 112.5,
+      width: 1200,
+      height: 675,
+    })
+  })
+
+  it('pillarboxes a tall camera left and right', () => {
+    // 4:3 in 16:9: a 1200 px wide picture with 200 px bars; 9:16 in 16:9 likewise.
+    expect(containRect(BOX, { width: 1440, height: 1080 })).toEqual({
+      left: 200,
+      top: 0,
+      width: 1200,
+      height: 900,
+    })
+    const portrait = containRect(BOX, { width: 1080, height: 1920 })
+    expect(portrait?.height).toBe(900)
+    expect(portrait?.width).toBeCloseTo(506.25, 9)
+    expect(portrait?.left).toBeCloseTo((1600 - 506.25) / 2, 9)
+  })
+
+  it('is null without real sizes (no metadata yet, a cell not laid out)', () => {
+    expect(containRect({ width: 0, height: 900 }, HD)).toBeNull()
+    expect(containRect(BOX, { width: 0, height: 0 })).toBeNull()
+    expect(containRect(BOX, { width: Number.NaN, height: 1080 })).toBeNull()
+    expect(containRect({ width: 1600, height: Number.POSITIVE_INFINITY }, HD)).toBeNull()
+    expect(containRect(BOX, { width: 1920, height: -1080 })).toBeNull()
+  })
+})
+
+describe('zoomDrawRect (F1.0.2-9; ZOOM-3)', () => {
+  it('is the contain rect at the identity', () => {
+    for (const box of [BOX, { width: 1200, height: 900 }, { width: 900, height: 1600 }]) {
+      expect(zoomDrawRect(ZOOM_IDENTITY, box, HD)).toEqual(containRect(box, HD))
+    }
+  })
+
+  it('is null without real sizes', () => {
+    const state: ZoomState = { scale: 2, x: 0, y: 0 }
+    expect(zoomDrawRect(state, { width: 0, height: 900 }, HD)).toBeNull()
+    expect(zoomDrawRect(state, BOX, { width: Number.NaN, height: 1080 })).toBeNull()
+    expect(zoomDrawRect(state, { width: Number.POSITIVE_INFINITY, height: 900 }, HD)).toBeNull()
+    expect(zoomDrawRect(state, BOX, { width: -1920, height: 1080 })).toBeNull()
+  })
+
+  it('doubles a 16:9 camera in a 16:9 cell at 2×, about the centre', () => {
+    const centre = zoomAt(ZOOM_IDENTITY, 2, { x: 800, y: 450 }, BOX)
+    expect(zoomDrawRect(centre, BOX, HD)).toEqual({
+      left: -800,
+      top: -450,
+      width: 3200,
+      height: 1800,
+    })
+  })
+
+  it('scales the letterbox with the picture', () => {
+    // A 16:9 camera in a 4:3 cell, zoomed 2× at the top-left: the 112.5 px bar is now 225 px.
+    expect(zoomDrawRect({ scale: 2, x: 0, y: 0 }, { width: 1200, height: 900 }, HD)).toEqual({
+      left: 0,
+      top: 225,
+      width: 2400,
+      height: 1350,
+    })
+  })
+
+  it('shows the same picture as the transform it replaces, at every point', () => {
+    const boxes: readonly ZoomBox[] = [
+      BOX,
+      { width: 1200, height: 900 },
+      { width: 900, height: 1600 },
+      { width: 1000, height: 1000 },
+      { width: 1366.4, height: 711.2 },
+    ]
+    const naturals: readonly ZoomNaturalSize[] = [
+      HD,
+      { width: 1440, height: 1080 },
+      { width: 1080, height: 1920 },
+      { width: 2688, height: 1512 },
+      { width: 640, height: 360 },
+    ]
+    for (const box of boxes) {
+      const states: ZoomState[] = [
+        ZOOM_IDENTITY,
+        zoomAt(ZOOM_IDENTITY, 2, { x: 0, y: 0 }, box),
+        zoomAt(ZOOM_IDENTITY, 3.7, { x: box.width * 0.3, y: box.height * 0.8 }, box),
+        zoomAt(zoomAt(ZOOM_IDENTITY, 2, { x: 10, y: 10 }, box), 4, { x: box.width, y: 0 }, box),
+        zoomAt(ZOOM_IDENTITY, MAX_ZOOM, { x: box.width / 2, y: box.height / 2 }, box),
+        clampPan({ scale: 1.25, x: -1e6, y: -1e6 }, box),
+        panBy(zoomAt(ZOOM_IDENTITY, 6, { x: 0, y: 0 }, box), -123.4, -56.7, box),
+      ]
+      const screens: readonly ZoomPoint[] = [
+        { x: 0, y: 0 },
+        { x: box.width, y: box.height },
+        { x: box.width, y: 0 },
+        { x: box.width * 0.37, y: box.height * 0.61 },
+        { x: box.width / 2, y: box.height / 2 },
+      ]
+      for (const natural of naturals) {
+        for (const state of states) {
+          expectCovers(state, box)
+          const rect = zoomDrawRect(state, box, natural)
+          expect(rect).not.toBeNull()
+          if (rect === null) continue
+          for (const screen of screens) {
+            const expected = viaTransform(state, box, natural, screen)
+            const actual = viaDrawRect(rect, screen)
+            expect(actual.x).toBeCloseTo(expected.x, 9)
+            expect(actual.y).toBeCloseTo(expected.y, 9)
+          }
+        }
+      }
+    }
   })
 })

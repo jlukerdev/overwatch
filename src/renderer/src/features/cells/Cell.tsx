@@ -21,8 +21,9 @@
 // it at its slot), so a control press is never a cell click.
 //
 // **Zoom (P3.6; ZOOM-1/2/3), filled only.** `useZoomPan(filled)` (features/zoom/ZoomPan.tsx) listens
-// on this cell's element while it is filled, and transforms `<ZoomPanLayer>`, which wraps the player
-// and nothing else, so the overlay is never scaled. The layer is rendered whether filled or not: the
+// on this cell's element while it is filled, and draws the zoomed picture on `<ZoomPanLayer>`'s
+// canvas over the player (the videos themselves stay at 1×); the layer wraps the player and nothing
+// else, so the overlay is never zoomed. The layer is rendered whether filled or not: the
 // player must never be re-parented, which would remount it and break FILL-2's "same player". While
 // filled the overlay's slot also has the zoom reset (ZOOM-2), an icon button that is always there
 // and disabled at 1×, where it would do nothing (the user's call, 2026-11-16). A drag's trailing click is stopped by the hook before `onClick` below sees it, so
@@ -241,7 +242,7 @@ export const Cell = memo(function Cell({
   onVolumeChange,
   onStreamAudio,
 }: CellProps): JSX.Element {
-  const { cellRef, layerRef, zoomed, resetZoom } = useZoomPan(filled)
+  const { cellRef, layerRef, canvasRef, zoomed, resetZoom } = useZoomPan(filled)
   // The visible player shows live video (header, "Door unlock"). Kept as *which* camera is live, so
   // the render that switches camera never shows the unlock control on the previous one's word.
   const [streamingCameraId, setStreamingCameraId] = useState<string | null>(null)
@@ -386,7 +387,9 @@ export const Cell = memo(function Cell({
       }}
     >
       {/* Always a list, visible player first (header): the pre-warmed one must sit after it. */}
-      <ZoomPanLayer layerRef={layerRef}>{players}</ZoomPanLayer>
+      <ZoomPanLayer layerRef={layerRef} canvasRef={canvasRef}>
+        {players}
+      </ZoomPanLayer>
       <CellOverlay
         name={showName ? name : undefined}
         // The badge only where no picker already shows the quality: a package-channel cell (header).

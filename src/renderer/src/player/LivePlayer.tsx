@@ -67,6 +67,8 @@ import {
   openPaintWindow,
   paintWindowStep,
   stallStep,
+  FIRST_FRAME_TIMEOUT_MS,
+  STALL_GRACE_MS,
   STALL_POLL_MS,
   type PaintWindow,
   type StallState,
@@ -285,6 +287,17 @@ interface ControllerLayer {
   audio: boolean
 }
 
+/*
+ * The player's recoveries, one `console.warn` each, so a report from the field has them in the app
+ * log (renderer warnings reach it as `[renderer] …`). Fixed text only: no URL, stream name or go2rtc
+ * message. Each fires once per recovery — a few an hour on a wall that is struggling, none on a
+ * healthy one — and never per frame or per sample. A socket that keeps closing while go2rtc or the
+ * network is down is logged once, until the player paints again.
+ */
+const STALLED_WARNING = `[LivePlayer] picture froze for ${String(STALL_GRACE_MS / 1000)} s; reconnecting`
+const NO_FIRST_FRAME_WARNING = `[LivePlayer] no picture within ${String(FIRST_FRAME_TIMEOUT_MS / 1000)} s; retrying`
+const SOCKET_CLOSED_WARNING = '[LivePlayer] stream socket closed; reconnecting'
+
 /** Class that hides a layer that has not rendered its first frame yet. See player.css. */
 const PENDING_LAYER_CLASS = 'livePlayer__layer--pending'
 
@@ -306,6 +319,11 @@ function createPlayerController(input: {
   let volume = input.volume
   let disposed = false
   const layers = new Map<number, ControllerLayer>()
+  /**
+   * A socket close was logged and no layer has painted since: further closes are the same outage
+   * retrying (every backoff step, or every cell at a go2rtc restart), and stay out of the app log.
+   */
+  let socketCloseLogged = false
   /** At most one `ensureStream` is ever scheduled (see the `ensure` command), so one slot. */
   let ensureTimer: ReturnType<typeof setTimeout> | null = null
   /** The last answer `reportAudio` gave; nothing is reported before a layer with audio shows. */
@@ -391,9 +409,14 @@ function createPlayerController(input: {
     element.classList.add('livePlayer__layer', PENDING_LAYER_CLASS)
     element.setHooks({
       onFirstFrame: () => {
+        socketCloseLogged = false
         dispatch({ type: 'firstFrame', id })
       },
       onSocketClosed: () => {
+        // Only a socket that died by itself; one this player closes is quiet (MsePlayer.stop).
+        // Once per outage, not once per retry (`socketCloseLogged`).
+        if (!socketCloseLogged) console.warn(SOCKET_CLOSED_WARNING)
+        socketCloseLogged = true
         dispatch({ type: 'socketClosed', id })
       },
       onCodecUnsupported: (mime) => {
@@ -462,14 +485,20 @@ function createPlayerController(input: {
         layer.stall = step.state
         // Forces a reattach rather than sitting on a frozen frame: the machine closes this layer's
         // socket, keeps its last frame on screen and asks for a fresh handle (NFR-7).
-        if (step.stalled) dispatch({ type: 'stalled', id })
+        if (step.stalled) {
+          console.warn(STALLED_WARNING)
+          dispatch({ type: 'stalled', id })
+        }
         // A layer that has painted is never overdue, so a stale `current` holding its last frame
         // with its socket closed is left alone here (and the machine ignores anything but an
         // unproven `incoming` regardless). Only visible time counts: the first-frame callback does
         // not run while the window is hidden (playerTiming.PaintWindow).
         const paint = paintWindowStep(layer.paint, { nowMs: atMs, hidden, painted: sample.painted })
         layer.paint = paint.state
-        if (paint.overdue) dispatch({ type: 'firstFrameTimeout', id })
+        if (paint.overdue) {
+          console.warn(NO_FIRST_FRAME_WARNING)
+          dispatch({ type: 'firstFrameTimeout', id })
+        }
       }
     },
     setAudio: (nextMuted: boolean, nextVolume: number) => {

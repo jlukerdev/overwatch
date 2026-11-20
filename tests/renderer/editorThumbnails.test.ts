@@ -7,6 +7,7 @@ import type { Camera, IpcError } from '@shared/ipc'
 import { describe, expect, it } from 'vitest'
 import type { ListLoad, ThumbnailEntry } from '../../src/renderer/src/state/camerasStore'
 import {
+  cellCameraIcon,
   cellShownRef,
   cellSnapshot,
   editorRetryPlan,
@@ -265,5 +266,23 @@ describe('inUseRefs (VIEW-3, palette "In use")', () => {
 
   it('is empty for a View with no cameras', () => {
     expect(inUseRefs([cell(), cell()]).size).toBe(0)
+  })
+})
+
+describe('cellCameraIcon (RTSP-4)', () => {
+  it('draws the camera icon on a cell whose head stream is in the inventory, in RTSP mode', () => {
+    expect(cellCameraIcon(cell('a'), CAMERAS, 'rtsp')).toBe(true)
+    expect(cellCameraIcon(cell('b', 'gone'), CAMERAS, 'rtsp')).toBe(true)
+  })
+
+  it('draws none for a stream the inventory no longer has (Camera not found)', () => {
+    expect(cellCameraIcon(cell('gone'), CAMERAS, 'rtsp')).toBe(false)
+    expect(cellCameraIcon(cell('gone', 'a'), CAMERAS, 'rtsp')).toBe(false)
+  })
+
+  it('draws none on an empty cell, nor in Protect mode', () => {
+    expect(cellCameraIcon(cell(), CAMERAS, 'rtsp')).toBe(false)
+    expect(cellCameraIcon(cell('a'), CAMERAS, 'protect')).toBe(false)
+    expect(cellCameraIcon(cell('a'), CAMERAS, undefined)).toBe(false)
   })
 })

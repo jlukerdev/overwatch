@@ -4,7 +4,9 @@
 // ask these.
 //
 //  - **Access saved as on** (`settings.console.accessEnabled`, DOOR-0). The unsaved Settings checkbox
-//    reveals nothing.
+//    reveals nothing. **And Protect mode** (MODE-3/4, RTSP-4): RTSP streams mode has no Access, so
+//    whatever is saved there counts as off — no unlock control, no door lookup, no watch
+//    ({@link accessActive}). The saved switch and links are kept for the switch back.
 //  - **A link for the cell's camera** (`settings.doorLinks`, DOOR-2). A doorbell's package channel
 //    (`<id>:package`, CAM-4) has no entry of its own: it shares the doorbell's link. This is only
 //    what the renderer *shows*; main resolves the door again from the same ref when the unlock is
@@ -17,8 +19,21 @@
 // on purpose: it counts every camera in the active View's cells, not only the ones rotated in and
 // streaming, so a rotation step or a reconnecting player does not stop and restart main's monitor.
 // What the button then draws from the watched state is ./doorState.
-import type { DoorLinks } from '@shared/models'
+import type { AppMode, DoorLinks } from '@shared/models'
 import { parseCameraRef } from '@shared/cameraRef'
+
+/**
+ * Whether Access counts as on for the Live wall (header): saved as on, in Protect mode. `undefined`
+ * settings (not loaded yet) are off.
+ */
+export function accessActive(
+  settings:
+    | { readonly mode: AppMode; readonly console: { readonly accessEnabled: boolean } }
+    | null
+    | undefined,
+): boolean {
+  return settings?.mode === 'protect' && settings.console.accessEnabled
+}
 
 /** The door linked to the camera behind `cameraRef`, or `null` when there is none or Access is off. */
 export function doorForCell(

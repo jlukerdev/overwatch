@@ -16,6 +16,7 @@
 // The URL rules are `validateRtspUrl` from @shared/rtsp, the same function main runs, so the form
 // and main can never disagree. Nothing here trims a URL: a leading space is an error to fix, not
 // something silently changed in a secret.
+import { sortByLabel } from '@shared/cameraOrder'
 import type { SaveRtspStreamInput } from '@shared/ipc'
 import {
   RTSP_QUALITIES,
@@ -165,11 +166,13 @@ export function toSaveInput(form: StreamForm): SaveRtspStreamInput {
 // -------------------------------------------------------------------------------------------------
 // The list (RTSP-1)
 
-/** Streams in name order, ignoring case (RTSP-1). Does not change its argument. */
+/**
+ * Streams in name order, ignoring case, numbers as numbers ("Cam 2" before "Cam 10"; RTSP-1): the
+ * collator every list in the app sorts by (`sortByLabel`, @shared/cameraOrder), ties in their
+ * input order. Does not change its argument.
+ */
 export function sortStreams<T extends { readonly name: string }>(streams: readonly T[]): T[] {
-  return [...streams].sort((a, b) =>
-    a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }),
-  )
+  return sortByLabel(streams, (stream) => stream.name)
 }
 
 /** "1 stream", "3 streams". */

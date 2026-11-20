@@ -8,6 +8,7 @@
 // while Access is on and some camera of the active View — anywhere in a cell's list — has a link.
 import { describe, expect, it } from 'vitest'
 import {
+  accessActive,
   doorForCell,
   shouldWatchDoors,
   unlockAvailable,
@@ -115,5 +116,33 @@ describe('viewCameraRefs', () => {
     expect(viewCameraRefs(null)).toEqual([])
     expect(viewCameraRefs({ cells: [] })).toEqual([])
     expect(viewCameraRefs({ cells: [{ cameraIds: [] }] })).toEqual([])
+  })
+})
+
+describe('accessActive (MODE-3/4, RTSP-4)', () => {
+  const settings = (mode: 'protect' | 'rtsp', accessEnabled: boolean) => ({
+    mode,
+    console: { accessEnabled },
+  })
+
+  it('is on only in Protect mode with Access saved as on', () => {
+    expect(accessActive(settings('protect', true))).toBe(true)
+    expect(accessActive(settings('protect', false))).toBe(false)
+  })
+
+  it('is off in RTSP mode whatever is saved, so no unlock or door watch shows there', () => {
+    expect(accessActive(settings('rtsp', true))).toBe(false)
+    expect(
+      shouldWatchDoors({
+        accessEnabled: accessActive(settings('rtsp', true)),
+        doorLinks: LINKS,
+        viewCameraRefs: ['cam1'],
+      }),
+    ).toBe(false)
+  })
+
+  it('is off before settings load', () => {
+    expect(accessActive(null)).toBe(false)
+    expect(accessActive(undefined)).toBe(false)
   })
 })

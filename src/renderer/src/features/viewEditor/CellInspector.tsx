@@ -9,7 +9,7 @@
 // (VIEW-2); with two or more, what the Live grid does with them depends on the cell's CELL-2
 // settings (P4.2) — it rotates only with a `rotateIntervalSec`, and switches on events only with
 // `motionSwitch` on, otherwise it stays on the first camera — so the note under the list
-// ({@link multiCameraHint}) says which of those this cell will do.
+// (`multiCameraHint`, ./editorModel) says which of those this cell will do.
 //
 // Below the cameras, the cell's quality override (P3.7; QUAL-3): "View default (X)" — X being what
 // the View and the app defaults give the cell now — then the qualities. It edits the draft's
@@ -25,6 +25,11 @@
 // the selected cell, so ticking Rotate again restores it (10 s when there is none). The group is
 // hidden for fewer cameras, where none of it does anything; the settings stay in the cell. Each
 // control is one `setCell…` edit (./editorModel), saved with the draft like the quality.
+//
+// **RTSP streams mode has no events** (RTSP-4): no motion, smart detection or ring. There
+// (`events` false) the group shows Rotate alone — Switch on events, its triggers, the type filter
+// and the hold are not drawn — and the note under the list speaks of rotation only. The cell's
+// stored event settings are left exactly as they are, unused, for nothing here edits them.
 import { useId, useState, type JSX } from 'react'
 import type { Camera } from '@shared/ipc'
 import {
@@ -45,6 +50,7 @@ import { BoundedNumberInput } from './BoundedNumberInput'
 import {
   cameraRefLabel,
   cellCameraSmartDetectTypes,
+  multiCameraHint,
   DEFAULT_ROTATE_INTERVAL_SEC,
   MAX_MOTION_HOLD_SEC,
   MAX_ROTATE_INTERVAL_SEC,
@@ -81,21 +87,11 @@ export interface CellInspectorProps {
   /** The whole filter; empty means no filter. */
   readonly onSmartDetectTypesChange: (types: readonly string[]) => void
   readonly onMotionHoldChange: (sec: number) => void
-}
-
-/** The note under the camera list: what the Live grid does with this cell's cameras (header). */
-export function multiCameraHint(cell: Pick<Cell, 'rotateIntervalSec' | 'motionSwitch'>): string {
-  const rotates = cell.rotateIntervalSec !== undefined
-  if (rotates && cell.motionSwitch) {
-    return `With two or more cameras, the cell rotates through them in this order every ${String(cell.rotateIntervalSec)} s, and switches to a camera on its events.`
-  }
-  if (rotates) {
-    return `With two or more cameras, the cell rotates through them in this order every ${String(cell.rotateIntervalSec)} s.`
-  }
-  if (cell.motionSwitch) {
-    return 'With two or more cameras, the cell shows the first and switches to a camera on its events.'
-  }
-  return 'With two or more cameras, the cell shows the first (rotation and event switching are off).'
+  /**
+   * Whether the app has camera events: Protect mode. `false` in RTSP streams mode hides Switch on
+   * events and everything under it (header).
+   */
+  readonly events: boolean
 }
 
 export function CellInspector({
@@ -113,6 +109,7 @@ export function CellInspector({
   onMotionTriggersChange,
   onSmartDetectTypesChange,
   onMotionHoldChange,
+  events,
 }: CellInspectorProps): JSX.Element {
   const qualityId = useId()
   const fieldId = useId()
@@ -213,7 +210,7 @@ export function CellInspector({
           </option>
         ))}
       </select>
-      <p className="viewEditor__hint">{multiCameraHint(cell)}</p>
+      <p className="viewEditor__hint">{multiCameraHint(cell, events)}</p>
       {cell.cameraIds.length >= 2 ? (
         <MultiCameraSettings
           cell={cell}
@@ -234,6 +231,7 @@ export function CellInspector({
           onMotionTriggersChange={onMotionTriggersChange}
           onSmartDetectTypesChange={onSmartDetectTypesChange}
           onMotionHoldChange={onMotionHoldChange}
+          events={events}
         />
       ) : null}
       <label className="field__label" htmlFor={qualityId}>
@@ -260,6 +258,7 @@ type MultiCameraSettingsProps = Pick<
   | 'onMotionTriggersChange'
   | 'onSmartDetectTypesChange'
   | 'onMotionHoldChange'
+  | 'events'
 > & {
   readonly cell: Cell
   /** A `useId` value; each control's id is this plus a suffix. */
@@ -284,10 +283,9 @@ function MultiCameraSettings({
   onMotionTriggersChange,
   onSmartDetectTypesChange,
   onMotionHoldChange,
+  events,
 }: MultiCameraSettingsProps): JSX.Element {
   const rotateSec = cell.rotateIntervalSec
-  const types = cell.smartDetectTypes ?? []
-  const smartOn = cell.motionTriggers.includes('smartDetect')
 
   return (
     <fieldset className="viewEditor__group">
@@ -319,6 +317,44 @@ function MultiCameraSettings({
         ) : null}
       </div>
 
+      {events ? (
+        <EventSwitchSettings
+          cell={cell}
+          idPrefix={idPrefix}
+          smartDetectChoices={smartDetectChoices}
+          onMotionSwitchChange={onMotionSwitchChange}
+          onMotionTriggersChange={onMotionTriggersChange}
+          onSmartDetectTypesChange={onSmartDetectTypesChange}
+          onMotionHoldChange={onMotionHoldChange}
+        />
+      ) : null}
+    </fieldset>
+  )
+}
+
+/** Switch on events and what hangs off it (CELL-2); Protect mode only (header). */
+function EventSwitchSettings({
+  cell,
+  idPrefix,
+  smartDetectChoices,
+  onMotionSwitchChange,
+  onMotionTriggersChange,
+  onSmartDetectTypesChange,
+  onMotionHoldChange,
+}: Pick<
+  MultiCameraSettingsProps,
+  | 'cell'
+  | 'idPrefix'
+  | 'smartDetectChoices'
+  | 'onMotionSwitchChange'
+  | 'onMotionTriggersChange'
+  | 'onSmartDetectTypesChange'
+  | 'onMotionHoldChange'
+>): JSX.Element {
+  const types = cell.smartDetectTypes ?? []
+  const smartOn = cell.motionTriggers.includes('smartDetect')
+  return (
+    <>
       <div className="viewEditor__checkRow">
         <input
           id={`${idPrefix}-switch`}
@@ -397,6 +433,6 @@ function MultiCameraSettings({
           </div>
         </>
       ) : null}
-    </fieldset>
+    </>
   )
 }

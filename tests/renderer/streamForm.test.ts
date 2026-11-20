@@ -228,6 +228,11 @@ describe('the list', () => {
     expect(input[0]?.name).toBe('garage')
   })
 
+  it('compares numbers as numbers, like every other list', () => {
+    const input = [{ name: 'Cam 10' }, { name: 'cam 2' }, { name: 'Cam 1' }]
+    expect(sortStreams(input).map((stream) => stream.name)).toEqual(['Cam 1', 'cam 2', 'Cam 10'])
+  })
+
   it('counts streams', () => {
     expect(streamCountLabel(0)).toBe('0 streams')
     expect(streamCountLabel(1)).toBe('1 stream')

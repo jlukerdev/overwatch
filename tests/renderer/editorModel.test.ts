@@ -28,6 +28,7 @@ import {
   boundedInputBlurCommit,
   boundedInputCommit,
   cellCameraSmartDetectTypes,
+  multiCameraHint,
   aspectChoiceLabel,
   cameraChoices,
   cameraRefLabel,
@@ -926,5 +927,25 @@ describe('isDraftDirty', () => {
     expect(isDraftDirty(v, { ...v, name: '' })).toBe(true)
     const blank = { ...v, name: '' }
     expect(isDraftDirty(blank, { ...blank })).toBe(false)
+  })
+})
+
+describe('multiCameraHint (CELL-2, RTSP-4)', () => {
+  it('names rotation and event switching in Protect mode', () => {
+    expect(multiCameraHint({ rotateIntervalSec: 10, motionSwitch: true })).toBe(
+      'With two or more cameras, the cell rotates through them in this order every 10 s, and switches to a camera on its events.',
+    )
+    expect(multiCameraHint({ rotateIntervalSec: undefined, motionSwitch: false }, true)).toBe(
+      'With two or more cameras, the cell shows the first (rotation and event switching are off).',
+    )
+  })
+
+  it('never mentions events without them (RTSP mode), even with Switch on events stored', () => {
+    expect(multiCameraHint({ rotateIntervalSec: 10, motionSwitch: true }, false)).toBe(
+      'With two or more cameras, the cell rotates through them in this order every 10 s.',
+    )
+    expect(multiCameraHint({ rotateIntervalSec: undefined, motionSwitch: true }, false)).toBe(
+      'With two or more cameras, the cell shows the first (rotation is off).',
+    )
   })
 })

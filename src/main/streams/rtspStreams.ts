@@ -9,6 +9,7 @@
 // from a stored URL to the go2rtc source the registry registers.
 //
 // No Electron and no I/O: a plain module the tests import as is.
+import { sortByLabel } from '@shared/cameraOrder'
 import type { Camera } from '@shared/models'
 import { RTSP_QUALITIES, type RtspStreamUrls } from '@shared/rtsp'
 
@@ -98,26 +99,25 @@ export const RTSP_STREAM_MODEL = 'RTSP stream'
  * RTSP-3: main's camera inventory in RTSP mode, built from `config.rtsp.streams`. Each stream is a
  * {@link Camera} with its id and name, model {@link RTSP_STREAM_MODEL}, always `CONNECTED` (RTSP has
  * no presence feed: a stream that cannot connect shows "Stream could not start" instead), and every
- * Protect-only flag false or empty. In name order ignoring case, like the Streams screen. A fresh
+ * Protect-only flag false or empty. In name order ignoring case, numbers as numbers (`sortByLabel`,
+ * the collator every list uses), like the Streams screen. A fresh
  * array of fresh objects; `streams` is not touched.
  */
 export function rtspInventory(
   streams: readonly { readonly id: string; readonly name: string }[],
 ): Camera[] {
-  return [...streams]
-    .sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }))
-    .map((stream) => ({
-      id: stream.id,
-      name: stream.name,
-      model: RTSP_STREAM_MODEL,
-      state: 'CONNECTED',
-      hasMic: false,
-      micEnabled: false,
-      hasSpeaker: false,
-      smartDetectTypes: [],
-      supportsFullHdSnapshot: false,
-      hasPackageCamera: false,
-    }))
+  return sortByLabel(streams, (stream) => stream.name).map((stream) => ({
+    id: stream.id,
+    name: stream.name,
+    model: RTSP_STREAM_MODEL,
+    state: 'CONNECTED',
+    hasMic: false,
+    micEnabled: false,
+    hasSpeaker: false,
+    smartDetectTypes: [],
+    supportsFullHdSnapshot: false,
+    hasPackageCamera: false,
+  }))
 }
 
 /**

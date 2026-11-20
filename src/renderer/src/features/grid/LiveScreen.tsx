@@ -46,8 +46,9 @@ import { useEffect, useRef, useState, type JSX, type ReactNode } from 'react'
 import type { ConnectionStatus } from '@shared/ipc'
 import type { View } from '@shared/models'
 import { useAppStore } from '../../state/appStore'
-import { cameraListBody, setupGaps, sortCameras } from '../../state/camerasStore'
+import { cameraListBody, setupGaps } from '../../state/camerasStore'
 import {
+  starterCameraIds,
   starterPreset,
   STARTER_VIEW_NAME,
   useActiveView,
@@ -262,7 +263,8 @@ function LiveBody({ activeView, onOpenSettings, onOpenCameras }: LiveBodyProps):
   if (notReady !== null) return notReady
 
   if (activeView === null) {
-    return <NoViews cameraIds={sortCameras(cameras).map((camera) => camera.id)} />
+    // VIEW-4: the camera list's order, or the streams in name order in RTSP mode (RTSP-4).
+    return <NoViews cameraIds={starterCameraIds(cameras, rtsp ? 'rtsp' : 'protect')} />
   }
 
   // Not keyed by View: one GridView across switches keeps the players of shared cameras (GridView).

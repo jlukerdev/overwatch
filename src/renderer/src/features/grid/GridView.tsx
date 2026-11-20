@@ -83,7 +83,10 @@
 // user decision 2026-11-16), so audio never follows a cell onto another camera, even one that rotates
 // back. Unmounting — leaving the Live screen or opening the View editor — mutes everything. `M` mutes
 // all (features/audio/muteShortcut.ts), heard only while a cell is unmuted, like `Esc` only while
-// filled.
+// filled. **In RTSP mode** (RTSP-4) a slot has audio once the stream it plays turned out to carry an
+// audio track: each cell's players report it (`onStreamAudio`, once per change, from the MSE
+// handshake), this component keeps the answers per slot and camera (features/audio/streamAudio.ts)
+// and the slot builder reads them in place of the mic flags. Protect mode passes no reporter.
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type JSX } from 'react'
 import type { Camera } from '@shared/ipc'
 import type { View } from '@shared/models'
@@ -92,6 +95,7 @@ import { cellRect, layoutGrid, type Rect } from '@shared/viewLayout'
 import { useAppStore } from '../../state/appStore'
 import { audioActions, isSlotAudible, useAudioStore } from '../../state/audioStore'
 import { isMuteAllKey } from '../audio/muteShortcut'
+import { NO_STREAM_AUDIO, streamAudioStep } from '../audio/streamAudio'
 import { viewsActions, type ViewResult } from '../../state/viewsStore'
 import { Cell } from '../cells/Cell'
 import { MissingCell } from '../cells/MissingCell'
@@ -203,10 +207,30 @@ export function GridView({ view, cameras, streams }: GridViewProps): JSX.Element
     s.settings?.mode === 'rtsp' ? s.secretsStored.rtspUrls : null,
   )
 
+  // RTSP-4 (header): which slot + camera streams reported an audio track. One update per change
+  // of a player's answer, never per frame; the step hands back the same set for a no-op.
+  const [streamAudio, setStreamAudio] = useState<ReadonlySet<string>>(NO_STREAM_AUDIO)
+  const rtsp = rtspUrls !== null
+  const onStreamAudio = useCallback(
+    (slotKey: string, cameraId: string, hasAudio: boolean): void => {
+      setStreamAudio((current) => streamAudioStep(current, slotKey, cameraId, hasAudio))
+    },
+    [],
+  )
+
   // `prewarm` is stable while its targets are, so this rebuilds only when one starts or ends.
   const slots = useMemo(
-    () => buildViewSlots({ view, cameras, streams, shown, prewarm, rtspUrls }),
-    [view, cameras, streams, shown, prewarm, rtspUrls],
+    () =>
+      buildViewSlots({
+        view,
+        cameras,
+        streams,
+        shown,
+        prewarm,
+        rtspUrls,
+        streamAudio: rtsp ? streamAudio : null,
+      }),
+    [view, cameras, streams, shown, prewarm, rtspUrls, rtsp, streamAudio],
   )
 
   const filledKey = filledSlotKey(fill, view.id, slots)
@@ -481,6 +505,7 @@ export function GridView({ view, cameras, streams }: GridViewProps): JSX.Element
                   audible={audible}
                   volume={volume}
                   onAudioToggle={onAudioToggle}
+                  onStreamAudio={rtsp ? onStreamAudio : undefined}
                 />
               </div>
             )
@@ -532,6 +557,7 @@ function SlotContent({
   audible,
   volume,
   onAudioToggle,
+  onStreamAudio,
 }: {
   readonly slot: GridSlot
   /** VIEW-8: the View's `showNames`. */
@@ -554,6 +580,9 @@ function SlotContent({
   /** AUD-3: the app-wide level (header). */
   readonly volume: number
   readonly onAudioToggle: (slotKey: string, cameraId: string, unmute: boolean) => void
+  /** RTSP-4: a player's audio answer (header); `undefined` in Protect mode. Stable. */
+  readonly onStreamAudio:
+    ((slotKey: string, cameraId: string, hasAudio: boolean) => void) | undefined
 }): JSX.Element {
   switch (slot.kind) {
     case 'camera': {
@@ -593,6 +622,7 @@ function SlotContent({
           volume={volume}
           onAudioToggle={onAudioToggle}
           onVolumeChange={audioActions.setVolume}
+          onStreamAudio={onStreamAudio}
         />
       )
     }

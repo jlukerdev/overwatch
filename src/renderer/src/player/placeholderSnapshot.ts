@@ -18,6 +18,10 @@
 //    in its own record; any other quality shows the main-channel thumbnail.
 //  - A cached image is used **whatever its age**, like the View editor's (VIEW-3): it is a hint of
 //    what is coming, replaced by the live picture within a second.
+//  - **RTSP streams mode has no snapshots** (RTSP-4, MODE-4): no still is drawn there, whatever the
+//    cache holds. A connecting cell shows a large, dimmed camera icon behind the spinner instead
+//    ({@link placeholderCameraIcon}), so the wall does not flash empty boxes either.
+import type { AppMode } from '@shared/models'
 import { PACKAGE_CHANNEL, type StreamQuality } from '@shared/quality'
 import type { PackageSnapshots, ThumbnailEntry } from '../state/camerasStore'
 import type { PlayerPlaceholder } from './playerMachine'
@@ -35,9 +39,21 @@ export function placeholderSnapshot(
   quality: StreamQuality,
   entries: Readonly<Record<string, ThumbnailEntry>>,
   packages: PackageSnapshots,
+  mode: AppMode | undefined = 'protect',
 ): PlaceholderSnapshot | null {
-  if (placeholder?.kind !== 'connecting') return null
+  if (mode === 'rtsp' || placeholder?.kind !== 'connecting') return null
   // The package channel has its own snapshots.
   const entry = quality === PACKAGE_CHANNEL ? packages[cameraId] : entries[cameraId]
   return entry?.status === 'ready' ? entry : null
+}
+
+/**
+ * Whether the placeholder draws the camera icon behind its spinner in place of a still (header):
+ * only in RTSP mode, and only while connecting, the one placeholder a still would be drawn behind.
+ */
+export function placeholderCameraIcon(
+  placeholder: PlayerPlaceholder | null,
+  mode: AppMode | undefined,
+): boolean {
+  return mode === 'rtsp' && placeholder?.kind === 'connecting'
 }

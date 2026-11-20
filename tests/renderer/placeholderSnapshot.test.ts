@@ -8,7 +8,10 @@
 import type { IpcError } from '@shared/ipc'
 import { describe, expect, it } from 'vitest'
 import type { ThumbnailEntry } from '../../src/renderer/src/state/camerasStore'
-import { placeholderSnapshot } from '../../src/renderer/src/player/placeholderSnapshot'
+import {
+  placeholderCameraIcon,
+  placeholderSnapshot,
+} from '../../src/renderer/src/player/placeholderSnapshot'
 import {
   placeholderTone,
   type PlayerPlaceholder,
@@ -84,5 +87,24 @@ describe('placeholderTone', () => {
       ['stream-error', 'alert'],
       ['stream-failed', 'alert'],
     ])
+  })
+})
+
+describe('RTSP streams mode (RTSP-4)', () => {
+  it('never draws a still, whatever the cache holds', () => {
+    expect(placeholderSnapshot(CONNECTING, 'cam', 'high', ENTRIES, PACKAGES, 'rtsp')).toBeNull()
+  })
+
+  it('draws the camera icon behind the spinner, only while connecting', () => {
+    for (const placeholder of EVERY_KIND) {
+      expect(placeholderCameraIcon(placeholder, 'rtsp')).toBe(placeholder.kind === 'connecting')
+    }
+    expect(placeholderCameraIcon(null, 'rtsp')).toBe(false)
+  })
+
+  it('keeps Protect mode on its still and draws no icon there', () => {
+    expect(placeholderSnapshot(CONNECTING, 'cam', 'high', ENTRIES, PACKAGES, 'protect')).toBe(MAIN)
+    expect(placeholderCameraIcon(CONNECTING, 'protect')).toBe(false)
+    expect(placeholderCameraIcon(CONNECTING, undefined)).toBe(false)
   })
 })

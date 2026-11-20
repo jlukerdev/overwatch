@@ -18,7 +18,7 @@
 // Mutations are **queued**, one at a time, and each computes its list from the store as it is when
 // its turn comes, not when it was called. Two quick edits (a rename, then a drag) would otherwise both
 // start from the same list, and the second save would silently undo the first.
-import { type AppState, type IpcResult, ipcFail } from '@shared/ipc'
+import { type AppState, type Camera, type IpcResult, ipcFail } from '@shared/ipc'
 import { ViewSchema, type AppMode, type View } from '@shared/models'
 import {
   DEFAULT_LAYOUT_PRESET,
@@ -28,6 +28,8 @@ import {
   type LayoutPreset,
   type LayoutResult,
 } from '@shared/viewLayout'
+import { cameraDisplayName, sortCameras } from '@shared/cameraOrder'
+import { sortStreams } from '../features/streams/streamForm'
 import { useAppStore, type AppStoreState } from './appStore'
 
 // -------------------------------------------------------------------------------------------------
@@ -83,6 +85,19 @@ const UNIFORM_PRESETS: readonly LayoutPreset[] = LAYOUT_PRESETS.filter((preset) 
 
 /** The name the "Create a View" button gives the first View. */
 export const STARTER_VIEW_NAME = 'View 1'
+
+/**
+ * The cameras "Create a View" fills the first View with, in order (VIEW-4): the camera list's order
+ * in Protect mode (`sortCameras`), and in RTSP streams mode the streams in name order, the Streams
+ * screen's own order (`sortStreams`, RTSP-1/RTSP-4). The inventory is the streams in RTSP mode.
+ */
+export function starterCameraIds(cameras: readonly Camera[], mode: AppMode | undefined): string[] {
+  const ordered =
+    mode === 'rtsp'
+      ? sortStreams(cameras.map((camera) => ({ id: camera.id, name: cameraDisplayName(camera) })))
+      : sortCameras(cameras)
+  return ordered.map((camera) => camera.id)
+}
 
 /**
  * The layout for a first View showing `cameraCount` cameras: the smallest uniform preset with a slot

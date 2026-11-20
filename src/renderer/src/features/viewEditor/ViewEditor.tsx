@@ -95,6 +95,7 @@ import {
   type ViewSettingsGroup,
 } from './editorTabs'
 import {
+  cellCameraIcon,
   cellSnapshot,
   editorRetryPlan,
   editorSnapshotPlan,
@@ -409,6 +410,11 @@ function DraftEditor({
       ),
     [draft.cells, snapshotSources, thumbnailEntries, packageSnapshots],
   )
+  // RTSP-4: no snapshots in RTSP mode, so each cell holding a camera draws the camera icon instead.
+  const cellCameraIcons = useMemo(
+    () => draft.cells.map((cell) => cellCameraIcon(cell, cameras, appMode)),
+    [draft.cells, cameras, appMode],
+  )
   // The palette's thumbnails: whatever the cache holds already, nothing fetched for them.
   const paletteImages = useMemo(
     () =>
@@ -717,6 +723,7 @@ function DraftEditor({
             view={draft}
             cameras={cameras}
             snapshots={cellSnapshots}
+            cameraIcons={cellCameraIcons}
             selection={rect}
             onSelect={select}
             onExtend={(slot) => {
@@ -814,6 +821,8 @@ function DraftEditor({
           />
           <CellInspector
             cell={inspected}
+            // RTSP-4: no camera events in RTSP mode, so no Switch on events there.
+            events={appMode !== 'rtsp'}
             selectedCount={selectedCount}
             cameras={cameras}
             choices={choices}
@@ -852,7 +861,12 @@ function DraftEditor({
             }}
           />
         </div>
-        <CameraPalette choices={choices} inUse={inUse} snapshots={paletteImages} />
+        <CameraPalette
+          choices={choices}
+          inUse={inUse}
+          snapshots={paletteImages}
+          rtsp={appMode === 'rtsp'}
+        />
       </aside>
     </section>
   )

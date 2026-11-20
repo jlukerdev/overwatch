@@ -117,6 +117,44 @@ export function isCodecPlayable(mime: string, isTypeSupported: (type: string) =>
 }
 
 /**
+ * Codec names (the part before the first `.`, lowercased) that are audio. The vendored player
+ * offers `mp4a.40.2`, `mp4a.40.5`, `flac` and `opus` (vendor/video-rtc.js `CODECS`), and go2rtc
+ * repackages a camera's G.711 (PCMA/PCMU) as FLAC for MSE; the rest are here so a mime from a newer
+ * go2rtc that names its audio codec differently still counts.
+ */
+const AUDIO_CODECS: ReadonlySet<string> = new Set([
+  'mp4a',
+  'opus',
+  'flac',
+  'alaw',
+  'ulaw',
+  'mulaw',
+  'pcma',
+  'pcmu',
+  'ac-3',
+  'ec-3',
+  'mp3',
+  'vorbis',
+])
+
+/**
+ * Whether go2rtc's MSE handshake mime carries an audio track (RTSP-4, AUD-1): one of the codecs in
+ * its `codecs` parameter is an audio codec, e.g. `video/mp4; codecs="avc1.4D4029, mp4a.40.2"` is
+ * true and `video/mp4; codecs="avc1.640029"` false. A mime with no `codecs` parameter counts only if
+ * it is itself an `audio/` type; an empty or unreadable mime has none. Case and spaces do not matter.
+ */
+export function mimeHasAudio(mime: string): boolean {
+  const trimmed = mime.trim().toLowerCase()
+  if (trimmed === '') return false
+  const match = /codecs\s*=\s*"?([^";]*)"?/.exec(trimmed)
+  if (match === null) return trimmed.startsWith('audio/')
+  return (match[1] ?? '')
+    .split(',')
+    .map((codec) => codec.trim().split('.')[0] ?? '')
+    .some((name) => AUDIO_CODECS.has(name))
+}
+
+/**
  * Whether go2rtc's handshake `{ type: 'error' }` reply means "the codecs you offered are not what
  * this camera produces" (SPEC R7) rather than a transient failure to open the source.
  *

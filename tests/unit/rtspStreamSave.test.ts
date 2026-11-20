@@ -203,6 +203,14 @@ describe('rtspInventory (RTSP-3)', () => {
     }
   })
 
+  it('compares numbers in names as numbers, as the Streams screen does', () => {
+    const cameras = rtspInventory([
+      { id: ID, name: 'Cam 10' },
+      { id: OTHER_ID, name: 'cam 2' },
+    ])
+    expect(cameras.map((c) => c.name)).toEqual(['cam 2', 'Cam 10'])
+  })
+
   it('does not reorder the list it was given', () => {
     const streams = [
       { id: OTHER_ID, name: 'b' },

@@ -15,6 +15,11 @@
 // blur is a CSS filter on one static image, rasterised once — not a `backdrop-filter`, and never
 // over a playing stream (the placeholder exists only while no layer is on screen).
 //
+// **The camera icon behind a spinner** (`cameraBackdrop`, RTSP-4). RTSP streams have no snapshots,
+// so in RTSP mode a connecting cell draws a large, dimmed camera icon where the still would be,
+// behind the spinner and its label: the same "something is coming" look as the View editor's
+// cells, without an image. Static and decorative; never with a still.
+//
 // **It scales with its box.** `.livePlayer` and `.gridCell` are size containers (player.css,
 // grid.css), and the rules there shrink the icon with the cell, put icon and label on one row in a
 // short cell and drop the label (kept for assistive tech, and in the `title`) in a very narrow one,
@@ -23,7 +28,7 @@
 // It takes no pointer except for the `title`, and has no handlers: a click anywhere on it is a click
 // on the cell (FILL-1), as on the old text.
 import type { JSX } from 'react'
-import { AlertIcon, CameraOffIcon } from '../ui/icons'
+import { AlertIcon, CameraIcon, CameraOffIcon } from '../ui/icons'
 import { SnapshotImage } from '../ui/SnapshotImage'
 import type { PlaceholderTone } from './playerMachine'
 import './player.css'
@@ -36,6 +41,8 @@ export interface NoPictureProps {
   readonly title?: string | undefined
   /** A cached still to draw dimmed behind a spinner (header); only with `tone: 'progress'`. */
   readonly snapshot?: { readonly bytes: Uint8Array; readonly mimeType: string } | null | undefined
+  /** RTSP-4: a large dimmed camera icon behind a spinner (header); only with `tone: 'progress'`. */
+  readonly cameraBackdrop?: boolean | undefined
   /** An extra class on the root, e.g. the player's `livePlayer__placeholder`. */
   readonly className?: string | undefined
 }
@@ -56,10 +63,13 @@ export function NoPicture({
   label,
   title,
   snapshot,
+  cameraBackdrop = false,
   className,
 }: NoPictureProps): JSX.Element {
   // Never a still without the spinner over it (header).
   const still = tone === 'progress' ? (snapshot ?? null) : null
+  // The icon only where no still is drawn, and only behind a spinner (header).
+  const iconBackdrop = tone === 'progress' && still === null && cameraBackdrop
   const classes = ['noPicture', `noPicture--${tone}`]
   if (still !== null) classes.push('noPicture--still')
   if (className !== undefined) classes.push(className)
@@ -68,6 +78,7 @@ export function NoPicture({
       {still !== null ? (
         <SnapshotImage bytes={still.bytes} mimeType={still.mimeType} className="noPicture__still" />
       ) : null}
+      {iconBackdrop ? <CameraIcon className="noPicture__backdrop" /> : null}
       <div className="noPicture__body" title={title ?? label}>
         <ToneIcon tone={tone} />
         <span className="noPicture__label">{label}</span>

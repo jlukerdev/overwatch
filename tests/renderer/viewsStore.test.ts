@@ -15,7 +15,7 @@ import {
   type IpcResult,
   type ViewProtectApi,
 } from '@shared/ipc'
-import { CellSchema, type View } from '@shared/models'
+import { CellSchema, type Camera, type View } from '@shared/models'
 import { LAYOUT_PRESETS, mergeCells, uniformCells } from '@shared/viewLayout'
 import { useAppStore } from '../../src/renderer/src/state/appStore'
 import {
@@ -31,6 +31,7 @@ import {
   selectActiveView,
   selectViews,
   STARTER_VIEW_NAME,
+  starterCameraIds,
   starterPreset,
   viewsActions,
 } from '../../src/renderer/src/state/viewsStore'
@@ -489,5 +490,46 @@ describe('viewsActions', () => {
     // Without the queue the reorder would have saved the old name back over the rename.
     expect(storeViews().map((v) => v.name)).toEqual(['Renamed'])
     expect(main.views.map((v) => v.name)).toEqual(['Renamed'])
+  })
+})
+
+describe('starterCameraIds (VIEW-4, RTSP-4)', () => {
+  const cam = (id: string, name: string | null, model = ''): Camera => ({
+    id,
+    name,
+    model,
+    state: 'CONNECTED',
+    hasMic: false,
+    micEnabled: false,
+    hasSpeaker: false,
+    smartDetectTypes: [],
+    supportsFullHdSnapshot: false,
+    hasPackageCamera: false,
+  })
+
+  it('uses the streams in name order, ignoring case, in RTSP mode', () => {
+    const streams = [
+      cam('rtsp-3', 'garage', 'RTSP stream'),
+      cam('rtsp-1', 'Porch', 'RTSP stream'),
+      cam('rtsp-2', 'Drive', 'RTSP stream'),
+    ]
+    expect(starterCameraIds(streams, 'rtsp')).toEqual(['rtsp-2', 'rtsp-3', 'rtsp-1'])
+  })
+
+  it('compares numbers in stream names as numbers (Cam 2 before Cam 10)', () => {
+    const streams = [cam('rtsp-1', 'Cam 10'), cam('rtsp-2', 'Cam 2')]
+    expect(starterCameraIds(streams, 'rtsp')).toEqual(['rtsp-2', 'rtsp-1'])
+  })
+
+  it('keeps the camera list order in Protect mode', () => {
+    const cameras = [cam('c', 'Cam 10'), cam('a', 'Cam 2'), cam('b', null, 'G4 Bullet')]
+    // The camera list compares numbers as numbers (Cam 2 before Cam 10), falling back to the model.
+    expect(starterCameraIds(cameras, 'protect')).toEqual(['a', 'c', 'b'])
+  })
+
+  it('does not change its input', () => {
+    const streams = [cam('rtsp-2', 'B'), cam('rtsp-1', 'A')]
+    starterCameraIds(streams, 'rtsp')
+    expect(streams.map((s) => s.id)).toEqual(['rtsp-2', 'rtsp-1'])
   })
 })

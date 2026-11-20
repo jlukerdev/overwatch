@@ -28,11 +28,15 @@
 // a drag or a drop: selection, dragging the chip and dropping all work exactly as on a text-only
 // cell. It is fitted with the View's `fit`, as the Live grid fits video. The selected and drop
 // highlights are drawn over it (viewEditor.css). Which image, if any, is `cellSnapshot`.
+//
+// **RTSP mode (RTSP-4)** has no snapshots: a cell holding a camera draws a large, dimmed camera
+// icon in the image's place instead (`cameraIcons`, from `cellCameraIcon`), the same bottom layer
+// that never takes the pointer, with the name chip over it.
 import { useEffect, useRef, useState, type DragEvent, type JSX } from 'react'
 import type { Camera } from '@shared/ipc'
 import type { View } from '@shared/models'
 import { cellRect, layoutGrid, type CellPlacement, type Rect } from '@shared/viewLayout'
-import { PlusIcon } from '../../ui/icons'
+import { CameraIcon, PlusIcon } from '../../ui/icons'
 import { SnapshotImage } from '../../ui/SnapshotImage'
 import { cameraRefLabel, cellsInRect, type Slot } from './editorModel'
 import type { ReadySnapshot } from './editorThumbnails'
@@ -46,6 +50,11 @@ export interface EditorCanvasProps {
    * or `null` for a text-only cell (./editorThumbnails `cellSnapshot`).
    */
   readonly snapshots: readonly (ReadySnapshot | null)[]
+  /**
+   * RTSP-4: per cell, by index, whether it draws the camera icon behind its name in place of a
+   * snapshot (./editorThumbnails `cellCameraIcon`). Absent entries draw none.
+   */
+  readonly cameraIcons: readonly boolean[]
   /** The selected rectangle, or `null` when nothing is selected. */
   readonly selection: CellPlacement | null
   /** A cell was picked at `slot`; `extend` (Shift) grows the selection from its anchor instead. */
@@ -69,6 +78,7 @@ export function EditorCanvas({
   view,
   cameras,
   snapshots,
+  cameraIcons,
   selection,
   onSelect,
   onExtend,
@@ -178,7 +188,11 @@ export function EditorCanvas({
                   if (from !== null) onSwapCells(from, index)
                 }}
               >
-                {image === null ? null : (
+                {image === null ? (
+                  cameraIcons[index] === true ? (
+                    <CameraIcon className="editorCanvas__cameraIcon" />
+                  ) : null
+                ) : (
                   <SnapshotImage
                     className={`editorCanvas__image editorCanvas__image--${view.fit}`}
                     bytes={image.bytes}

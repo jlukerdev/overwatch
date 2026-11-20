@@ -13,7 +13,8 @@
 //
 // **What this element does not decide.** When to attach, when to reconnect, when a stream counts as
 // frozen and what the viewer is told are all `playerMachine.ts`'s business. This element reports
-// four things — first frame, socket closed, codec unsupported, go2rtc refused the stream — and
+// four things to the machine — first frame, socket closed, codec unsupported, go2rtc refused the
+// stream — plus, for the audio rules, whether the accepted mime carries an audio track, and
 // exposes a sample for the stall detector and the first-frame timeout. That split is what keeps
 // the untestable half (no jsdom, no MSE in the test environment) as small as it is.
 //
@@ -26,12 +27,13 @@ import {
   catchUpRate,
   isCodecMismatchError,
   isCodecPlayable,
+  mimeHasAudio,
   MSE_KEEP_SECONDS,
   resyncTime,
 } from './mseBuffer'
 import { VideoRTC } from './vendor/video-rtc.js'
 
-/** The four things the element tells the machine. Set once, right after the element is created. */
+/** What the element tells its controller. Set once, right after the element is created. */
 export interface MsePlayerHooks {
   /** A frame has been painted: the swap trigger (QUAL-6, FILL-2). */
   readonly onFirstFrame: () => void
@@ -51,6 +53,12 @@ export interface MsePlayerHooks {
    * (CON-2, NFR-9). Reported at most once per element.
    */
   readonly onStreamError: () => void
+  /**
+   * RTSP-4: the handshake's mime was accepted (a source buffer exists for it), and whether it
+   * carries an audio track (`mseBuffer.mimeHasAudio`). Once per element, before its first frame.
+   * Only the boolean leaves; the mime names codecs, nothing else.
+   */
+  readonly onAudioTrack: (hasAudio: boolean) => void
 }
 
 /** What the stall detector needs from one element (see `playerTiming.stallStep`). */
@@ -319,6 +327,7 @@ export class MsePlayer extends VideoRTC {
         return
       }
       sourceBuffer.mode = 'segments'
+      if (!this.torn) this.hooks?.onAudioTrack(mimeHasAudio(mime))
 
       const staging = new Uint8Array(APPEND_BUFFER_BYTES)
       let stagedBytes = 0

@@ -706,6 +706,21 @@
   object-fit: cover;
 }
 
+/* RTSP-4: RTSP streams have no snapshots, so a cell holding a camera draws a large, dimmed camera
+ * icon as its bottom layer instead, centred behind the name chip, so it does not look empty. The
+ * SVG keeps its square viewBox inside the box, so it stays centred and undistorted in any cell. It
+ * never takes the pointer; the selected and drop highlights show around and over it. */
+.editorCanvas__cameraIcon {
+  position: absolute;
+  inset: 0;
+  width: 60%;
+  height: 60%;
+  margin: auto;
+  color: var(--muted);
+  opacity: 0.22;
+  pointer-events: none;
+}
+
 /* The selected tint is the cell's background, which the image covers: draw it over the image on
  * the selection layer instead. The drop highlight is an overlay above the image already. */
 .editorCanvas__cell--image.editorCanvas__cell--selected .editorCanvas__select {

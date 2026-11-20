@@ -158,6 +158,20 @@
   object-fit: cover;
 }
 
+/*
+ * RTSP-4: the camera icon where a still would be (NoPicture.tsx `cameraBackdrop`). Large, centred
+ * and dimmed behind the spinner and label, in the muted colour; static, so nothing to reduce.
+ */
+.noPicture .noPicture__backdrop {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 55cqmin;
+  height: 55cqmin;
+  opacity: 0.18;
+  transform: translate(-50%, -50%);
+}
+
 .noPicture--still .noPicture__body {
   background: var(--scrim);
   color: var(--fg);

@@ -1,7 +1,9 @@
 // One grid cell with a camera in it (CELL-1): the live player and, over it, the overlay with the
 // camera's name and the auto-hiding controls (CellOverlay, P3.4; CELL-3/4, QUAL-7).
 //
-// **Audio (P5.1; AUD-1/2/3).** A cell whose camera has audio (`audio`: `hasMic && micEnabled`) gets
+// **Audio (P5.1; AUD-1/2/3).** A cell whose camera has audio (`audio`: `hasMic && micEnabled`; in RTSP
+// mode, its stream reported an audio track, RTSP-4 — every player here, the pre-warm included,
+// reports its answer upward through `onStreamAudio` with this slot's key) gets
 // a mute toggle in its strip, in the grid and in fill, and while filled a volume slider after it
 // (./AudioControls). Whether this cell is the one heard (`audible`) is decided above, by
 // state/audioStore.ts through `<GridView>`: the single active source is a slot of the View *with the
@@ -178,6 +180,13 @@ export interface CellProps {
   readonly onAudioToggle: (slotKey: string, cameraId: string, unmute: boolean) => void
   /** AUD-3: the volume slider. Stable. */
   readonly onVolumeChange: (volume: number) => void
+  /**
+   * RTSP-4: a player's answer to "does the stream on screen carry audio", with this slot's key and
+   * that player's camera (`<GridView>` keeps them, features/audio/streamAudio.ts). `undefined` in
+   * Protect mode, where the mic flags decide. Stable.
+   */
+  readonly onStreamAudio?:
+    ((slotKey: string, cameraId: string, hasAudio: boolean) => void) | undefined
 }
 
 /**
@@ -230,6 +239,7 @@ export const Cell = memo(function Cell({
   volume,
   onAudioToggle,
   onVolumeChange,
+  onStreamAudio,
 }: CellProps): JSX.Element {
   const { cellRef, layerRef, zoomed, resetZoom } = useZoomPan(filled)
   // The visible player shows live video (header, "Door unlock"). Kept as *which* camera is live, so
@@ -251,6 +261,16 @@ export const Cell = memo(function Cell({
       )
     },
     [cameraId],
+  )
+  // RTSP-4: every player's audio answer, named by this slot (header). `undefined` in Protect mode.
+  const onPlayerAudio = useMemo(
+    () =>
+      onStreamAudio === undefined
+        ? undefined
+        : (playerCameraId: string, hasAudio: boolean): void => {
+            onStreamAudio(slotKey, playerCameraId, hasAudio)
+          },
+    [slotKey, onStreamAudio],
   )
   // The same element object across renders that change nothing of the player's own, so a flip of
   // `zoomed` (or of `filled` alone) re-renders the overlay and never the player.
@@ -285,10 +305,21 @@ export const Cell = memo(function Cell({
             volume={volume}
             fit={fit}
             onPlayingChange={entry.hidden ? undefined : onPlayingChange}
+            onStreamAudio={onPlayerAudio}
           />
         </div>
       )),
-    [cameraId, quality, prewarmCameraId, prewarmQuality, fit, audible, volume, onPlayingChange],
+    [
+      cameraId,
+      quality,
+      prewarmCameraId,
+      prewarmQuality,
+      fit,
+      audible,
+      volume,
+      onPlayingChange,
+      onPlayerAudio,
+    ],
   )
   const qualityPicker =
     inheritedQuality === null ? null : filled ? (

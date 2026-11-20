@@ -26,6 +26,8 @@
 //  - (RTSP-3) in RTSP mode a camera slot carries its stream's availability, and its grid quality
 //    and pre-warm quality are the ones served (closest with a URL); fill quality and the picker's
 //    data stay on the quality asked for. Protect mode (no `rtspUrls`) is unchanged.
+//  - (RTSP-4) in RTSP mode a camera slot has audio once the stream it plays in that slot reported an
+//    audio track (`streamAudio`), not from the mic flags; Protect mode ignores `streamAudio`.
 import type { Camera } from '@shared/ipc'
 import type { Cell, View } from '@shared/models'
 import { PACKAGE_CHANNEL, type QualityDefaults } from '@shared/quality'
@@ -40,6 +42,7 @@ import {
   schedulerEntries,
   type GridSlot,
 } from '../../src/renderer/src/features/grid/gridLayout'
+import { NO_STREAM_AUDIO, streamAudioStep } from '../../src/renderer/src/features/audio/streamAudio'
 
 function camera(overrides: Partial<Camera> & { id: string }): Camera {
   return {
@@ -555,5 +558,59 @@ describe('buildViewSlots: RTSP quality fallback (RTSP-3)', () => {
       expect(slot.availability).toBeNull()
       expect(slot.quality).toBe('low')
     }
+  })
+})
+
+describe('buildViewSlots: audio from the stream in RTSP mode (RTSP-4)', () => {
+  // No mic flags at all: RTSP streams never have them.
+  const cameras: Camera[] = [camera({ id: 'x' }), camera({ id: 'y' })]
+  const key = cameraSlotKey('x', 0)
+  const build = (v: View, streamAudio: ReadonlySet<string> | null): GridSlot[] =>
+    buildViewSlots({ view: v, cameras, streams: STREAMS, streamAudio })
+
+  it('has audio once the slot’s stream reported an audio track, not before', () => {
+    const v = view(1, 1, ['x'])
+    expect(cameraSlot(build(v, NO_STREAM_AUDIO)[0]).audio).toBe(false)
+    const heard = streamAudioStep(NO_STREAM_AUDIO, key, 'x', true)
+    expect(cameraSlot(build(v, heard)[0]).audio).toBe(true)
+    // The stream went, or reported no audio: no toggle again.
+    expect(cameraSlot(build(v, streamAudioStep(heard, key, 'x', false))[0]).audio).toBe(false)
+  })
+
+  it('reads the camera the slot shows now, not another one the slot played', () => {
+    const v = view(1, 1, [['x', 'y']])
+    const heard = streamAudioStep(NO_STREAM_AUDIO, key, 'x', true)
+    expect(cameraSlot(build(v, heard)[0]).audio).toBe(true)
+    const rotated = buildViewSlots({
+      view: v,
+      cameras,
+      streams: STREAMS,
+      streamAudio: heard,
+      shown: new Map([[key, 1]]),
+    })
+    expect(cameraSlot(rotated[0]).audio).toBe(false)
+  })
+
+  it('needs the stream connected, as in Protect mode', () => {
+    const down: Camera[] = [camera({ id: 'x', state: 'DISCONNECTED' })]
+    const heard = streamAudioStep(NO_STREAM_AUDIO, key, 'x', true)
+    const slot = buildViewSlots({
+      view: view(1, 1, ['x']),
+      cameras: down,
+      streams: STREAMS,
+      streamAudio: heard,
+    })
+    expect(cameraSlot(slot[0]).audio).toBe(false)
+  })
+
+  it('leaves Protect mode on the mic flags', () => {
+    const mic: Camera[] = [camera({ id: 'x', hasMic: true, micEnabled: true })]
+    const slot = buildViewSlots({
+      view: view(1, 1, ['x']),
+      cameras: mic,
+      streams: STREAMS,
+      streamAudio: null,
+    })
+    expect(cameraSlot(slot[0]).audio).toBe(true)
   })
 })

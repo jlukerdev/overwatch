@@ -19,7 +19,9 @@
 //  - **CON-5 still holds.** The header carries the connection indicator, so while it is hidden any
 //    endpoint that is not `connected` is shown as an always-visible pill beside the exit control
 //    (`focusModeAlerts`). Access counts only while it is switched on (DOOR-0), as in the header.
+//    In RTSP mode there is no console and the header has no badges (MODE-3), so there are none.
 import type { ConnectionStatus, EndpointName } from '@shared/ipc'
+import type { AppMode } from '@shared/models'
 import { isTextEntryTarget, type ViewShortcutKey, type ViewShortcutTarget } from './viewShortcut'
 
 /** The parts of a `KeyboardEvent` the decision reads: the View shortcut's, minus the key code. */
@@ -43,10 +45,14 @@ export function focusModeApplies(requested: boolean, onLive: boolean, editing: b
 
 /**
  * The endpoints focus mode must keep on screen (CON-5): every one that is not `connected`, Protect
- * first. Access is left out while it is off. `null` (no status yet) shows nothing, as the header does.
+ * first. Access is left out while it is off. `null` (no status yet) shows nothing, as the header does,
+ * and so does RTSP mode, which uses neither endpoint (MODE-3/4).
  */
-export function focusModeAlerts(connection: ConnectionStatus | null): EndpointName[] {
-  if (connection === null) return []
+export function focusModeAlerts(
+  connection: ConnectionStatus | null,
+  mode: AppMode,
+): EndpointName[] {
+  if (connection === null || mode === 'rtsp') return []
   const alerts: EndpointName[] = []
   if (connection.protect.phase !== 'connected') alerts.push('protect')
   if (connection.access.phase !== 'connected' && connection.access.phase !== 'disabled') {

@@ -78,6 +78,18 @@ export function isConsoleDirty(draft: ConsoleDraft, settings: Settings): boolean
   )
 }
 
+/**
+ * Anything typed into the Console form that a mode switch would throw away (MODE-2): an unsaved
+ * address, Access switch or API root (`isConsoleDirty`), or a key or token typed but not yet saved.
+ */
+export function hasUnsavedConsoleInput(draft: ConsoleDraft, settings: Settings): boolean {
+  return (
+    isConsoleDirty(draft, settings) ||
+    draft.protectApiKey.trim() !== '' ||
+    draft.accessToken.trim() !== ''
+  )
+}
+
 /** Matches `ConsoleConfig.accessBaseUrl`: an empty field is `null`, i.e. "derive it" (SPEC §6). */
 function normalizeBaseUrl(value: string): string | null {
   const trimmed = value.trim()

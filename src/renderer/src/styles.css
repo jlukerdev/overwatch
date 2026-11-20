@@ -156,9 +156,13 @@ body,
   stop-opacity: 0;
 }
 
+/*
+ * The nav takes the header's free space, so the badges and the Settings gear sit at its end even
+ * when there are no badges (RTSP mode, MODE-3, or before the first status).
+ */
 .app__nav {
   display: flex;
-  flex-shrink: 0;
+  flex: 1 0 auto;
   gap: 0.25rem;
 }
 
@@ -738,6 +742,144 @@ body,
 .checklist__step--done .checklist__mark {
   border-color: var(--ok);
   color: var(--ok);
+}
+
+/* --- choice cards -------------------------------------------------------------------------------
+ * A radio group drawn as large selectable cards (Settings' mode choice, MODE-2): side by side, stacked
+ * when there is no room for two. Each `.choiceCard` is a `<label>` around a `.visuallyHidden` native
+ * radio, so arrow keys and the accessible name come from the browser; the card shows the radio's
+ * state. Checked: the accent border and the check mark in the corner. Keyboard focus on the radio:
+ * the 2px accent ring around the whole card. Disabled radios dim the card.
+ */
+.choiceCards {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+
+.choiceCards__list {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr));
+  gap: 0.75rem;
+}
+
+.choiceCard {
+  position: relative;
+  display: flex;
+  align-items: flex-start;
+  gap: 0.75rem;
+  padding: 1rem 2.75rem 1rem 1rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-raised);
+  color: var(--fg);
+  cursor: pointer;
+  transition:
+    background-color 120ms ease,
+    border-color 120ms ease,
+    box-shadow 120ms ease;
+}
+
+.choiceCard:hover {
+  border-color: color-mix(in srgb, var(--accent) 35%, var(--border));
+  background: color-mix(in srgb, var(--fg) 4%, var(--bg-raised));
+}
+
+.choiceCard:active {
+  background: color-mix(in srgb, var(--fg) 8%, var(--bg-raised));
+}
+
+.choiceCard:has(:checked) {
+  border-color: var(--accent);
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+
+.choiceCard:has(:focus-visible) {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.choiceCard:has([aria-disabled='true']) {
+  opacity: 0.6;
+  cursor: progress;
+}
+
+.choiceCard__icon {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  width: 2.5rem;
+  height: 2.5rem;
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  background: var(--bg-sunken);
+  color: var(--muted);
+}
+
+.choiceCard__icon .icon {
+  width: 1.3rem;
+  height: 1.3rem;
+}
+
+.choiceCard:has(:checked) .choiceCard__icon {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.choiceCard__text {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  min-width: 0;
+}
+
+.choiceCard__title {
+  font-size: var(--font-md);
+  font-weight: 600;
+}
+
+.choiceCard__hint {
+  color: var(--muted);
+  font-size: var(--font-sm);
+  line-height: 1.4;
+}
+
+/* The check mark in the top-right corner, drawn only on the checked card. */
+.choiceCard__check {
+  position: absolute;
+  top: 0.75rem;
+  right: 0.75rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.4rem;
+  height: 1.4rem;
+  border-radius: 50%;
+  background: var(--accent);
+  color: var(--bg);
+  opacity: 0;
+  transform: scale(0.8);
+  transition:
+    opacity 120ms ease,
+    transform 120ms ease;
+}
+
+.choiceCard__check .icon {
+  width: 0.9rem;
+  height: 0.9rem;
+}
+
+.choiceCard:has(:checked) .choiceCard__check {
+  opacity: 1;
+  transform: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .choiceCard,
+  .choiceCard__check {
+    transition: none;
+  }
 }
 
 /* --- spinner ------------------------------------------------------------------------------------ */

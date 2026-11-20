@@ -22,33 +22,49 @@
 // (features/doors/), each door's cameras on the door's own card. The form's unsaved Access checkbox
 // reveals the token and API-root fields, but nothing that would make an Access call (DOOR-0).
 //
-// Layout (P5.8): one left-aligned column of readable width, the Console controls straight on the screen with no card (user feedback 2026-11-19), scrolling with the app body like the other
-// screens — the keystore warning (only without a keystore), then **Console** (address and
-// credentials, then Certificate, then Connection), and the app version quietly at the foot. With one
-// group there is no section sidebar (the P5.3 cleanup's sidebar went in P5.8), and the screen is
-// opened from the gear button at the header's end rather than a nav tab (App.tsx). Help text is one
-// short line at most; what a requirement mandates (CON-2's keystore notice, CON-3's
+// Layout (P5.8): one left-aligned column of readable width, the controls straight on the screen
+// with no card (user feedback 2026-11-19), scrolling with the app body like the other screens — the
+// **Mode** cards first (MODE-2, ./ModePicker), the keystore warning (only without a keystore), then
+// **Console** (address and credentials, then Certificate, then Connection), and the app version
+// quietly at the foot. There is no section sidebar (the P5.3 cleanup's sidebar went in P5.8), and
+// the screen is opened from the gear button at the header's end rather than a nav tab (App.tsx).
+// Help text is one short line at most; what a requirement mandates (CON-2's keystore notice, CON-3's
 // compare-the-fingerprint prompt, DOOR-0's "the token and links are kept") is kept, only shorter.
-import { useState, type JSX, type ReactNode } from 'react'
+//
+// **RTSP mode** (MODE-3): the Mode cards, the keystore warning (stream URLs are secrets too, CON-2),
+// one line pointing to the Streams screen, and the version. Every UniFi setting — the whole Console
+// group with its certificates and connection — is not drawn at all, so nothing here can make a
+// Protect or Access call (MODE-4).
+import { useEffect, useState, type JSX, type ReactNode } from 'react'
 import type { AccessProbe, IpcError, IpcSecretKey, ProtectProbe, Settings } from '@shared/ipc'
 import { useAppStore } from '../../state/appStore'
-import { CheckIcon, PlugIcon, PulseIcon, TrashIcon } from '../../ui/icons'
+import { CameraIcon, CheckIcon, PlugIcon, PulseIcon, TrashIcon } from '../../ui/icons'
 import { CertificateCard } from './CertificateCard'
+import { ModePicker } from './ModePicker'
 import { StatusLine, type StatusKind } from '../../ui/StatusLine'
 import {
   consoleDraftFrom,
   consoleInputFrom,
   consoleSignature,
   describeEndpointStatus,
+  hasUnsavedConsoleInput,
   isConsoleDirty,
   type ConsoleDraft,
   type ConsoleFieldErrors,
 } from './settingsForm'
 import './settings.css'
 
-export function SettingsPage(): JSX.Element {
+export interface SettingsPageProps {
+  /** Opens the Streams screen (RTSP mode's pointer line). */
+  readonly onOpenStreams: () => void
+}
+
+export function SettingsPage({ onOpenStreams }: SettingsPageProps): JSX.Element {
   const settings = useAppStore((s) => s.settings)
   const keystoreAvailable = useAppStore((s) => s.keystoreAvailable)
+  // MODE-2: whether the Console form holds input a switch to RTSP would discard (ConsoleCard reports
+  // it), so the mode cards can ask about that first.
+  const [consoleUnsaved, setConsoleUnsaved] = useState(false)
 
   // `settings` is null only until the first `getState()` lands, which the shell already waits for;
   // this is the type-level version of that guarantee rather than a state the user ever sees.
@@ -62,12 +78,39 @@ export function SettingsPage(): JSX.Element {
 
   return (
     <div className="settings">
-      {keystoreAvailable ? null : <KeystoreWarning />}
-      <ConsoleCard settings={settings} keystoreAvailable={keystoreAvailable}>
-        <CertificateSection accessEnabled={settings.console.accessEnabled} />
-        <ConnectionCard accessEnabled={settings.console.accessEnabled} />
-      </ConsoleCard>
+      <ModePicker
+        mode={settings.mode}
+        unsavedConsole={settings.mode === 'protect' && consoleUnsaved}
+      />
+      {keystoreAvailable ? null : <KeystoreWarning mode={settings.mode} />}
+      {settings.mode === 'rtsp' ? (
+        <StreamsPointer onOpenStreams={onOpenStreams} />
+      ) : (
+        <ConsoleCard
+          settings={settings}
+          keystoreAvailable={keystoreAvailable}
+          onUnsavedChange={setConsoleUnsaved}
+        >
+          <CertificateSection accessEnabled={settings.console.accessEnabled} />
+          <ConnectionCard accessEnabled={settings.console.accessEnabled} />
+        </ConsoleCard>
+      )}
       <AppVersion />
+    </div>
+  )
+}
+
+/** MODE-3: in RTSP mode the cameras are set up on the Streams screen, not here. */
+function StreamsPointer({ onOpenStreams }: SettingsPageProps): JSX.Element {
+  return (
+    <div className="row settings__streams">
+      <p className="settings__streamsText">
+        Add and edit your cameras&rsquo; RTSP addresses on the Streams screen.
+      </p>
+      <button type="button" className="button" onClick={onOpenStreams}>
+        <CameraIcon />
+        Open Streams
+      </button>
     </div>
   )
 }
@@ -80,9 +123,10 @@ function AppVersion(): JSX.Element | null {
 
 /**
  * CON-2 has no plaintext fallback, so when `safeStorage` has no keystore the honest thing is to say
- * that a key cannot be kept at all — not to fail silently on Save and look like a bug.
+ * that a key cannot be kept at all — not to fail silently on Save and look like a bug. RTSP mode
+ * keeps the warning (MODE-3) because stream addresses are secrets too (RTSP-2), worded for them.
  */
-function KeystoreWarning(): JSX.Element {
+function KeystoreWarning({ mode }: { mode: Settings['mode'] }): JSX.Element {
   return (
     <section
       className="card settings__keystore"
@@ -93,8 +137,17 @@ function KeystoreWarning(): JSX.Element {
         Secure storage is not available
       </h2>
       <p className="settings__mismatchText">
-        Keys and tokens can&rsquo;t be saved without Keychain or DPAPI, so you&rsquo;ll be asked for
-        them each time the app opens; they are never stored as plain text.
+        {mode === 'rtsp' ? (
+          <>
+            Stream addresses can&rsquo;t be saved without Keychain or DPAPI; they are never stored
+            as plain text.
+          </>
+        ) : (
+          <>
+            Keys and tokens can&rsquo;t be saved without Keychain or DPAPI, so you&rsquo;ll be asked
+            for them each time the app opens; they are never stored as plain text.
+          </>
+        )}
       </p>
     </section>
   )
@@ -106,10 +159,13 @@ function KeystoreWarning(): JSX.Element {
 function ConsoleCard({
   settings,
   keystoreAvailable,
+  onUnsavedChange,
   children,
 }: {
   settings: Settings
   keystoreAvailable: boolean
+  /** Told whether the form holds input a mode switch would discard (MODE-2). */
+  onUnsavedChange: (unsaved: boolean) => void
   /** The Certificate and Connection subsections, after the address and credentials. */
   children: ReactNode
 }): JSX.Element {
@@ -152,6 +208,17 @@ function ConsoleCard({
   }
 
   const dirty = isConsoleDirty(draft, settings)
+  const unsaved = hasUnsavedConsoleInput(draft, settings)
+  useEffect(() => {
+    onUnsavedChange(unsaved)
+  }, [unsaved, onUnsavedChange])
+  // Unmounted (a switch to RTSP went ahead): nothing is left unsaved.
+  useEffect(
+    () => () => {
+      onUnsavedChange(false)
+    },
+    [onUnsavedChange],
+  )
 
   return (
     <section aria-labelledby="settings-console-title">

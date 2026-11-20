@@ -1,5 +1,10 @@
-// The screen the app opens on (CON-1, CON-4, VIEW-6), decided once by App.tsx after the first load.
-// Its own module so the rule is a pure function the tests can call without React.
+// The screen the app opens on (CON-1, CON-4, VIEW-6, MODE-3), decided once by App.tsx after the
+// first load. Its own module so the rule is a pure function the tests can call without React.
+//
+// **RTSP mode** (MODE-3) has no console, so the host plays no part: **Live** when there is at least
+// one View (`settings.views` is the active mode's list, MODE-4) and at least one stream, otherwise
+// **Streams**, where a stream is added. The rest of this comment is **Protect mode**, the default
+// and so what a first run gets: it opens on Settings, where the mode cards come first.
 //
 //  - **Settings** while there is no console address: a fresh install has nothing to show anywhere
 //    else (CON-1).
@@ -19,8 +24,9 @@ import type { Settings } from '@shared/models'
 /**
  * `doors` (P5.6) exists only while the saved Access switch is on (DOOR-0, App.tsx) and is never the
  * first screen: opening it makes main read the Access console, which only the user asks for.
+ * `cameras` and `doors` are Protect mode's, `streams` is RTSP mode's (MODE-3, ./navScreens).
  */
-export type Screen = 'cameras' | 'doors' | 'grid' | 'settings'
+export type Screen = 'cameras' | 'doors' | 'streams' | 'grid' | 'settings'
 
 /**
  * The first screen for `settings` as loaded; `null` (no settings) is treated as a fresh install.
@@ -30,6 +36,9 @@ export type Screen = 'cameras' | 'doors' | 'grid' | 'settings'
  * hand-cleared pin) opens on Cameras, where the setup gap is explained, not on an empty Live.
  */
 export function initialScreen(settings: Settings | null, secretsStored: SecretsStored): Screen {
+  if (settings !== null && settings.mode === 'rtsp') {
+    return settings.views.length > 0 && settings.rtsp.streams.length > 0 ? 'grid' : 'streams'
+  }
   if (settings === null || settings.console.host === '') return 'settings'
   const launchConnects =
     settings.console.connectOnLaunch &&

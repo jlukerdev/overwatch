@@ -1,6 +1,6 @@
 # GitHub repo move and automated Releases: plan
 
-Notes for moving OverWatch (View Protect) to its own public GitHub repo and building Releases with GitHub Actions. Nothing here is done yet. Written 2026-11-19.
+Notes for moving OverWatch (View Protect) to its own public GitHub repo and building Releases with GitHub Actions. The move to the new repo is done; the workflows, Pages and versioning below are not. Written 2026-11-19.
 
 ## What the repo already provides
 
@@ -13,17 +13,7 @@ Notes for moving OverWatch (View Protect) to its own public GitHub repo and buil
 - **Version:** `package.json` is `1.0.1`. electron-builder takes the installer version from it.
 - **README:** already tells users to download from the releases and explains the Gatekeeper/SmartScreen first-launch steps.
 
-## 1. Before the move
-
-1. **Make the project the repo root.** Workflows must live at `.github/workflows/` in the new repo. Use `git subtree split` or `git filter-repo --subdirectory-filter HomeAutomation/Security/view-protect` to keep history, or start fresh.
-2. **Audit history before going public.** Scan with `gitleaks` or `trufflehog` for secrets and local network details (IPs, tokens, console names). A grep of the current tree only hit docs and the lockfile, but old commits could differ.
-3. **Check what is being redistributed.**
-   - `docs/reference/` contains Ubiquiti's Access API PDF and the Protect OpenAPI JSON. Confirm publishing them is allowed, or remove them and link instead.
-   - Add a `LICENSE` (none exists outside `src/renderer/src/player/vendor/`).
-4. **Update `CLAUDE.md`.** It says PRs go into `feature/view-protect`, never `main`. Choose a new branch model. Refresh paths and the "View Protect" naming where needed.
-5. **Check example env files** (`.env.example`) carry no real values.
-
-## 2. Workflows to add
+## 1. Workflows to add
 
 ### `.github/workflows/ci.yml` (pull requests and pushes)
 
@@ -43,7 +33,7 @@ Notes for moving OverWatch (View Protect) to its own public GitHub repo and buil
 
 - Ecosystems: `npm` and `github-actions`. Pin Actions by major version or SHA.
 
-## 3. Public docs hosting (GitHub Pages)
+## 2. Public docs hosting (GitHub Pages)
 
 **Requirement:** the user guide and the brochure must be publicly reachable from GitHub, and `README.md` must link to them by their public URLs.
 
@@ -64,7 +54,7 @@ Plan:
 6. **Optional:** link the guide and brochure from the Release notes, the repo "About" website field, and the app's Help or About text if it has one.
 7. **Verify** after the first deploy: both URLs load, all 10 images render, and the README links work.
 
-## 4. Decision: how versions work
+## 3. Decision: how versions work
 
 A Release needs a unique tag, so "a Release on every commit" needs a versioning scheme.
 
@@ -76,7 +66,7 @@ A Release needs a unique tag, so "a Release on every commit" needs a versioning 
 
 **Leaning:** CI on every commit, auto-built prereleases on `main`, and a tag-driven stable release. Not decided yet.
 
-## 5. Things to know
+## 4. Things to know
 
 - **Unsigned builds:** `electron-builder.yml` notes this. Signing is optional later. It needs an Apple Developer account (about $99/yr) with a cert and notarization secrets, and a Windows signing cert. None are needed now.
 - **Secrets:** unsigned builds need only the built-in `GITHUB_TOKEN`.
@@ -87,14 +77,9 @@ A Release needs a unique tag, so "a Release on every commit" needs a versioning 
   - If `main` is protected, the release job must not need to push a version-bump commit. Tags and Releases do not count as pushes to the branch.
 - **e2e:** `tests/e2e/smoke.spec.ts` is not in any npm script. On Linux CI it would need a display (`xvfb`). Leave it out at first.
 
-## 6. Checklist
+## 5. Checklist
 
-- [ ] Scan history for secrets and local details
-- [ ] Decide on Ubiquiti reference docs (keep, remove, or link)
-- [ ] Add `LICENSE`
-- [ ] Split or move the project into the new repo root
-- [ ] Update `CLAUDE.md` branch model and paths
-- [ ] Choose a versioning approach (section 4)
+- [ ] Choose a versioning approach (section 3)
 - [ ] Add `ci.yml`
 - [ ] Add `release.yml`
 - [ ] Add `dependabot.yml`

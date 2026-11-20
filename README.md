@@ -48,6 +48,21 @@ OverWatch talks straight to your UniFi console over your local network, using Ub
 
 Installers are built for Apple silicon Macs, Intel Macs and Windows x64 (see below). Windows on ARM needs its own build.
 
+## Building from source
+
+> **Required for development.** To run OverWatch from source, run the first two commands below once (`npm install`, then `npm run fetch:go2rtc`) before `npm run dev`. The app won't start without the dependencies and the bundled go2rtc binary. Run every command from the repository root.
+
+You need Node 24 or later.
+
+```bash
+npm install
+npm run fetch:go2rtc   # download go2rtc for this machine
+npm run dev            # run the app
+npm run dist           # build the installers into dist/ (see docs/DEVELOPMENT.md)
+```
+
+To work on the code, see [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md). The design docs are [docs/SPEC.md](docs/SPEC.md) (requirements), [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) (architecture) and [docs/FEATURES.md](docs/FEATURES.md) (features by version). Inside the code the project is called *View Protect*.
+
 ## Install
 
 Download the installer for your computer from the releases:
@@ -95,16 +110,3 @@ If something goes wrong, choose **Help → Show Log Files** to open the folder w
 - `app.log` records what the app did and any errors. It keeps itself small: older entries move to `app.log.1`, `.2` and `.3`, and the oldest are deleted.
 - Your API key, token, passwords and camera stream addresses are left out of it, so you can send it to someone helping you.
 - `unlock.log` is the record of every door action: each unlock, lock and emergency change, and whether it worked.
-
-## Building from source
-
-You need Node 24 or later.
-
-```bash
-npm install
-npm run fetch:go2rtc   # download go2rtc for this machine
-npm run dev            # run the app
-npm run dist           # build the installers into dist/ (see docs/DEVELOPMENT.md)
-```
-
-To work on the code, see [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md). The design docs are [docs/SPEC.md](docs/SPEC.md) (requirements), [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) (architecture) and [docs/FEATURES.md](docs/FEATURES.md) (features by version). Inside the code the project is called *View Protect*.

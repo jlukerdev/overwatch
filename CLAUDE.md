@@ -20,17 +20,15 @@ This app is built and maintained by agents. Read `docs/SPEC.md` (how the app beh
 ## Workflow for each work unit (one feature, e.g. `F1.0.2-1`)
 Follow these steps in order for **every** feature. Do not batch several features into one branch or PR unless the version file says they ship together.
 
-1. **Branch.** The base branch is **`feature/view-protect`**. Pull it to get its latest, then create a new branch for the feature from it: `view-protect/<feature-id>-<slug>` (e.g. `view-protect/f1.0.2-1-export-views`).
+1. **Branch.** Pull the latest of the repo's default branch, then create a new branch for the feature from it: `view-protect/<feature-id>-<slug>` (e.g. `view-protect/f1.0.2-1-export-views`).
 2. **Implement with subagents.** The main agent plans and coordinates the feature. The implementation work goes to subagents (e.g. one for code, one for tests or fixtures). The main agent combines their results and checks them: build, lint and tests must pass.
 3. **Review.** When implementation is done, run the `/code-review` skill on the branch's changes.
    - Apply the recommended fixes that are clear-cut correctness or quality fixes.
    - **Ask the user for approval** on any finding that changes scope, behaviour, the spec, architecture, security posture, or that you're unsure about. List each with the trade-off and your recommendation, and wait for the answer before changing it.
    - Re-run build, lint and tests after the fixes.
 4. **Update tracking.** Set the feature's status in its version file (add the PR number once it exists), and update `docs/SPEC.md` for any behaviour change.
-5. **Commit, push, PR.** Commit (message references the feature ID and requirement IDs), push the branch, and open a PR into `feature/view-protect` (never `main`). The PR description includes: the feature, what changed, test/gate evidence, review findings with what was done about each one (fixed / deferred / user decision), and anything left open.
-6. **Wait for merge.** Stop and tell the user the PR is ready. **Do not start the next feature until the user has approved and merged the PR.** After the merge, pull `feature/view-protect` and go to step 1 for the next feature.
-
-Merging `feature/view-protect` into `main` is the user's call. Agents never open or merge PRs into `main`.
+5. **Commit, push, PR.** Commit (message references the feature ID and requirement IDs), push the branch, and open a PR. The PR description includes: the feature, what changed, test/gate evidence, review findings with what was done about each one (fixed / deferred / user decision), and anything left open.
+6. **Wait for merge.** Stop and tell the user the PR is ready. **Do not start the next feature until the user has approved and merged the PR.** After the merge, pull the default branch and go to step 1 for the next feature. Agents never merge PRs.
 
 Each version file has a **release check**. The last PR of a version sets `package.json` to that version and includes the release-check evidence; the next version's features don't start until that PR is merged.
 

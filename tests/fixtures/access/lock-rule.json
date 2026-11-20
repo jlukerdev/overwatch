@@ -1,5 +1,5 @@
 {
-  "_source": "mock",
+  "_source": "console",
   "request": {
     "method": "GET",
     "path": "/doors/{id}/lock_rule",
@@ -8,10 +8,10 @@
   "status": 200,
   "response": {
     "code": "SUCCESS",
-    "msg": "success",
     "data": {
-      "type": "",
-      "ended_time": 0
-    }
+      "ended_time": 0,
+      "type": ""
+    },
+    "msg": "success"
   }
 }

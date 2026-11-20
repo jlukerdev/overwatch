@@ -1,5 +1,5 @@
 {
-  "_source": "mock",
+  "_source": "console",
   "request": {
     "method": "GET",
     "path": "/doors"
@@ -7,48 +7,22 @@
   "status": 200,
   "response": {
     "code": "SUCCESS",
-    "msg": "success",
     "data": [
       {
+        "door_lock_relay_status": "lock",
+        "door_position_status": "none",
+        "extras": {
+          "door_thumbnail": "/preview/reader_mac-001_uuid-001_1795196777.jpg",
+          "door_thumbnail_last_update": 1795196777
+        },
+        "floor_id": "floor-001",
+        "full_name": "OGBC - 1F - Edu Entry South",
         "id": "door-001",
-        "name": "Front Door",
-        "full_name": "Mock Console - 1F - Front Door",
-        "floor_id": "floor-001",
-        "type": "door",
         "is_bind_hub": true,
-        "door_lock_relay_status": "lock",
-        "door_position_status": "close"
-      },
-      {
-        "id": "door-002",
-        "name": "Garage Side Door",
-        "full_name": "Mock Console - 1F - Garage Side Door",
-        "floor_id": "floor-001",
-        "type": "door",
-        "is_bind_hub": true,
-        "door_lock_relay_status": "lock",
-        "door_position_status": "open"
-      },
-      {
-        "id": "door-003",
-        "name": "Office",
-        "full_name": "Mock Console - 2F - Office",
-        "floor_id": "floor-002",
-        "type": "door",
-        "is_bind_hub": true,
-        "door_lock_relay_status": "lock",
-        "door_position_status": "close"
-      },
-      {
-        "id": "door-004",
-        "name": "Storage Room",
-        "full_name": "Mock Console - 2F - Storage Room",
-        "floor_id": "floor-002",
-        "type": "door",
-        "is_bind_hub": false,
-        "door_lock_relay_status": "lock",
-        "door_position_status": null
+        "name": "Edu Entry South",
+        "type": "door"
       }
-    ]
+    ],
+    "msg": "success"
   }
 }

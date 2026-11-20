@@ -55,7 +55,7 @@ Checks that can only be run with hardware the development network does not have.
 
 | # | Check | Why |
 |---|---|---|
-| OS-1 | At the deployment site, with a real Access token, run `npm run spike:access` against the console: doors list, one confirmed unlock of an agreed test door, one lock rule and the emergency status read, and the notifications WebSocket. Record which events arrive for a remote unlock, a card or PIN unlock and a relock, and what `lock_now` does to a door inside its unlock schedule | Nothing in SPEC §5.2 has run against Access hardware (R3) |
+| OS-1 | At the deployment site, with a real Access token, run `npm run spike:access` against the console: doors list, one confirmed unlock of an agreed test door, one lock rule and the emergency status read, and the notifications WebSocket. Record which events arrive for a remote unlock, a card or PIN unlock and a relock, and what `lock_now` does to a door inside its unlock schedule. **Partly done:** the read-only run (doors list, error probes, lock rule, emergency status, WebSocket open) has passed on one console and its captures are in `tests/fixtures/access/`; the unlock, the PUTs and the event list are still open | The unlock and the door-changing calls in SPEC §5.2 have not run against Access hardware (R3) |
 | OS-2 | In the app at the site: enable Access, link each camera to its door, unlock each linked door once from its cell, and use the Doors screen | The door features have only been checked against the mock |
 | R1 | Before Enhanced Encoding (H.265) is turned back on for any camera, play a real H.265 stream on Windows | Only verified on macOS |
 | R11 | When a camera next goes offline, check the devices WebSocket messages and the snapshot answer | Both are unobserved |

@@ -4,7 +4,7 @@
 //   npm run mock:access -- --port 12445 --host 127.0.0.1 --latency-ms 300 --fail-rate 0.2
 //
 // Serves the door API and the notifications WebSocket of Ubiquiti's official reference
-// (docs/reference/access-endpoints-v4.2.16.md; documented, not yet run against hardware, OS-1).
+// (docs/reference/access-endpoints-v4.2.16.md; the read calls checked on a console, OS-1).
 // What the reference leaves open is the mock's own choice: see docs/spikes/P0.4-access-mock.md.
 // Binds to loopback by default. Uses a self-signed certificate generated on first run into
 // scripts/mock-access/.cert/ (gitignored) with the system `openssl`, so the client's TLS pinning

@@ -80,6 +80,11 @@
   .pair { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 20px; align-items: start; }
   .pair--uneven { grid-template-columns: minmax(0, 2fr) minmax(0, 1fr); }
 
+  .alt { display: grid; gap: 14px; padding: 26px 28px 28px; border: 1px solid var(--line); border-left: 3px solid var(--accent); border-radius: 10px; background: var(--raised); scroll-margin-top: 20px; }
+  .alt h2 { font-size: clamp(1.7rem, 4vw, 2.1rem); }
+  .alt p, .alt ol { color: var(--muted); max-width: 44rem; }
+  .alt ol { padding-left: 1.3em; display: grid; gap: 4px; }
+
   .keys { border-top: 1px solid var(--line); }
   .keys .wrap { padding-block: 44px 64px; display: grid; gap: 22px; }
   .keys h2 { font-size: 2rem; }
@@ -99,7 +104,7 @@
   <div class="wrap">
     <p class="kicker">OverWatch · User guide</p>
     <h1>Up and watching in seven steps</h1>
-    <p>A quick tour of the main features, in the order you'll meet them.</p>
+    <p>A quick tour of the main features, in the order you'll meet them. No UniFi console? OverWatch also plays <a href="#rtsp">any camera with an RTSP address</a>.</p>
     <ol class="toc">
       <li><a href="#connect">Connect</a></li>
       <li><a href="#cameras">Cameras</a></li>
@@ -122,6 +127,7 @@
           <li>Enter your console's address and a Protect API key. Create the key in Protect under <b>Integrations</b>.</li>
           <li>Accept the console's certificate, then press <b>Connect</b>.</li>
         </ul>
+        <p>The <b>Mode</b> cards at the top of Settings choose between UniFi Protect and <a href="#rtsp">RTSP streams</a>.</p>
       </div>
     </div>
     <figure class="shot">
@@ -241,6 +247,18 @@
         <figcaption>The door button sits at the bottom of a linked camera.</figcaption>
       </figure>
     </div>
+  </section>
+
+  <section class="alt" id="rtsp">
+    <p class="kicker">Without a UniFi console</p>
+    <h2>RTSP streams mode</h2>
+    <p>OverWatch can play any camera that has an RTSP address, with no UniFi console at all.</p>
+    <ol>
+      <li>In <b>Settings</b>, choose <b>RTSP streams</b> under <b>Mode</b> and confirm the switch.</li>
+      <li>On <b>Streams</b>, press <b>Add stream</b>. Name the camera and enter its address. You can give one each for High, Medium and Low quality, but one is enough.</li>
+      <li>Build Views and watch them on <b>Live</b> as in steps 3 to 6. A cell with several cameras rotates on a timer.</li>
+    </ol>
+    <p>This mode has no camera thumbnails, no switching on motion and no doors. Once saved, an address is never shown again. Each mode keeps its own Views, and switching back to UniFi Protect loses nothing.</p>
   </section>
 </main>
 

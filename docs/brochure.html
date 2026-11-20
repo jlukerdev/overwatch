@@ -213,6 +213,16 @@
   .pill { justify-self: start; display: inline-flex; align-items: center; gap: 0.4em; padding: 0.2em 0.7em; border: 1px solid rgb(76 141 255 / 45%); border-radius: 99em; background: rgb(76 141 255 / 14%); color: var(--accent-2); font-weight: 400; }
   .pill em { font-style: normal; color: var(--fg); }
 
+  .stream { grid-template-columns: auto minmax(0, 1fr); column-gap: 0.9em; }
+  .stream > svg.ic { width: 2.6em; height: 2.6em; color: var(--muted); stroke-width: 1.5; }
+  .stream > div { display: grid; gap: 0.7em; min-width: 0; }
+  .stream b { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .qcs { display: flex; gap: 0.35em; }
+  .qc { padding: 0.15em 0.5em; border: 1px solid var(--line); border-radius: 0.43em; font-size: 0.75em; font-weight: 600; letter-spacing: 0.04em; color: var(--fg); background: var(--sunken); }
+  .qc--off { opacity: 0.35; }
+  .row .ui.ui--streams { font-size: clamp(3.5px, 3.3cqw, 14px); }
+  .ui--streams .doorgrid { grid-template-columns: minmax(0, 1fr); gap: 0.7em; }
+
   /* ---- intro film: stacked scenes on a 16:10 stage, sized in cqw off the stage's width ---- */
   .film { display: grid; gap: 12px; min-width: 0; }
   .film__stage {
@@ -453,7 +463,7 @@
 
     <div class="hero__copy">
       <h1>Every camera.<br><em>One wall.</em></h1>
-      <p class="lede">A desktop app that shows your UniFi Protect cameras live, in grids you lay out yourself.</p>
+      <p class="lede">A desktop app that shows your UniFi Protect cameras live, in grids you lay out yourself. It plays any camera with an RTSP address too.</p>
       <ul class="tags">
         <li>macOS</li>
         <li>Windows</li>
@@ -594,6 +604,50 @@
     </figure>
   </section>
 
+  <section class="row row--flip">
+    <div class="row__copy">
+      <p class="label">RTSP streams · no console needed</p>
+      <h2>Any camera with an RTSP address</h2>
+      <p>No UniFi console? Switch to RTSP streams mode, add each camera's address, and <b>watch them in the same Views</b>, with the same fill, zoom and audio.</p>
+    </div>
+    <figure class="shot" role="img" aria-label="The Streams screen: a card per camera with its name, the qualities it has an address for, and Edit and Delete buttons.">
+      <div class="ui ui--streams">
+        <div class="ui-doors">
+          <div class="top">
+            <b>Streams</b>
+            <span class="btn btn--primary"><svg class="ic"><use href="#i-plus"/></svg>Add stream</span>
+          </div>
+          <div class="doorgrid">
+            <div class="door stream">
+              <svg class="ic"><use href="#i-cam"/></svg>
+              <div>
+                <b>Barn</b>
+                <div class="qcs"><span class="qc">HIGH</span><span class="qc">MED</span><span class="qc">LOW</span></div>
+                <div class="bt"><span class="btn">Edit</span><span class="btn">Delete</span></div>
+              </div>
+            </div>
+            <div class="door stream">
+              <svg class="ic"><use href="#i-cam"/></svg>
+              <div>
+                <b>Workshop</b>
+                <div class="qcs"><span class="qc">HIGH</span><span class="qc qc--off">MED</span><span class="qc">LOW</span></div>
+                <div class="bt"><span class="btn">Edit</span><span class="btn">Delete</span></div>
+              </div>
+            </div>
+            <div class="door stream">
+              <svg class="ic"><use href="#i-cam"/></svg>
+              <div>
+                <b>Pool</b>
+                <div class="qcs"><span class="qc">HIGH</span><span class="qc qc--off">MED</span><span class="qc qc--off">LOW</span></div>
+                <div class="bt"><span class="btn">Edit</span><span class="btn">Delete</span></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </figure>
+  </section>
+
   <section class="extras" aria-label="More features">
     <div><h3>Rotating cells</h3><p>One cell cycles through several cameras, or jumps to the one that sees motion.</p></div>
     <div><h3>Quality per camera</h3><p>High where you need detail, low where you don't.</p></div>
@@ -606,7 +660,7 @@
   <div class="wrap">
     <p class="label">Stays on your network</p>
     <div class="local__words"><span>No cloud.</span><span>No account.</span></div>
-    <p>OverWatch talks only to your own UniFi console, using Ubiquiti's official API. Your API key is encrypted by your computer's keystore.</p>
+    <p>OverWatch talks only to your own UniFi console, using Ubiquiti's official API. In RTSP streams mode it talks only to your cameras. Your API key and stream addresses are encrypted by your computer's keystore.</p>
   </div>
 </section>
 
@@ -615,7 +669,7 @@
     <div class="needs">
       <div><p class="label">Mac</p><p>macOS 12 (Monterey) or later.</p></div>
       <div><p class="label">Windows</p><p>Windows 10 or 11.</p></div>
-      <div><p class="label">You'll need</p><p>A UniFi Protect console on your network or VPN. UniFi Access for doors.</p></div>
+      <div><p class="label">You'll need</p><p>A UniFi Protect console on your network or VPN, or cameras with an RTSP address. UniFi Access for doors.</p></div>
     </div>
     <p class="small">OverWatch is a personal project, not a Ubiquiti product. The film shows the running app with illustrated camera pictures; the other screens are illustrations.</p>
   </div>

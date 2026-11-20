@@ -156,9 +156,13 @@ body,
   stop-opacity: 0;
 }
 
+/*
+ * The nav takes the header's free space, so the badges and the Settings gear sit at its end even
+ * when there are no badges (RTSP mode, MODE-3, or before the first status).
+ */
 .app__nav {
   display: flex;
-  flex-shrink: 0;
+  flex: 1 0 auto;
   gap: 0.25rem;
 }
 
@@ -740,6 +744,144 @@ body,
   color: var(--ok);
 }
 
+/* --- choice cards -------------------------------------------------------------------------------
+ * A radio group drawn as large selectable cards (Settings' mode choice, MODE-2): side by side, stacked
+ * when there is no room for two. Each `.choiceCard` is a `<label>` around a `.visuallyHidden` native
+ * radio, so arrow keys and the accessible name come from the browser; the card shows the radio's
+ * state. Checked: the accent border and the check mark in the corner. Keyboard focus on the radio:
+ * the 2px accent ring around the whole card. Disabled radios dim the card.
+ */
+.choiceCards {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+
+.choiceCards__list {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr));
+  gap: 0.75rem;
+}
+
+.choiceCard {
+  position: relative;
+  display: flex;
+  align-items: flex-start;
+  gap: 0.75rem;
+  padding: 1rem 2.75rem 1rem 1rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-raised);
+  color: var(--fg);
+  cursor: pointer;
+  transition:
+    background-color 120ms ease,
+    border-color 120ms ease,
+    box-shadow 120ms ease;
+}
+
+.choiceCard:hover {
+  border-color: color-mix(in srgb, var(--accent) 35%, var(--border));
+  background: color-mix(in srgb, var(--fg) 4%, var(--bg-raised));
+}
+
+.choiceCard:active {
+  background: color-mix(in srgb, var(--fg) 8%, var(--bg-raised));
+}
+
+.choiceCard:has(:checked) {
+  border-color: var(--accent);
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+
+.choiceCard:has(:focus-visible) {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.choiceCard:has([aria-disabled='true']) {
+  opacity: 0.6;
+  cursor: progress;
+}
+
+.choiceCard__icon {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  width: 2.5rem;
+  height: 2.5rem;
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  background: var(--bg-sunken);
+  color: var(--muted);
+}
+
+.choiceCard__icon .icon {
+  width: 1.3rem;
+  height: 1.3rem;
+}
+
+.choiceCard:has(:checked) .choiceCard__icon {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.choiceCard__text {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  min-width: 0;
+}
+
+.choiceCard__title {
+  font-size: var(--font-md);
+  font-weight: 600;
+}
+
+.choiceCard__hint {
+  color: var(--muted);
+  font-size: var(--font-sm);
+  line-height: 1.4;
+}
+
+/* The check mark in the top-right corner, drawn only on the checked card. */
+.choiceCard__check {
+  position: absolute;
+  top: 0.75rem;
+  right: 0.75rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.4rem;
+  height: 1.4rem;
+  border-radius: 50%;
+  background: var(--accent);
+  color: var(--bg);
+  opacity: 0;
+  transform: scale(0.8);
+  transition:
+    opacity 120ms ease,
+    transform 120ms ease;
+}
+
+.choiceCard__check .icon {
+  width: 0.9rem;
+  height: 0.9rem;
+}
+
+.choiceCard:has(:checked) .choiceCard__check {
+  opacity: 1;
+  transform: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .choiceCard,
+  .choiceCard__check {
+    transition: none;
+  }
+}
+
 /* --- spinner ------------------------------------------------------------------------------------ */
 
 .spinner {
@@ -835,27 +977,60 @@ body,
   font-size: var(--font-sm);
 }
 
+/* --- quality chips ------------------------------------------------------------------------------
+ * QUAL-7: which qualities a camera has, as small quiet chips (HIGH / MED / LOW): the Cameras
+ * screen's RTSPS streams on the console, the Streams screen's saved addresses (RTSP-1). A detail,
+ * so muted; an absent quality is dimmed rather than hidden, so the card says what is missing too.
+ */
+.qualityChips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.qualityChip {
+  padding: 0.05rem 0.4rem;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--fg);
+  font-size: var(--font-xs);
+  letter-spacing: 0.02em;
+}
+
+.qualityChip--absent {
+  border-style: dashed;
+  color: var(--muted);
+  opacity: 0.55;
+}
+
 /* --- settings bar (ui/SettingsBar.tsx) -----------------------------------------------------------
- * A screen's own settings, collapsible and pinned to the bottom of the screen (user decision
- * 2026-11-19): the Doors screen's polling, the Cameras screen's stream qualities. It expects to be
- * the last child of a screen that is a flex column with `min-height: 100%` and the padding
- * `--screen-pad-*` tokens (`.doors`, `.cameras`): `margin-top: auto` puts it at the bottom of a short
- * screen and `position: sticky` keeps it there while the screen scrolls under it, so opening it
- * grows upwards. Its body scrolls by itself when the window is too short for it.
+ * A screen's own settings, collapsible: the Doors screen's polling, the Cameras screen's stream
+ * qualities. It is the first child of a screen with the `--screen-pad-*` padding and a 1rem flex
+ * gap (`.doors`, `.cameras`), above the title row and any banner. Closed, it takes its own row, so
+ * nothing is hidden; open, its body hangs below it over the content, covering it rather than moving
+ * it (an inline body would push the screen down on every open).
+ *
+ * `position: sticky` keeps it under the app header while the screen scrolls: the scroll container
+ * is `.app__body` (html, body and #root never scroll), and the screen is its child, as tall as its
+ * content, so the bar sticks for the whole scroll.
  */
 .settingsBar {
   position: sticky;
   z-index: 1;
-  bottom: 0;
+  top: 0;
+  flex-shrink: 0;
   /*
-   * Flush with the bottom and the sides of the screen (user decision 2026-11-19): the negative
-   * margins take back the screen's padding, and only the top edge is drawn.
+   * Flush with the app header and the screen's sides: the negative margins take back the screen's
+   * padding. No bottom margin: the screen's flex gap already gives the title row the space the top
+   * padding gave it. Only the bottom edge is drawn; a top one would double the app header's.
    */
-  margin: auto calc(-1 * var(--screen-pad-x)) calc(-1 * var(--screen-pad-bottom));
+  margin: calc(-1 * var(--screen-pad-top)) calc(-1 * var(--screen-pad-x)) 0;
   padding: 0;
-  border-width: 1px 0 0;
+  border-width: 0 0 1px;
   border-radius: 0;
-  box-shadow: 0 -8px 16px var(--bg);
 }
 
 .settingsBar__heading {
@@ -943,10 +1118,23 @@ body,
   outline-offset: -2px;
 }
 
+/*
+ * Open, the body hangs below the bar's bottom edge (`+ 1px` past the padding box, so that edge stays
+ * the divider between the toggle and the body) over the content, with the bar's background, its own
+ * bottom edge and a shadow downwards. It scrolls by itself when taller than the window allows: 60vh
+ * leaves room for the app header and the bar's heading down to the 400 px minimum window.
+ */
 .settingsBar__body {
+  position: absolute;
+  top: calc(100% + 1px);
+  right: 0;
+  left: 0;
   max-height: min(60vh, 28rem);
   padding: 0.25rem var(--screen-pad-x) 1rem;
   overflow: auto;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-raised);
+  box-shadow: 0 8px 16px var(--bg);
 }
 
 /*

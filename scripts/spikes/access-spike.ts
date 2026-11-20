@@ -34,7 +34,8 @@
 // header `x-view-protect-mock: 1` (sourceFromHeaders); anything else is `console`, whatever the
 // host. --yes against a `console` target exits 1 before anything is written or unlocked.
 //
-// Outputs: sanitized fixtures in tests/fixtures/access/ (each with "_source": "mock" | "console")
+// Outputs: sanitized fixtures in tests/fixtures/access/ (each with "_source": "mock" | "console";
+// a mock run never overwrites a "console" capture)
 // and a sanitized summary in scripts/spikes/output/ (gitignored).
 import { access, mkdir, readFile, writeFile } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
@@ -60,12 +61,14 @@ import {
 } from '../../src/main/access/types.ts'
 import type { AccessDoor } from '../../src/main/access/types.ts'
 import {
+  CONSOLE_DOOR_KEYS,
   accessPinFileName,
   confirmationMatches,
   describeIssues,
   describeNotification,
   extraKeys,
   findDoorByName,
+  mayOverwriteFixture,
   notificationsUrl,
   resolveAccessBaseUrl,
   shapeNotes,
@@ -86,7 +89,7 @@ const MISSING_DOOR_ID = '00000000-0000-4000-8000-000000000000'
 /** A token that is never valid, for the unauthorized probe. */
 const BAD_TOKEN = 'view-protect-spike-invalid-token'
 const ENVELOPE_KEYS = ['code', 'msg', 'data']
-const DOOR_KEYS = Object.keys(AccessDoorSchema.shape)
+const DOOR_KEYS = [...Object.keys(AccessDoorSchema.shape), ...CONSOLE_DOOR_KEYS]
 const LOCK_RULE_KEYS = Object.keys(AccessLockRuleSchema.shape)
 const EMERGENCY_KEYS = Object.keys(AccessEmergencyStatusSchema.shape)
 const DOCUMENTED_RULE_TYPES: readonly string[] = ACCESS_LOCK_RULE_TYPES
@@ -704,9 +707,16 @@ async function writeFixture(
     ...(f.extra ?? {}),
   }
   await mkdir(FIXTURES, { recursive: true })
+  const path = join(FIXTURES, name)
+  const existing = await readFile(path, 'utf8').catch(() => undefined)
+  const allowed = mayOverwriteFixture(existing, source)
+  if (!allowed.ok) {
+    say(`  skipped tests/fixtures/access/${name}: ${allowed.reason}`)
+    return
+  }
   // `_source` is set after sanitizing so the marker itself is never rewritten.
   const clean = { ...(S(fixture) as Record<string, unknown>), _source: source }
-  await writeFile(join(FIXTURES, name), `${JSON.stringify(clean, null, 2)}\n`)
+  await writeFile(path, `${JSON.stringify(clean, null, 2)}\n`)
   say(`  wrote tests/fixtures/access/${name}`)
 }
 

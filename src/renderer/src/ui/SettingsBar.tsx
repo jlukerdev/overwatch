@@ -1,10 +1,11 @@
-// A screen's own settings, as a collapsible bar pinned to the bottom of the screen (user decision
-// 2026-11-19; first the Doors screen's polling, P5.6, then the Cameras screen's stream qualities,
-// P5.7). The look is `.settingsBar` in ../styles.css, which also says where the bar must sit.
+// A screen's own settings, as a collapsible bar at the top of the screen, above its title row (the
+// Doors screen's polling, P5.6, and the Cameras screen's stream qualities, P5.7). The look is `.settingsBar` in
+// ../styles.css, which also says where the bar must sit. Only the toggle opens and closes it.
 //
-// Closed by default; the whole bar is the toggle, titled "Settings" with a gear, and opening it grows
-// the bar upwards over the screen. The body is unmounted while closed, so anything that must outlive
-// a close (a half-typed form) is the caller's state, kept outside `children`.
+// Closed by default; the whole bar is the toggle, titled "Settings" with a gear, and opening it
+// expands downwards over the screen's content, covering it rather than moving it. The body is
+// unmounted while closed, so anything that must outlive a close (a half-typed form) is the caller's
+// state, kept outside `children`.
 //
 // Titled "Settings" (user decision 2026-11-19), so there are two "Settings" buttons on screen. The
 // perf harness (src/main/perf/perfMode.ts) finds nav buttons by text scoped to `nav.app__nav`
@@ -40,8 +41,8 @@ export function SettingsBar({ id, children }: SettingsBarProps): JSX.Element {
             <GearIcon />
             Settings
           </span>
-          {/* Closed, it opens upwards. */}
-          {open ? <ChevronDownIcon /> : <ChevronUpIcon />}
+          {/* Closed, it opens downwards. */}
+          {open ? <ChevronUpIcon /> : <ChevronDownIcon />}
         </button>
       </h3>
       {open ? (

@@ -35,15 +35,38 @@ import {
   type IpcResult,
   type PinCheck,
 } from '@shared/ipc'
-import { SettingsSchema, type ConsoleConfig, type Settings } from '@shared/models'
+import {
+  SettingsSchema,
+  newRtspStreamId,
+  type AppMode,
+  type ConsoleConfig,
+  type RtspStream,
+  type Settings,
+} from '@shared/models'
+import { rtspUrlsStored, validateRtspStreamName, type RtspStreamUrls } from '@shared/rtsp'
 import type { z } from 'zod'
+import { AppModeError, MODE_SWITCHED_MESSAGE, RTSP_MODE_MESSAGES, isRtspMode } from '../appMode'
+import {
+  activeViews,
+  settingsForRenderer,
+  viewsOf,
+  withViewsOf,
+  type ModeViews,
+} from '../config/modeViews'
 import type { Config } from '../config/schema'
 import type { ConfigStore } from '../config/store'
 import { accessEndpoint, protectEndpoint, type ConsoleEndpoint } from '../console/endpoints'
 import type { ConnectionManager } from '../connection'
 import type { Power } from '../power'
-import type { Secrets, SecretsStore } from '../secrets/secrets'
+import { SecretsError, type Secrets, type SecretsStore } from '../secrets/secrets'
 import { StreamRegistryError, type StreamRegistry } from '../streams/registry'
+import {
+  RTSP_STREAM_MESSAGES,
+  RtspStreamError,
+  hasRtspUrl,
+  mergeRtspUrls,
+  sameRtspUrls,
+} from '../streams/rtspStreams'
 import {
   fetchLeafCert,
   fingerprintsMatch,
@@ -72,11 +95,15 @@ export interface IpcMainLike {
  * instead, which is why `config` and the clients are absent here.
  */
 export interface IpcHandlerServices {
-  readonly secrets: Pick<SecretsStore, 'isEncryptionAvailable' | 'set' | 'clear'>
+  readonly secrets: Pick<
+    SecretsStore,
+    'isEncryptionAvailable' | 'set' | 'clear' | 'setRtspUrls' | 'clearRtspStream'
+  >
   /**
    * The decrypted credentials the clients read synchronously. `setSecret`/`clearSecret` update this
    * **in place** together with the keystore, so an edited key is used by the next request without
-   * anything being rebuilt (CON-1).
+   * anything being rebuilt (CON-1). The stream handlers do the same for `rtspUrls` (RTSP-2): the log
+   * redactor and `appState`'s booleans read this very object.
    */
   readonly credentials: Secrets
   /**
@@ -135,6 +162,12 @@ export interface IpcRouterDeps {
    * value back and persist the harness's quality as the user's own. Absent in normal runs.
    */
   readonly streamsWritesBlocked?: () => string | null
+  /**
+   * The same for `vp:app/mode` (MODE-1/4). A perf run measures Protect streams with its own Views
+   * and quality shown in memory; a mode switch would tear down the very streams it measures and
+   * persist a mode the user did not choose. Absent in normal runs.
+   */
+  readonly modeWritesBlocked?: () => string | null
 }
 
 /** Everything a handler body may assume exists, having passed rule 2. */
@@ -239,6 +272,9 @@ function toPinCheck(result: PinCheckResult): PinCheck {
  *
  * `SettingsSchema.parse` is what drops the `schemaVersion` envelope: zod strips unknown keys, so the
  * storage detail cannot reach the UI and the reply is a copy rather than main's own object.
+ * `settingsForRenderer` then puts the **active mode's** Views under `views` / `lastViewId` and sends
+ * the `rtsp` block without any (MODE-4), before the perf harness's `settingsView` — which replaces
+ * the Views the renderer sees, whichever mode they came from.
  */
 function appState(
   ready: Ready,
@@ -248,12 +284,14 @@ function appState(
   const { services, manager } = ready
   return {
     version,
-    settings: settingsView(SettingsSchema.parse(services.current)),
+    settings: settingsView(settingsForRenderer(SettingsSchema.parse(services.current))),
     keystoreAvailable: services.secrets.isEncryptionAvailable(),
     // CON-2, NFR-9: whether a credential is stored, never a character of it.
     secretsStored: {
       protectApiKey: (services.credentials.protectApiKey ?? '') !== '',
       accessToken: (services.credentials.accessToken ?? '') !== '',
+      // RTSP-2: per stream and quality, whether a URL is stored — booleans, never the URL.
+      rtspUrls: rtspUrlsStored(services.credentials.rtspUrls),
     },
     connection: manager.status(),
     cameras: manager.cachedCameras(),
@@ -375,7 +413,17 @@ export function createIpcRouter(deps: IpcRouterDeps): ReadonlyMap<string, IpcHan
     ready.manager.accessInputsChanged('a certificate was accepted', { trustChanged: true })
   }
 
+  /**
+   * MODE-4: the three certificate calls open a TLS connection to the console, which is a Protect or
+   * Access contact like any other, so in RTSP mode they are refused before anything is read.
+   * Thrown, so `toIpcError` maps it to `bad-request` like every other RTSP-mode refusal.
+   */
+  const requireProtectMode = (ready: Ready): void => {
+    if (isRtspMode(ready.services.current)) throw new AppModeError(RTSP_MODE_MESSAGES.protect)
+  }
+
   on(IPC.checkCertificate, async (input, ready) => {
+    requireProtectMode(ready)
     const endpoint = endpointFor(input.endpoint, ready.services)
     if (storedPinIsUsable(ready.services.pins, endpoint)) {
       const result = await ready.services.pins.checkEndpoint(endpoint.host, endpoint.port)
@@ -403,6 +451,7 @@ export function createIpcRouter(deps: IpcRouterDeps): ReadonlyMap<string, IpcHan
   })
 
   on(IPC.acceptCertificate, async (input, ready) => {
+    requireProtectMode(ready)
     const { endpoint, check, refusal } = await confirmPresented(input, ready)
     if (refusal !== null) return refusal
     if (check.state !== 'no-pin') {
@@ -424,6 +473,7 @@ export function createIpcRouter(deps: IpcRouterDeps): ReadonlyMap<string, IpcHan
   })
 
   on(IPC.repinCertificate, async (input, ready) => {
+    requireProtectMode(ready)
     const endpoint = endpointFor(input.endpoint, ready.services)
     // The leaf is read **directly**, not through `checkEndpoint`: that compares against the stored
     // pin and throws when the stored value is unusable, which is one of the two states a re-pin
@@ -469,22 +519,32 @@ export function createIpcRouter(deps: IpcRouterDeps): ReadonlyMap<string, IpcHan
     const refused = viewWriteRefusal()
     if (refused) return refused
     // `input` has already passed `ViewSchema` for every View (tiling included), unique ids and a
-    // `lastViewId` that names one of them (SetViewsInputSchema).
-    await saveFields(ready, { views: input.views, lastViewId: input.lastViewId })
+    // `lastViewId` that names one of them (SetViewsInputSchema). MODE-4: into the list of the mode
+    // the renderer edited (`input.mode`), and only while that is still the stored mode
+    // (`saveFields`): a save built from one mode's list that lands after a switch is refused.
+    await saveFields(
+      ready,
+      {},
+      { mode: input.mode, patch: { views: input.views, lastViewId: input.lastViewId } },
+    )
     return state(ready)
   })
 
   on(IPC.setLastView, async (input, ready) => {
     const refused = viewWriteRefusal()
     if (refused) return refused
-    const { viewId } = input
-    if (viewId !== null && !ready.services.current.views.some((view) => view.id === viewId)) {
+    const { viewId, mode } = input
+    // MODE-4: a switch made from the other mode's list (the mode changed since the renderer read
+    // it) is refused, not checked against the wrong list. `saveFields` checks again inside the write.
+    if (mode !== ready.services.current.mode) throw new AppModeError(MODE_SWITCHED_MESSAGE)
+    const { views } = activeViews(ready.services.current)
+    if (viewId !== null && !views.some((view) => view.id === viewId)) {
       // A switch to a View that is not stored is a stale id on the renderer's side (the View was
       // deleted in between). Refused rather than stored: a dangling `lastViewId` is tolerated on
       // load (VIEW-6), but there is no reason to *write* one.
       return ipcFail('not-found', 'That View no longer exists.')
     }
-    await saveFields(ready, { lastViewId: viewId })
+    await saveFields(ready, {}, { mode, patch: { lastViewId: viewId } })
     return state(ready)
   })
 
@@ -496,6 +556,227 @@ export function createIpcRouter(deps: IpcRouterDeps): ReadonlyMap<string, IpcHan
     await saveFields(ready, { streams: input })
     return state(ready)
   })
+
+  /**
+   * MODE-1/4: `setMode` calls run one at a time, each after the previous one has saved its mode and
+   * finished its teardown. Without this, the same-mode check below could read `current.mode` before
+   * an earlier switch's save had landed: protect→rtsp followed quickly by rtsp→protect would see
+   * "already Protect", answer without saving, and leave the app in RTSP mode.
+   */
+  let modeQueue: Promise<unknown> = Promise.resolve()
+  const serializeMode = <T>(task: () => Promise<T>): Promise<T> => {
+    const run = modeQueue.then(task, task)
+    modeQueue = run.catch(() => undefined)
+    return run
+  }
+
+  on(IPC.setMode, (input, ready) =>
+    serializeMode(async () => {
+      // MODE-1/4. The same mode again changes nothing and tears nothing down: it only answers.
+      // Read inside the queue, so it is the mode the previous switch committed.
+      if (input.mode === ready.services.current.mode) return state(ready)
+      const refused = writeRefusal(deps.modeWritesBlocked)
+      if (refused) return refused
+      // Only `mode` is written. The console block, the pins, the door links, both modes' Views and
+      // every secret stay exactly as stored (MODE-4): a switch is never a reset.
+      await saveFields(ready, { mode: input.mode })
+      // Both halves start at once: `modeChanged` stops the door monitor and the feeds before it
+      // queues behind any connect in progress (entering RTSP) and pushes the new mode's inventory,
+      // and the go2rtc streams go now rather than after that connect (MODE-4). Neither rejects.
+      // Every stream is unregistered in **both** directions: the other mode's sources would fail
+      // the manager's check for this one (R4 / RTSP-5), and a go2rtc restart replays the whole
+      // desired set and asserts every entry. The registry is absent before the sidecar is built,
+      // when there is nothing registered anyway.
+      await Promise.all([ready.manager.modeChanged(), deps.getRegistry()?.unregisterAll()])
+      if (!isRtspMode(ready.services.current)) {
+        // MODE-4: back in Protect mode, a launch (CON-4): connects only when the launch rule
+        // allows. Not awaited — the answer must not wait out a connect — and it never rejects; a
+        // failure shows in the status the usual way.
+        void ready.manager.connectOnLaunch()
+      }
+      return state(ready)
+    }),
+  )
+
+  /**
+   * RTSP-1/2: stream saves and deletes run one at a time, on their own queue, so two overlapping
+   * saves cannot interleave their secrets and config writes (one stream's URLs written, then the
+   * other's name check reading a list the first has not saved yet).
+   */
+  let rtspQueue: Promise<unknown> = Promise.resolve()
+  /** The work a task left for after its reply ({@link afterRtspReply}), picked up by the queue. */
+  let rtspAfterReply: Promise<void> | null = null
+  const serializeRtsp = <T>(task: () => Promise<T>): Promise<T> => {
+    const run = rtspQueue.then(task, task)
+    // The next save or delete also waits for this one's after-reply work, so it can never
+    // overtake a deferred drop of the same stream.
+    rtspQueue = run
+      .catch(() => undefined)
+      .then(() => {
+        const deferred = rtspAfterReply
+        rtspAfterReply = null
+        return deferred
+      })
+    return run
+  }
+
+  /**
+   * RTSP-3: runs `work` just **after** the current task's reply has gone out (`setImmediate`: the
+   * reply is sent from the promise chain, which settles before any macrotask). The renderer works
+   * out a stream's served quality from `secretsStored.rtspUrls`, which only changes when the reply
+   * lands, so a go2rtc drop or a `cameras` push before it would make a cell re-ask for the old
+   * quality and get a fallback handle. Never rejects. One per task, at most.
+   */
+  const afterRtspReply = (work: () => Promise<void> | void): void => {
+    rtspAfterReply = new Promise<void>((resolve) => {
+      setImmediate(() => {
+        void (async () => {
+          try {
+            await work()
+          } catch {
+            // Fixed text: nothing from the error, which could in theory carry a URL (CON-2).
+            console.error('[rtsp] The work after a stream save or delete failed.')
+          } finally {
+            resolve()
+          }
+        })()
+      })
+    })
+  }
+
+  /**
+   * RTSP-3, after a stream save has been written and answered: the stream's go2rtc registrations
+   * dropped when the URLs it plays changed, then the inventory push. Neither rejects.
+   */
+  const rtspStreamSaved = async (ready: Ready, id: string, urlsChanged: boolean): Promise<void> => {
+    if (urlsChanged) await deps.getRegistry()?.rtspStreamChanged(id)
+    ready.manager.rtspStreamsChanged()
+  }
+
+  // RTSP-1/2. Config and secrets only: no Protect or Access call, so no mode gate (a stream can be
+  // set up before switching to RTSP mode). No perf-run block either: the harness runs Protect
+  // only, and nothing it shows the renderer (`settingsView`) touches `rtsp.streams` or a URL.
+  //
+  // CON-2: no URL is ever in a message, a log line or an error from here; every refusal is a fixed
+  // sentence (src/main/streams/rtspStreams.ts), and the reply carries booleans only.
+  //
+  // RTSP-3: after a successful write, a save or delete pushes the new RTSP inventory as `cameras`
+  // (in RTSP mode only: `rtspStreamsChanged`), and a save that changed the URLs, or a delete, drops
+  // every go2rtc registration of that stream (`rtspStreamChanged`), so the next `ensureStream`
+  // reads the new URL. A rename alone keeps the registrations: the URL they play is unchanged.
+  // A save does both just after its reply (`afterRtspReply`, which says why); a delete drops before
+  // its reply (the stream is already out of the list, so a re-ask is `not-found`, never a fallback
+  // handle, and its URLs must stay in memory until go2rtc no longer plays them) and pushes after.
+  on(IPC.saveRtspStream, (input, ready) =>
+    serializeRtsp(async () => {
+      const { services } = ready
+      const { secrets, credentials } = services
+      const editing = input.id
+      const streams = services.current.rtsp.streams
+      if (editing !== undefined && !streams.some((stream) => stream.id === editing)) {
+        return ipcFail('not-found', RTSP_STREAM_MESSAGES.notFound)
+      }
+      const nameCheck = validateRtspStreamName(input.name, streams, editing)
+      if (!nameCheck.ok) return ipcFail('bad-request', nameCheck.reason)
+
+      // Generated before anything is written, so the secrets and the config use the same id.
+      const id = editing ?? newRtspStreamId()
+      const previous: RtspStreamUrls | undefined = credentials.rtspUrls?.[id]
+      const next = mergeRtspUrls(previous, input.urls)
+      if (!hasRtspUrl(next)) {
+        // RTSP-2: a stream needs at least one URL. Refused before anything is written.
+        return ipcFail(
+          'bad-request',
+          editing === undefined
+            ? RTSP_STREAM_MESSAGES.createNeedsUrl
+            : RTSP_STREAM_MESSAGES.lastUrl,
+        )
+      }
+      const urlsChanged = !sameRtspUrls(previous, next)
+      if (urlsChanged && !secrets.isEncryptionAvailable()) {
+        // CON-2 allows no plaintext fallback. A rename alone touches config only and goes ahead.
+        return ipcFail('internal', RTSP_STREAM_MESSAGES.keystore)
+      }
+
+      // Secrets first: a stream is never in config.json without its URLs having been stored.
+      if (urlsChanged) {
+        await secrets.setRtspUrls(id, next)
+        setStoredRtspUrls(credentials, id, next)
+      }
+      const name = input.name.trim()
+      try {
+        await saveRtspStreams(ready, (latest) => {
+          // Checked again against what is stored at the moment of writing.
+          if (editing !== undefined && !latest.some((stream) => stream.id === editing)) {
+            throw new RtspStreamError('not-found', RTSP_STREAM_MESSAGES.notFound)
+          }
+          const check = validateRtspStreamName(name, latest, editing)
+          if (!check.ok) throw new RtspStreamError('bad-request', check.reason)
+          return editing === undefined
+            ? [...latest, { id, name }]
+            : latest.map((stream) => (stream.id === editing ? { ...stream, name } : stream))
+        })
+      } catch (err) {
+        // The config write failed or was refused: put the URLs back as they were, so a new stream
+        // leaves no orphan entry in secrets.bin and an edit is not half applied.
+        if (urlsChanged) {
+          await restoreRtspUrls(secrets, credentials, id, previous)
+          // RTSP-3: a cell may have registered the abandoned URL while it was in memory; it must
+          // not keep playing. Never rejects.
+          await deps.getRegistry()?.rtspStreamChanged(id)
+        }
+        throw err
+      }
+      // Just after the reply, which carries the new `secretsStored.rtspUrls` (RTSP-3).
+      afterRtspReply(() => rtspStreamSaved(ready, id, urlsChanged))
+      return state(ready)
+    }),
+  )
+
+  on(IPC.deleteRtspStream, (input, ready) =>
+    serializeRtsp(async () => {
+      const { services } = ready
+      if (!services.current.rtsp.streams.some((stream) => stream.id === input.id)) {
+        return ipcFail('not-found', RTSP_STREAM_MESSAGES.notFound)
+      }
+      // Config first, so the stream is gone from the list before its URLs are. Only `rtsp.streams`
+      // is written: Views are never edited, and a cell that showed this stream draws "Camera not
+      // found" (RTSP-1).
+      await saveRtspStreams(ready, (latest) => {
+        if (!latest.some((stream) => stream.id === input.id)) {
+          throw new RtspStreamError('not-found', RTSP_STREAM_MESSAGES.notFound)
+        }
+        return latest.filter((stream) => stream.id !== input.id)
+      })
+      // Gone from the list: out of go2rtc before its URLs leave secrets.bin and memory (the log
+      // redactor covers a URL only while it is in memory), and off the screen just after the reply.
+      await deps.getRegistry()?.rtspStreamChanged(input.id)
+      afterRtspReply(() => {
+        ready.manager.rtspStreamsChanged()
+      })
+      // Nothing stored for it: no secrets.bin read or write at all. A clear on a file the keystore
+      // cannot decrypt is refused and leaves the file as it is (secrets.ts), so there is no point
+      // reading it unless this stream has something to remove.
+      if (services.credentials.rtspUrls?.[input.id] === undefined) return state(ready)
+      // No keystore needed: removing a stored secret works even when it cannot be written again.
+      try {
+        await services.secrets.clearRtspStream(input.id)
+      } catch (err) {
+        // The stream is already deleted from config.json, so the answer is still the new state.
+        // Its URLs stay encrypted in secrets.bin under an id nothing refers to (also when the file
+        // cannot be decrypted: the store refuses rather than delete it), and stay in memory so the
+        // log redactor keeps covering them. The message is the store's fixed text (CON-2).
+        console.error(
+          `[rtsp] A deleted stream's addresses could not be removed from secrets.bin: ${
+            err instanceof SecretsError ? err.message : 'unexpected error'
+          }`,
+        )
+        return state(ready)
+      }
+      setStoredRtspUrls(services.credentials, input.id, {})
+      return state(ready)
+    }),
+  )
 
   on(IPC.setDoorLinks, async (input, ready) => {
     // DOOR-2: local config only, so no Access call and no DOOR-0 refusal — the links are kept while
@@ -597,30 +878,124 @@ export function createIpcRouter(deps: IpcRouterDeps): ReadonlyMap<string, IpcHan
 }
 
 /**
- * VIEW-6, QUAL-1, DOOR-2, DOOR-6: persists top-level settings fields (the View list, the active
- * View, the stream quality defaults, the door links, the Access read intervals), then makes them
- * the live config.
+ * VIEW-6, QUAL-1, DOOR-2, DOOR-6, MODE-1/4: persists settings fields (the stream quality defaults,
+ * the door links, the Access read intervals, the app mode, and one mode's View list and active
+ * View), then makes them the live config.
  *
- * Both halves touch only the fields in `patch`. On disk, `config.update` applies them to the latest
+ * Both halves touch only the fields being saved. On disk, `config.update` applies them to the latest
  * stored config inside the store's write queue, so a console or pin write queued ahead of this one
  * is kept rather than overwritten with the console block as it was when this call started. In
  * memory, only those fields are taken from the result and merged onto `services.current` **as it
  * is after the write**: the whole result would be wrong, because the pin store puts an accepted pin
  * into `current` before its own write is queued, so `current` can be ahead of anything this write
  * returned.
+ *
+ * **Views go to one mode's slot** (MODE-4): the top-level pair for Protect, `rtsp.views` /
+ * `rtsp.lastViewId` for RTSP (`withViewsOf`), and only the fields given — the rest of the `rtsp`
+ * block (its streams, the other field) is taken from `latest` inside the write, never from the
+ * `current` this call started with. `views.mode` is the mode whose list the renderer edited (the
+ * request's own `mode`, from the `AppState` it built the list from). Inside the write it is
+ * compared with the mode **stored at that moment**: if a mode switch was written in between, the
+ * write is refused (`AppModeError`, `bad-request`) and nothing is saved. Writing to the new mode's
+ * slot would put one mode's Views (Protect camera ids) into the other's list, and writing to the old
+ * slot would save a list the user is no longer looking at; the renderer, which has the new state by
+ * then, can simply do it again. The slot written is therefore always the one that was read, and the
+ * in-memory merge writes that same slot, so a switch landing after the write cannot misroute it
+ * either. A `views` save and a `mode` change never travel in one call.
  */
-type SavedField = 'views' | 'lastViewId' | 'streams' | 'doorLinks' | 'accessPolling'
+type SavedField = 'streams' | 'doorLinks' | 'accessPolling' | 'mode'
 
-async function saveFields(ready: Ready, patch: Partial<Pick<Config, SavedField>>): Promise<void> {
+async function saveFields(
+  ready: Ready,
+  patch: Partial<Pick<Config, SavedField>>,
+  views?: { readonly mode: AppMode; readonly patch: Partial<ModeViews> },
+): Promise<void> {
   const { services } = ready
-  const saved = await services.config.update((latest) => ({ ...latest, ...patch }))
-  services.current = {
+  const saved = await services.config.update((latest) => {
+    if (views === undefined) return { ...latest, ...patch }
+    if (latest.mode !== views.mode) throw new AppModeError(MODE_SWITCHED_MESSAGE)
+    return { ...withViewsOf(latest, views.mode, views.patch), ...patch }
+  })
+  const merged: Config = {
     ...services.current,
-    ...('views' in patch ? { views: saved.views } : {}),
-    ...('lastViewId' in patch ? { lastViewId: saved.lastViewId } : {}),
     ...('streams' in patch ? { streams: saved.streams } : {}),
     ...('doorLinks' in patch ? { doorLinks: saved.doorLinks } : {}),
     ...('accessPolling' in patch ? { accessPolling: saved.accessPolling } : {}),
+    ...('mode' in patch ? { mode: saved.mode } : {}),
+  }
+  if (views === undefined) {
+    services.current = merged
+    return
+  }
+  // The saved values of the fields written, from the slot written, onto the same slot in memory.
+  const written = viewsOf(saved, views.mode)
+  services.current = withViewsOf(merged, views.mode, {
+    ...('views' in views.patch ? { views: written.views } : {}),
+    ...('lastViewId' in views.patch ? { lastViewId: written.lastViewId } : {}),
+  })
+}
+
+/**
+ * RTSP-1/2: persists `rtsp.streams`, then makes it the live list, in the spirit of {@link saveFields}.
+ * `mutate` gets the **stored** list inside the store's write queue and returns the new one; the rest
+ * of the `rtsp` block (both of its View fields) and every other field are taken from `latest`,
+ * never from the `current` this call started with. In memory only `rtsp.streams` is taken from the
+ * result and merged onto `services.current` as it is after the write. `mutate` may throw (an
+ * `RtspStreamError`) to abandon the write; nothing is saved then.
+ */
+async function saveRtspStreams(
+  ready: Ready,
+  mutate: (latest: readonly RtspStream[]) => RtspStream[],
+): Promise<void> {
+  const { services } = ready
+  const saved = await services.config.update((latest) => ({
+    ...latest,
+    rtsp: { ...latest.rtsp, streams: mutate(latest.rtsp.streams) },
+  }))
+  services.current = {
+    ...services.current,
+    rtsp: { ...services.current.rtsp, streams: saved.rtsp.streams },
+  }
+}
+
+/**
+ * RTSP-2: one stream's URLs in main's in-memory credentials, **in place** on the object the log
+ * redactor and `appState` read. An empty set removes the stream's entry, and an emptied map removes
+ * `rtspUrls` itself, matching secrets.bin (never `{}`, never a stream with no URL).
+ */
+function setStoredRtspUrls(credentials: Secrets, id: string, urls: RtspStreamUrls): void {
+  if (hasRtspUrl(urls)) {
+    credentials.rtspUrls ??= {}
+    credentials.rtspUrls[id] = { ...urls }
+    return
+  }
+  if (credentials.rtspUrls === undefined) return
+  // eslint-disable-next-line @typescript-eslint/no-dynamic-delete -- the id is `rtsp-<uuid>`.
+  delete credentials.rtspUrls[id]
+  if (Object.keys(credentials.rtspUrls).length === 0) delete credentials.rtspUrls
+}
+
+/**
+ * Puts a stream's URLs back to `previous` (none for a new stream) after the config write of a save
+ * failed. Best effort: a failure here is logged with fixed text and the original error is the one
+ * the caller reports. The in-memory set follows what secrets.bin then holds.
+ */
+async function restoreRtspUrls(
+  secrets: IpcHandlerServices['secrets'],
+  credentials: Secrets,
+  id: string,
+  previous: RtspStreamUrls | undefined,
+): Promise<void> {
+  try {
+    await secrets.setRtspUrls(id, previous ?? {})
+    setStoredRtspUrls(credentials, id, previous ?? {})
+  } catch (err) {
+    // The store's fixed text only, never the URL (CON-2).
+    console.error(
+      `[rtsp] A stream's addresses could not be put back after a failed save: ${
+        err instanceof SecretsError ? err.message : 'unexpected error'
+      }`,
+    )
   }
 }
 

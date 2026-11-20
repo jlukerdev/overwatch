@@ -44,6 +44,31 @@ export function isStreamQuality(value: string): value is StreamQuality {
 }
 
 /**
+ * RTSP-3's quality fallback: the quality actually played when `wanted` may have no stream. `wanted`
+ * itself when `has(wanted)`, otherwise the closest quality in {@link QUALITIES} order that `has`,
+ * the **lower** one on a tie — so low → medium → high, medium → low → high, high → medium → low.
+ * `null` when no quality has a stream at all.
+ *
+ * Main serves this quality (`ensureStream` names it in the handle) and the renderer asks for it and
+ * shows it, from the same booleans, so the picker's colour and the badge are what really plays.
+ * Derived from the order of {@link QUALITIES} rather than spelled out (QUAL preamble).
+ */
+export function fallbackQuality(
+  wanted: Quality,
+  has: (quality: Quality) => boolean,
+): Quality | null {
+  const at = QUALITIES.indexOf(wanted)
+  for (let distance = 0; distance < QUALITIES.length; distance += 1) {
+    // QUALITIES is best first, so `at + distance` is the lower quality and is tried first.
+    for (const index of distance === 0 ? [at] : [at + distance, at - distance]) {
+      const quality = QUALITIES[index]
+      if (quality !== undefined && has(quality)) return quality
+    }
+  }
+  return null
+}
+
+/**
  * The short badge text for a stream, e.g. `MED` (QUAL-7: "the app shows the effective quality on
  * hover"). A `Record` over every {@link StreamQuality}, so adding a quality without a label is a
  * type error rather than a blank badge. `PKG` is the doorbell package channel (CAM-4), which a cell

@@ -35,11 +35,11 @@ view-protect/
 | `npm run gen:protect-types` | Regenerate the Protect API types |
 | `npm run mock:access` | Local UniFi Access mock |
 
-To check the UI on a clean profile: `npm run build`, then `npx electron out/main/index.js --user-data-dir=<empty dir>`.
+To check the UI on a clean profile: `npm run build`, then `npx electron . --user-data-dir=<empty dir>`. Start it from the repo with `.`, not `out/main/index.js`: the app finds go2rtc relative to the app folder, which is `out/main` when the script is named directly, and go2rtc fails to start (`spawn … ENOENT`).
 
 ### Dev data folder
 
-Unpackaged runs (`npm run dev`, `npx electron out/main/index.js`, `npm run perf`) keep their data in `View Protect Dev`, not the installed app's `View Protect`, so the two never share Views or settings and can run at the same time. The startup log line `[app] data folder: …` shows which one is in use. A `--user-data-dir` still overrides both.
+Unpackaged runs (`npm run dev`, `npx electron .`, `npm run perf`) keep their data in `View Protect Dev`, not the installed app's `View Protect`, so the two never share Views or settings and can run at the same time. The startup log line `[app] data folder: …` shows which one is in use. A `--user-data-dir` still overrides both.
 
 The dev folder starts empty. To start from the installed app's Views and settings, run dev once (it creates the folder), quit it, and copy `config.json` across:
 

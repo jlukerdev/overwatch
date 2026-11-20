@@ -39,6 +39,18 @@
 //     injected services at the moment of use and never put in a status, an event or a log line; the
 //     renderer learns only `credentialStored`.
 //
+// **RTSP streams mode makes no Protect or Access call of any kind** (MODE-4). The mode is read from
+// the live config (`services.current.mode`) on every call, never cached, so the IPC handler that
+// saves it and this module can never disagree. Every path that can send a request checks it first:
+// the user's calls (`connect`, `testConnection`, `snapshot`, `streamQualities`) refuse with an
+// `AppModeError` (`bad-request`); the three door-changing calls answer their usual non-retryable
+// refusal, logged to the unlock log like DOOR-0's; the watchers answer empty states; and the
+// automatic paths (`connectOnLaunch`, `recover`, the door-state monitor and its retry timer, a
+// feed's re-read) simply do nothing. `modeChanged()` is what tears the Protect side down on the
+// switch. While in RTSP mode the status is derived exactly as for a Protect console that was never
+// connected (`idle` / `unconfigured`, Access `disabled` or `idle`), with no error: nothing has been
+// tried, so nothing has failed.
+//
 // **No Electron import, by construction.** The services, the event sink, the two subscription
 // factories and the clock are all injected (`src/main/index.ts` wires the real ones), so the unit
 // tests drive every phase, the feed and the pin-clearing in plain Node with no window and no socket.
@@ -91,6 +103,7 @@ import {
   type DoorStateMonitor,
 } from './access/doorStateMonitor'
 import type { UnlockAttempt, UnlockLog, UnlockLogAction } from './access/unlockLog'
+import { AppModeError, RTSP_MODE_MESSAGES, isRtspMode } from './appMode'
 import type { Config } from './config/schema'
 import type { ConfigStore } from './config/store'
 import {
@@ -113,6 +126,7 @@ import {
   type SubscriptionState,
 } from './protect/subscriptions'
 import type { Secrets } from './secrets/secrets'
+import { rtspInventory } from './streams/rtspStreams'
 import type { PinRegistry } from './tls/pinning'
 
 /**
@@ -175,7 +189,11 @@ export interface ConnectionManagerOptions {
 export interface ConnectionManager {
   /** CON-5, recomputed on every call: the derived parts can change without anything happening. */
   status(): ConnectionStatus
-  /** The inventory as main last read it (CAM-1). Empty before the first successful read. */
+  /**
+   * The inventory as main last read it (CAM-1). Empty before the first successful read. In RTSP
+   * mode, the configured streams instead (RTSP-3, `rtspInventory`), built from the live config on
+   * every call with no request.
+   */
   cachedCameras(): Camera[]
   /**
    * CAM-1/2, CELL-2: read the inventory and open the devices and events feeds. Idempotent — a
@@ -301,6 +319,28 @@ export interface ConnectionManager {
   credentialReplaced(): Promise<void>
   /** CON-1/3, DOOR-0: persist an edited console block, clearing a pin that no longer applies. */
   applyConsoleChange(next: ConsoleConfig): Promise<void>
+  /**
+   * MODE-4: `mode` has just been saved (by `vp:app/mode`); the manager reads it from the live
+   * config. **Entering RTSP mode** stops both Protect feeds (and with them their reconnect
+   * timers), stops the door-state monitor and its retry timer, resets both endpoint statuses to a
+   * never-connected `idle`, empties the Protect inventory and pushes the RTSP inventory (RTSP-3),
+   * the status and the Doors screen's state. **Back in Protect mode it only pushes the Protect
+   * inventory** (empty until the next connect), so the RTSP streams leave the renderer at once;
+   * switching back otherwise behaves like a launch, which is the caller's `connectOnLaunch()`
+   * (CON-4). The monitor, its retry timer and
+   * both feeds are stopped **synchronously, when this is called**, so nothing polls Access or
+   * reconnects a feed while the rest waits; the rest (the status reset, the inventory, the pushes)
+   * is serialized with `connect` and `applyConsoleChange`, so a connect in progress finishes (it
+   * finds RTSP mode and throws `AppModeError`) before it runs, and one queued behind this sees the
+   * new mode. Never rejects.
+   */
+  modeChanged(): Promise<void>
+  /**
+   * RTSP-3: `rtsp.streams` (or a stream's URLs) has just been saved. In RTSP mode pushes the new
+   * RTSP inventory as `cameras`; in Protect mode does nothing (the streams are not the inventory
+   * there). Synchronous and never throws.
+   */
+  rtspStreamsChanged(): void
   /**
    * App shutdown: close the feed and every pinned Agent. Leaves `console.connectOnLaunch` as it is —
    * quitting is not a reason to stop, and the next launch is exactly when it is meant to apply.
@@ -435,6 +475,11 @@ export function createConnectionManager(options: ConnectionManagerOptions): Conn
 
   // --- derivation -------------------------------------------------------------------------------
 
+  /** MODE-4: the live config's mode, read per call (the header). */
+  function rtspMode(): boolean {
+    return isRtspMode(services.current)
+  }
+
   /** The resolved endpoint, or `null` while the address cannot be parsed at all (CON-1). */
   function endpointOf(which: EndpointName): ConsoleEndpoint | null {
     const consoleConfig = services.current.console
@@ -501,9 +546,17 @@ export function createConnectionManager(options: ConnectionManagerOptions): Conn
     emit(IPC_EVENTS.connection.channel, status())
   }
 
-  /** A copy: the cached array is replaced on every change, but a listener must not alias it. */
+  /**
+   * The inventory of the current mode: the Protect one main read (CAM-1), or in RTSP mode the
+   * configured streams (RTSP-3), rebuilt from the live config. Either way a fresh array: the cached
+   * one is replaced on every change, but a caller must not alias it.
+   */
+  function currentCameras(): Camera[] {
+    return rtspMode() ? rtspInventory(services.current.rtsp.streams) : [...inventory]
+  }
+
   function emitCameras(): void {
-    emit(IPC_EVENTS.cameras.channel, [...inventory])
+    emit(IPC_EVENTS.cameras.channel, currentCameras())
   }
 
   function recordError(which: EndpointName, err: unknown, endpoint: string | null): IpcError {
@@ -564,7 +617,11 @@ export function createConnectionManager(options: ConnectionManagerOptions): Conn
    * costs one duplicate event and keeps every listener on the same list as main's cache.
    */
   async function refreshInventory(reason: string): Promise<Camera[]> {
+    // MODE-4: no request in RTSP mode — and none of a read that was in flight when the mode
+    // switched may refill the inventory `modeChanged` has just emptied.
+    if (rtspMode()) throw new AppModeError(RTSP_MODE_MESSAGES.protect)
     const cameras = await services.protect().cameras()
+    if (rtspMode()) throw new AppModeError(RTSP_MODE_MESSAGES.protect)
     inventory = cameras
     log(`inventory re-read after ${reason}: ${String(cameras.length)} camera(s)`)
     emitCameras()
@@ -577,7 +634,11 @@ export function createConnectionManager(options: ConnectionManagerOptions): Conn
    * anyway, and tearing the feed down over one failed GET would lose the camera states too.
    */
   function refreshFromFeed(reason: string): void {
+    // MODE-4: a feed callback that lands between the mode being saved and `modeChanged` closing the
+    // feed. Not a failure of the console, so nothing is recorded in the status.
+    if (rtspMode()) return
     void refreshInventory(reason).catch((err: unknown) => {
+      if (err instanceof AppModeError) return
       recordError('protect', err, endpointOf('protect')?.hostPort ?? null)
       emitStatus()
     })
@@ -615,6 +676,11 @@ export function createConnectionManager(options: ConnectionManagerOptions): Conn
   }
 
   function startFeed(endpoint: ConsoleEndpoint): void {
+    // MODE-4, last line of defence: every caller has checked the mode already.
+    if (rtspMode()) {
+      log('devices feed: not opened (RTSP streams mode)')
+      return
+    }
     stopRequested = false
     const feed = createDevices({
       url: protectSubscribeUrl(endpoint, 'devices'),
@@ -673,6 +739,11 @@ export function createConnectionManager(options: ConnectionManagerOptions): Conn
    * status stays the devices feed's alone (see the header).
    */
   function startEventsFeed(endpoint: ConsoleEndpoint): void {
+    // MODE-4, last line of defence: every caller has checked the mode already.
+    if (rtspMode()) {
+      log('events feed: not opened (RTSP streams mode)')
+      return
+    }
     const feed = createEvents({
       url: protectSubscribeUrl(endpoint, 'events'),
       // The same per-upgrade reads as the devices feed, for the same reasons (CON-1, CON-3).
@@ -795,6 +866,9 @@ export function createConnectionManager(options: ConnectionManagerOptions): Conn
   function doorMonitorWanted(): boolean {
     return (
       !doorMonitorHeld &&
+      // MODE-4: no Access call in RTSP mode. This one check also covers the halted monitor's
+      // retry timer, which ends in `syncDoorMonitor`.
+      !rtspMode() &&
       services.current.console.accessEnabled &&
       credentialStored('access') &&
       endpointOf('access') !== null &&
@@ -819,6 +893,14 @@ export function createConnectionManager(options: ConnectionManagerOptions): Conn
    * in the order the user has to fix them. No Access call (DOOR-0).
    */
   function doorsScreenBlocked(): IpcError | null {
+    if (rtspMode()) {
+      return {
+        kind: 'bad-request',
+        message: RTSP_MODE_MESSAGES.doors,
+        endpoint: null,
+        retryable: false,
+      }
+    }
     const consoleConfig = services.current.console
     if (!consoleConfig.accessEnabled) {
       return {
@@ -855,6 +937,8 @@ export function createConnectionManager(options: ConnectionManagerOptions): Conn
    */
   function doorsScreenState(): DoorsScreenState {
     if (!doorsScreenOpen) return emptyDoorsScreenState()
+    // MODE-4: nothing is read, and nothing the monitor kept from before the switch is shown.
+    if (rtspMode()) return { ...emptyDoorsScreenState(), error: doorsScreenBlocked() }
     const monitored = doorMonitor?.screen ?? emptyDoorsScreenState()
     if (doorMonitor?.running === true || monitored.error !== null) return monitored
     // Held: between two endpoints, for the length of a save. Not an error; the list follows.
@@ -958,8 +1042,11 @@ export function createConnectionManager(options: ConnectionManagerOptions): Conn
   }
 
   function watchDoors(watching: boolean): IpcResult<DoorStates> {
+    // Recorded in either mode: it is the renderer's state, and the monitor's conditions read it.
     doorsWatched = watching
     syncDoorMonitor()
+    // MODE-4: no door is read in RTSP mode, so no state is known.
+    if (rtspMode()) return ipcOk({})
     return ipcOk(doorMonitor?.states ?? {})
   }
 
@@ -990,8 +1077,9 @@ export function createConnectionManager(options: ConnectionManagerOptions): Conn
   ): void {
     const wasRunning = doorMonitor?.running === true
     syncDoorMonitor()
-    // A fresh start reads at once by itself; only a monitor that kept running needs telling.
-    if (!wasRunning) return
+    // A fresh start reads at once by itself; only a monitor that kept running needs telling. In
+    // RTSP mode the sync above has stopped it, and nothing may ask it for a read (MODE-4).
+    if (!wasRunning || rtspMode()) return
     // P5.6: before the read, so no door action can be checked against a list read with the old
     // token or certificate in the meantime.
     if (changed.trustChanged === true) doorMonitor?.forgetScreen(reason)
@@ -999,12 +1087,16 @@ export function createConnectionManager(options: ConnectionManagerOptions): Conn
   }
 
   function accessPollingChanged(): void {
+    // MODE-4: the monitor is stopped in RTSP mode; nothing to re-arm.
+    if (rtspMode()) return
     doorMonitor?.rearm()
   }
 
   // --- the operations ---------------------------------------------------------------------------
 
   async function connect(): Promise<void> {
+    // MODE-4 first: in RTSP mode nothing is sent, whatever the console block says.
+    if (rtspMode()) throw new AppModeError(RTSP_MODE_MESSAGES.protect)
     // Both throws are the refusal: CON-1's unusable address and CON-4's missing key. The handler
     // turns them into `not-configured` and `auth`, which is what Settings needs to say.
     const endpoint = protectEndpoint(services.current.console)
@@ -1030,6 +1122,10 @@ export function createConnectionManager(options: ConnectionManagerOptions): Conn
       // kind, instead of disappearing into the feed's retry loop (CON-4).
       await refreshInventory(alreadyUp ? 'a repeated connect' : 'a connect')
     } catch (err) {
+      // MODE-4: the mode switched to RTSP while the camera list was read. Not a failure of the
+      // console, so nothing is recorded, and above all no feed is (re)opened: `modeChanged` owns
+      // the teardown and the status.
+      if (err instanceof AppModeError) throw err
       if (alreadyUp) {
         // The devices socket is up, so the console is reachable and pinned: one failed GET is no
         // reason to leave a stopped events feed down (the feed's own re-read fails the same way and
@@ -1079,14 +1175,25 @@ export function createConnectionManager(options: ConnectionManagerOptions): Conn
    */
   async function probeProtect(): Promise<ProtectProbe> {
     const hostPort = endpointOf('protect')?.hostPort ?? null
+    // Captured before the await and compared by identity after it, like `readDoors`: a mode switch
+    // (`modeChanged`, MODE-4), a cleared key or a console change swaps the slot meanwhile, and this
+    // probe's answer belongs to what was just left — it must not land on the fresh slot.
+    const slot = state.protect
     try {
       const info = await services.protect().metaInfo()
-      const slot = state.protect
+      if (state.protect !== slot) {
+        log('protect: probe finished after the endpoint state was reset; status left alone')
+        return { state: 'ok', applicationVersion: info.applicationVersion }
+      }
       slot.version = info.applicationVersion
       slot.error = null
       slot.updatedAt = now()
       return { state: 'ok', applicationVersion: info.applicationVersion }
     } catch (err) {
+      if (state.protect !== slot) {
+        log('protect: probe failed after the endpoint state was reset; status left alone')
+        return { state: 'error', error: toIpcError(err, { endpoint: hostPort }) }
+      }
       const error = recordError('protect', err, hostPort)
       if (subscription === null) state.protect.phase = 'error'
       return { state: 'error', error }
@@ -1125,6 +1232,10 @@ export function createConnectionManager(options: ConnectionManagerOptions): Conn
    * after the await, and the caller still gets its answer — only the status update is dropped.
    */
   async function readDoors(): Promise<IpcResult<Door[]>> {
+    // MODE-4, last line of defence: its one caller checks the mode first.
+    if (rtspMode()) {
+      return ipcFail('bad-request', RTSP_MODE_MESSAGES.doors)
+    }
     const slot = state.access
     const hostPort = endpointOf('access')?.hostPort ?? null
     let result: IpcResult<Door[]>
@@ -1228,6 +1339,9 @@ export function createConnectionManager(options: ConnectionManagerOptions): Conn
         message,
       })
 
+    // MODE-4, before DOOR-0: in RTSP mode no Access call is made at all. Refused and logged the way
+    // DOOR-0's refusal is, since it was still a press on an unlock control.
+    if (rtspMode()) return refuse('bad-request', RTSP_MODE_MESSAGES.door, null, doorId)
     // Rule 1, DOOR-0: not a request that fails, one that never happens.
     if (!services.current.console.accessEnabled) {
       return refuse(
@@ -1473,6 +1587,8 @@ export function createConnectionManager(options: ConnectionManagerOptions): Conn
       return ipcFail(kind, message, { endpoint: endpointOf('access')?.hostPort ?? null })
     }
 
+    // MODE-4, before DOOR-0: no Access call in RTSP mode. Logged like DOOR-0's refusal.
+    if (rtspMode()) return refuse('bad-request', RTSP_MODE_MESSAGES.door, null)
     // Rule 1, DOOR-0: not a request that fails, one that never happens.
     if (!services.current.console.accessEnabled) {
       return refuse(
@@ -1575,6 +1691,8 @@ export function createConnectionManager(options: ConnectionManagerOptions): Conn
       recordDoorAttempt({ ...logged, result: 'failure', errorKind: kind, message })
       return ipcFail(kind, message, { endpoint: endpointOf('access')?.hostPort ?? null })
     }
+    // MODE-4, before DOOR-0: no Access call in RTSP mode. Logged like DOOR-0's refusal.
+    if (rtspMode()) return refuse('bad-request', RTSP_MODE_MESSAGES.door)
     // DOOR-0: not a request that fails, one that never happens.
     if (!services.current.console.accessEnabled) {
       return refuse(
@@ -1610,15 +1728,23 @@ export function createConnectionManager(options: ConnectionManagerOptions): Conn
   }
 
   async function testConnection(): Promise<TestConnection> {
+    // MODE-4: neither half is probed in RTSP mode.
+    if (rtspMode()) throw new AppModeError(RTSP_MODE_MESSAGES.protect)
     // Sequentially, not in parallel: both halves may share the console's rate-limit budget when
     // Access answers behind the proxy on 443 (SPEC §5.2), and nothing here is time-critical.
     const protect = await probeProtect()
+    // MODE-4: re-checked after the await. A switch to RTSP mode while the Protect probe was in
+    // flight means no Access call now (and `probeProtect` has already left the fresh slot alone).
+    if (rtspMode()) throw new AppModeError(RTSP_MODE_MESSAGES.protect)
     const access = await probeAccess()
     emitStatus()
     return { protect, access, connection: status() }
   }
 
   async function snapshot(input: SnapshotInput): Promise<SnapshotResult> {
+    // MODE-4: a Protect snapshot is a Protect call. Thrown, not CAM-3's `unavailable`: the camera is
+    // not offline, the app is in a mode that does not ask.
+    if (rtspMode()) throw new AppModeError(RTSP_MODE_MESSAGES.protect)
     const camera = inventory.find((entry) => entry.id === input.cameraId)
     // SPEC §5.1: `highQuality=true` on a camera without the flag is a 400 and **no** smaller image
     // comes back, so the parameter is dropped rather than passed on and turned into a failure.
@@ -1656,6 +1782,7 @@ export function createConnectionManager(options: ConnectionManagerOptions): Conn
   }
 
   async function streamQualities(cameraId: string): Promise<RtspsAvailability> {
+    if (rtspMode()) throw new AppModeError(RTSP_MODE_MESSAGES.protect)
     // Through the same client, and so the same shared limiter, as `snapshot` (R9): the camera list
     // asks for this alongside each thumbnail, a few cameras at a time.
     return rtspsAvailability(await services.protect().rtspsStreams(cameraId))
@@ -1754,6 +1881,12 @@ export function createConnectionManager(options: ConnectionManagerOptions): Conn
   }
 
   async function connectOnLaunch(): Promise<void> {
+    // MODE-4: no launch connect in RTSP mode. Read when the call runs (it is serialized), so a
+    // switch back to Protect followed by this call follows CON-4's rule below as a launch would.
+    if (rtspMode()) {
+      log('connect on launch: skipped (RTSP streams mode)')
+      return
+    }
     // Every precondition is an offline read, so a launch that does not qualify spends no permit
     // (R9). The pin is checked here rather than left to the feed: an unpinned console would only
     // turn into a `pin-required` error the user did not ask for this time.
@@ -1775,6 +1908,11 @@ export function createConnectionManager(options: ConnectionManagerOptions): Conn
 
   function recover(reason: RecoverReason): void {
     const why = reason === 'resume' ? 'the machine woke from sleep' : 'the network changed'
+    // MODE-4: `modeChanged` closed the feeds and stopped the monitor; nothing may be woken up.
+    if (rtspMode()) {
+      log(`recover (${why}): nothing to do in RTSP streams mode`)
+      return
+    }
     // Not through `serialize`: nothing here replaces a feed or the endpoint, and a recover queued
     // behind a connect's backoff would arrive after it was needed. The handles are read now; a feed
     // being replaced by a queued call is either already gone (null) or about to be stopped anyway.
@@ -1796,6 +1934,64 @@ export function createConnectionManager(options: ConnectionManagerOptions): Conn
     monitor?.recoverNow(why)
   }
 
+  /**
+   * MODE-4, see {@link ConnectionManager.modeChanged}. The queued half: the monitor and the feeds
+   * were already stopped when the call was made (`stopProtectSideNow`) and are stopped again here,
+   * a no-op unless something started them in between; fresh status slots make any request
+   * still in flight (a door PUT, a door read) leave the status alone when it lands — the same
+   * identity check `applyConsoleChange` relies on. Nothing is written to config: CON-4's launch
+   * flag is kept, so switching back reconnects exactly when a launch would.
+   */
+  async function modeChanged(stopping: Promise<void>): Promise<void> {
+    // The early stop's own promise first, so nothing below overlaps a socket still closing.
+    await stopping
+    if (!rtspMode()) {
+      // RTSP-3/MODE-4: the renderer still holds the RTSP inventory from the last push. The Protect
+      // one (empty until the next connect, since entering RTSP dropped it) replaces it now.
+      log('mode: UniFi Protect; the RTSP inventory replaced by the Protect one')
+      emitCameras()
+      return
+    }
+    stopDoorMonitor()
+    await stopFeedQuietly()
+    state.protect = { phase: 'idle', error: null, version: null, updatedAt: now() }
+    state.access = { phase: 'idle', error: null, version: null, updatedAt: now() }
+    inventory = []
+    log('mode: RTSP streams; Protect feeds and the door monitor stopped, inventory dropped')
+    // RTSP-3: the pushed inventory is the configured streams.
+    emitCameras()
+    emitStatus()
+    pushDoorsScreen()
+  }
+
+  /** `stopFeed`, logging rather than rejecting. The handles are dropped either way (`stopFeed`). */
+  async function stopFeedQuietly(): Promise<void> {
+    try {
+      await stopFeed()
+    } catch (err) {
+      // Nothing will reopen the dropped handles; a socket that would not close cleanly is only
+      // worth a line.
+      log(
+        `mode: a Protect feed failed to stop: ${err instanceof Error ? err.name : 'unknown error'}`,
+      )
+    }
+  }
+
+  /**
+   * MODE-4: the part of the switch to RTSP mode that cannot wait in the queue. `modeChanged` is
+   * serialized behind any connect in progress (which may sit in a backoff), and until it runs a
+   * running door-state monitor would keep polling Access and a feed's own reconnect loop would keep
+   * opening Protect sockets — the subscriptions have no mode hook, so stopping them is the gate.
+   * Done synchronously when the call is made: the monitor and its retry timer stop, both feed
+   * handles are dropped (a connect still in flight then finds RTSP mode at its next check, which
+   * throws `AppModeError` rather than opening anything). Nothing in Protect mode.
+   */
+  function stopProtectSideNow(): Promise<void> {
+    if (!rtspMode()) return Promise.resolve()
+    stopDoorMonitor()
+    return stopFeedQuietly()
+  }
+
   async function shutdown(): Promise<void> {
     doorsWatched = false
     doorsScreenOpen = false
@@ -1804,7 +2000,7 @@ export function createConnectionManager(options: ConnectionManagerOptions): Conn
     await services.pins.closeAll()
   }
 
-  // The six that move the subscriptions go through the queue; `testConnection`, `cameras`,
+  // The seven that move the subscriptions go through the queue; `testConnection`, `cameras`,
   // `snapshot`, `streamQualities`, `unlockDoor`, `doorAction` and `setDoorEmergency` are
   // plain requests that touch none of that state, so serializing them would only make the UI wait
   // for a reconnect's backoff. `watchDoors`, `watchDoorsScreen`, `accessPollingChanged` and
@@ -1812,11 +2008,13 @@ export function createConnectionManager(options: ConnectionManagerOptions): Conn
   // `applyConsoleChange` holds still while the address is being replaced.
   return {
     status,
-    cachedCameras: () => [...inventory],
+    cachedCameras: currentCameras,
     connect: () => serialize(connect),
     connectOnLaunch: () => serialize(connectOnLaunch),
     testConnection,
-    cameras: () => refreshInventory('a camera list request'),
+    // MODE-4/RTSP-3: in RTSP mode the configured streams, with no request.
+    cameras: () =>
+      rtspMode() ? Promise.resolve(currentCameras()) : refreshInventory('a camera list request'),
     snapshot,
     streamQualities,
     unlockDoor,
@@ -1834,6 +2032,14 @@ export function createConnectionManager(options: ConnectionManagerOptions): Conn
         return Promise.resolve()
       }),
     applyConsoleChange: (next) => serialize(() => applyConsoleChange(next)),
+    modeChanged: () => {
+      // Before `serialize`, on purpose (see `stopProtectSideNow`).
+      const stopping = stopProtectSideNow()
+      return serialize(() => modeChanged(stopping))
+    },
+    rtspStreamsChanged: () => {
+      if (rtspMode()) emitCameras()
+    },
     shutdown: () => serialize(shutdown),
   }
 }

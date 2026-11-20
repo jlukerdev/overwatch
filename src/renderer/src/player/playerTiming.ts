@@ -42,7 +42,13 @@ export function reconnectDelayMs(failures: number): number {
   return Math.min(exponential, RECONNECT_MAX_MS)
 }
 
-/** How often the player samples `currentTime` to see whether the picture is still moving. */
+/**
+ * How often the player samples `currentTime` to see whether the picture is still moving.
+ *
+ * `currentTime` is the media clock: it advances on the media pipeline's own clock whether or not
+ * the compositor keeps up with drawing the frames, so a slow compositor (a struggling GPU, a heavy
+ * zoom) is never read as a stall. Only a decoder that truly stops — an underflow — is.
+ */
 export const STALL_POLL_MS = 1000
 
 /**

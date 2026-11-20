@@ -12,6 +12,7 @@ import {
   catchUpRate,
   isCodecMismatchError,
   isCodecPlayable,
+  mimeHasAudio,
   MSE_KEEP_SECONDS,
   MSE_MAX_LAG_SECONDS,
   MSE_MIN_PLAYBACK_RATE,
@@ -130,5 +131,51 @@ describe('isCodecMismatchError (SPEC R7)', () => {
     expect(isCodecMismatchError(undefined)).toBe(false)
     expect(isCodecMismatchError(null)).toBe(false)
     expect(isCodecMismatchError({ message: 'codecs not matched' })).toBe(false)
+  })
+})
+
+describe('mimeHasAudio (RTSP-4)', () => {
+  it('finds an audio codec in go2rtc’s handshake mime', () => {
+    expect(mimeHasAudio('video/mp4; codecs="avc1.4D4029, mp4a.40.2"')).toBe(true)
+    expect(mimeHasAudio('video/mp4; codecs="hvc1.1.6.L153.B0,opus"')).toBe(true)
+    expect(mimeHasAudio('video/mp4; codecs="avc1.640029,flac"')).toBe(true)
+    expect(mimeHasAudio('video/mp4; codecs="avc1.640029, mp4a.40.5"')).toBe(true)
+  })
+
+  it('knows the other audio codec names go2rtc may give', () => {
+    for (const codec of [
+      'alaw',
+      'ulaw',
+      'mulaw',
+      'pcma',
+      'pcmu',
+      'ac-3',
+      'ec-3',
+      'mp3',
+      'vorbis',
+    ]) {
+      expect(mimeHasAudio(`video/mp4; codecs="avc1.640029,${codec}"`)).toBe(true)
+    }
+  })
+
+  it('is false for video only', () => {
+    expect(mimeHasAudio('video/mp4; codecs="avc1.4D4029"')).toBe(false)
+    expect(mimeHasAudio('video/mp4; codecs="hvc1.1.6.L153.B0"')).toBe(false)
+    expect(mimeHasAudio('video/mp4')).toBe(false)
+  })
+
+  it('ignores case, spaces and missing quotes', () => {
+    expect(mimeHasAudio('  VIDEO/MP4; CODECS="AVC1.4D4029,  MP4A.40.2"  ')).toBe(true)
+    expect(mimeHasAudio('video/mp4;codecs=avc1.4D4029,mp4a.40.2')).toBe(true)
+  })
+
+  it('is false for an empty mime, and true for a bare audio type', () => {
+    expect(mimeHasAudio('')).toBe(false)
+    expect(mimeHasAudio('   ')).toBe(false)
+    expect(mimeHasAudio('audio/mp4')).toBe(true)
+  })
+
+  it('does not take a video codec that merely contains an audio name', () => {
+    expect(mimeHasAudio('video/mp4; codecs="avc1.mp4a"')).toBe(false)
   })
 })

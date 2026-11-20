@@ -16,10 +16,46 @@
 //    snapshot is loading, unavailable or failed.
 //  - The palette shows whatever the cache already holds for each entry and asks for nothing
 //    (`paletteSnapshots`).
+//  - **RTSP streams mode has no snapshots at all** (MODE-4, RTSP-3): main refuses `snapshot` there,
+//    so nothing is asked and every cell and palette entry shows the no-thumbnail fallback. The
+//    editor passes the rules below `snapshotCameras(cameras, mode)`, which is empty in RTSP mode.
+//    The fallback there is the camera icon: the palette's icon tile, and on the canvas a large
+//    dimmed icon behind the cell's name (`cellCameraIcon`, RTSP-4).
 import type { Camera } from '@shared/ipc'
-import { isCameraOnline } from '@shared/models'
+import { isCameraOnline, type AppMode } from '@shared/models'
 import type { ListLoad, PackageSnapshots, ThumbnailEntry } from '../../state/camerasStore'
 import { parseCameraRef } from '../grid/gridLayout'
+
+/**
+ * The cameras that can have a snapshot in `mode`: every camera in Protect mode, **none** in RTSP
+ * streams mode (MODE-4, RTSP-3), where the inventory is the RTSP streams and main refuses every
+ * `snapshot` call. Given to the plan and image functions below in place of the inventory, so in RTSP
+ * mode nothing is fetched and no cached image is drawn.
+ */
+export function snapshotCameras(
+  cameras: readonly Camera[],
+  mode: AppMode | undefined,
+): readonly Camera[] {
+  return mode === 'rtsp' ? [] : cameras
+}
+
+/**
+ * RTSP-4: whether a canvas cell draws the large camera icon behind its name, in place of the
+ * snapshot RTSP streams do not have — in RTSP mode, for a cell whose head camera is in the
+ * inventory. A cell naming a stream that was deleted ("Camera not found") stays text-only, as does
+ * every cell in Protect mode without a snapshot.
+ */
+export function cellCameraIcon(
+  cell: { readonly cameraIds: readonly string[] },
+  cameras: readonly Camera[],
+  mode: AppMode | undefined,
+): boolean {
+  if (mode !== 'rtsp') return false
+  const ref = cellShownRef(cell)
+  if (ref === null) return false
+  const { cameraId } = parseCameraRef(ref)
+  return cameras.some((camera) => camera.id === cameraId)
+}
 
 /** The ref a cell shows in the editor: the head of its list, or `null` for an empty cell. */
 export function cellShownRef(cell: { readonly cameraIds: readonly string[] }): string | null {

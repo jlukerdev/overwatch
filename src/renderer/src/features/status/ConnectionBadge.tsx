@@ -12,6 +12,8 @@
 // Two places draw it: the app header (`ConnectionBadge`, every endpoint), and the Live screen's
 // focus mode, which hides the header and so shows `ConnectionAlerts` — only the endpoints that are
 // not connected — beside its exit control (features/viewSwitcher/focusMode.ts).
+//
+// In RTSP mode there is no console to report on (MODE-3/4), so both draw nothing.
 import type { JSX } from 'react'
 import { type EndpointName, type EndpointStatus } from '@shared/ipc'
 import { useAppStore } from '../../state/appStore'
@@ -30,7 +32,8 @@ export interface ConnectionBadgeProps {
 
 export function ConnectionBadge({ onOpenSettings }: ConnectionBadgeProps): JSX.Element | null {
   const connection = useAppStore((s) => s.connection)
-  if (connection === null) return null
+  const rtsp = useAppStore((s) => s.settings?.mode === 'rtsp')
+  if (connection === null || rtsp) return null
 
   return (
     <div className="badges">
@@ -48,7 +51,8 @@ export function ConnectionBadge({ onOpenSettings }: ConnectionBadgeProps): JSX.E
  */
 export function ConnectionAlerts({ onOpenSettings }: ConnectionBadgeProps): JSX.Element | null {
   const connection = useAppStore((s) => s.connection)
-  const alerts = focusModeAlerts(connection)
+  const mode = useAppStore((s) => s.settings?.mode ?? 'protect')
+  const alerts = focusModeAlerts(connection, mode)
   if (connection === null || alerts.length === 0) return null
 
   return (

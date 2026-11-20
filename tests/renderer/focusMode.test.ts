@@ -4,7 +4,8 @@
 // What these tests protect: `F` toggles with the View shortcuts' manners (no modifiers, no
 // auto-repeat, not while typing, not when already handled) and `Esc` is never the key; focus mode
 // applies only on the Live screen with the editor closed; and the endpoints it must keep on screen
-// (CON-5) are exactly the ones that are not connected, Access only while it is on.
+// (CON-5) are exactly the ones that are not connected, Access only while it is on, and none at all
+// in RTSP mode (MODE-3).
 import { describe, expect, it } from 'vitest'
 import type { ConnectionPhase, ConnectionStatus, EndpointStatus } from '../../src/shared/ipc'
 import {
@@ -92,9 +93,9 @@ function status(protect: ConnectionPhase, access: ConnectionPhase): ConnectionSt
 
 describe('focusModeAlerts (CON-5)', () => {
   it('shows nothing while everything in use is connected, or before the first status', () => {
-    expect(focusModeAlerts(null)).toEqual([])
-    expect(focusModeAlerts(status('connected', 'connected'))).toEqual([])
-    expect(focusModeAlerts(status('connected', 'disabled'))).toEqual([])
+    expect(focusModeAlerts(null, 'protect')).toEqual([])
+    expect(focusModeAlerts(status('connected', 'connected'), 'protect')).toEqual([])
+    expect(focusModeAlerts(status('connected', 'disabled'), 'protect')).toEqual([])
   })
 
   it('shows Protect in every phase but connected', () => {
@@ -106,13 +107,21 @@ describe('focusModeAlerts (CON-5)', () => {
       'error',
     ]
     for (const phase of phases) {
-      expect(focusModeAlerts(status(phase, 'disabled'))).toEqual(['protect'])
+      expect(focusModeAlerts(status(phase, 'disabled'), 'protect')).toEqual(['protect'])
     }
   })
 
   it('shows Access only while it is on and not connected, after Protect', () => {
-    expect(focusModeAlerts(status('connected', 'error'))).toEqual(['access'])
-    expect(focusModeAlerts(status('reconnecting', 'idle'))).toEqual(['protect', 'access'])
-    expect(focusModeAlerts(status('error', 'disabled'))).toEqual(['protect'])
+    expect(focusModeAlerts(status('connected', 'error'), 'protect')).toEqual(['access'])
+    expect(focusModeAlerts(status('reconnecting', 'idle'), 'protect')).toEqual([
+      'protect',
+      'access',
+    ])
+    expect(focusModeAlerts(status('error', 'disabled'), 'protect')).toEqual(['protect'])
+  })
+
+  it('shows nothing in RTSP mode, which uses neither endpoint (MODE-3)', () => {
+    expect(focusModeAlerts(status('error', 'error'), 'rtsp')).toEqual([])
+    expect(focusModeAlerts(status('unconfigured', 'disabled'), 'rtsp')).toEqual([])
   })
 })

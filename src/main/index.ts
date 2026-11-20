@@ -20,6 +20,7 @@ import { IPC_EVENTS, type Recover, type RecoverReason } from '@shared/ipc'
 import type { View } from '@shared/models'
 import { STREAM_RUNTIME_DOWN, type StreamRuntime } from '@shared/streams'
 import { buildAppMenuTemplate } from './appMenu'
+import { isRtspMode } from './appMode'
 import { APP_NAME, appIconPath, userDataOverride } from './branding'
 import { createAccessClient, type AccessClient } from './access/client'
 import type { DoorNotificationHandlers, DoorNotificationsHandle } from './access/doorStateMonitor'
@@ -587,15 +588,21 @@ function openDoorNotifications(
 
 /**
  * P6.3: the secret values the app log redacts, read on every line so a key saved or cleared in
- * Settings is covered from the next line on: the Protect API key, the Access token and go2rtc's
- * per-launch API credential (its Basic value, username and password). `services` and `go2rtc` are
- * declared above the logger, so this is safe to call from the first line on.
+ * Settings is covered from the next line on: the Protect API key, the Access token, the stored RTSP
+ * stream URLs and go2rtc's per-launch API credential (its Basic value, username and password).
+ * `services` and `go2rtc` are declared above the logger, so this is safe to call from the first
+ * line on.
  */
 function liveLogSecrets(): string[] {
   const credentials = services?.credentials
   return [
     ...(credentials?.protectApiKey === undefined ? [] : [credentials.protectApiKey]),
     ...(credentials?.accessToken === undefined ? [] : [credentials.accessToken]),
+    // RTSP-2: every stored stream URL as a value, on top of the redactor's RTSP(S) URL pattern
+    // (NFR-9), so a URL is replaced even where it appears in a shape the pattern does not match.
+    ...Object.values(credentials?.rtspUrls ?? {}).flatMap((urls) =>
+      Object.values(urls).filter((url): url is string => typeof url === 'string' && url !== ''),
+    ),
     ...basicHeaderSecrets(go2rtc?.authHeader() ?? null),
   ]
 }
@@ -653,6 +660,10 @@ function buildStreaming(started: Services, manager: ConnectionManager): void {
     configDir: app.getPath('userData'),
     binaryPath: go2rtcBinary,
     consoleHost,
+    // RTSP-5: in RTSP mode a source is accepted only if the registry validated it from the
+    // secrets. Late-bound: the registry is built just below, after the manager it uses.
+    rtspMode: () => isRtspMode(started.current),
+    rtspSource: (name) => streams?.rtspSource(name) ?? null,
     log: (line) => {
       // Already redacted by the manager: no credential and no source URL (CON-2, NFR-9).
       console.log(`[go2rtc] ${line}`)
@@ -667,6 +678,13 @@ function buildStreaming(started: Services, manager: ConnectionManager): void {
     // CAM-1: `GET /v1/cameras` is the authority and the manager caches its last read.
     cameras: () => manager.cachedCameras(),
     consoleHost,
+    // MODE-4: in RTSP streams mode `ensureStream` takes its RTSP branch and makes no Protect call
+    // (RTSP-3). Read per call from the live config, like everything else here.
+    protectMode: () => !isRtspMode(started.current),
+    // RTSP-3/5: the configured streams and the decrypted URLs, both per call (the handlers update
+    // them in place on every save and delete).
+    rtspStreams: () => started.current.rtsp.streams,
+    rtspUrls: () => started.credentials.rtspUrls,
     log: (line) => {
       console.log(`[streams] ${line}`)
     },
@@ -1047,6 +1065,9 @@ if (!gotTheLock) {
                 // so a Settings save would persist it as the user's own. Refused for the whole run.
                 streamsWritesBlocked: () =>
                   'Stream quality defaults cannot be changed during a perf run.',
+                // MODE-1/4: a switch would tear down the Protect streams the run is measuring and
+                // persist a mode the user did not choose. Refused for the whole run.
+                modeWritesBlocked: () => 'The app mode cannot be changed during a perf run.',
               }),
         }),
       )
@@ -1063,7 +1084,11 @@ if (!gotTheLock) {
       // nothing after that is missed. Never during a perf run: the harness connects by itself
       // (SPEC §5.4). Not awaited, and it never rejects — a failure shows as a normal connection
       // error in the status.
-      if (perfConfig === null) void connection?.connectOnLaunch()
+      // MODE-4: never in RTSP streams mode, which makes no Protect call at all (the manager checks
+      // the mode too; this keeps the intent visible where the launch happens).
+      if (perfConfig === null && started?.current.mode !== 'rtsp') {
+        void connection?.connectOnLaunch()
+      }
       app.on('activate', () => {
         if (BrowserWindow.getAllWindows().length === 0) createWindow()
       })

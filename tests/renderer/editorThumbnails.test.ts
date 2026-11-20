@@ -7,11 +7,14 @@ import type { Camera, IpcError } from '@shared/ipc'
 import { describe, expect, it } from 'vitest'
 import type { ListLoad, ThumbnailEntry } from '../../src/renderer/src/state/camerasStore'
 import {
+  cellCameraIcon,
   cellShownRef,
   cellSnapshot,
   editorRetryPlan,
   editorSnapshotPlan,
   inUseRefs,
+  paletteSnapshots,
+  snapshotCameras,
 } from '../../src/renderer/src/features/viewEditor/editorThumbnails'
 
 function camera(overrides: Partial<Camera> & { id: string }): Camera {
@@ -209,6 +212,39 @@ describe('editorRetryPlan (P5.2, once per open)', () => {
   })
 })
 
+describe('snapshotCameras (MODE-4, RTSP-3)', () => {
+  /** An RTSP stream as main's RTSP inventory builds it: online, so it would otherwise be asked. */
+  const STREAMS: Camera[] = [
+    camera({ id: 'rtsp-22222222-2222-4222-8222-222222222222', name: 'Garden' }),
+  ]
+  const GARDEN = cell('rtsp-22222222-2222-4222-8222-222222222222')
+
+  it('is the whole inventory in Protect mode (and before settings load)', () => {
+    expect(snapshotCameras(CAMERAS, 'protect')).toBe(CAMERAS)
+    expect(snapshotCameras(CAMERAS, undefined)).toBe(CAMERAS)
+  })
+
+  it('asks for no snapshot at all in RTSP mode, where main refuses every one', () => {
+    const sources = snapshotCameras(STREAMS, 'rtsp')
+    expect(editorSnapshotPlan([GARDEN], sources, {}, {})).toEqual({ cameraIds: [], packageIds: [] })
+    const failed: Record<string, ThumbnailEntry> = {
+      [STREAMS[0]?.id ?? '']: { status: 'failed', error: ERROR },
+    }
+    expect(editorRetryPlan([GARDEN], sources, failed, {})).toEqual({
+      cameraIds: [],
+      packageIds: [],
+    })
+  })
+
+  it('draws no image in RTSP mode, even one the cache holds', () => {
+    const id = STREAMS[0]?.id ?? ''
+    const entries: Record<string, ThumbnailEntry> = { [id]: ready(1) }
+    const sources = snapshotCameras(STREAMS, 'rtsp')
+    expect(cellSnapshot(GARDEN, sources, entries, {})).toBeNull()
+    expect(paletteSnapshots([id], sources, entries, {}).size).toBe(0)
+  })
+})
+
 describe('inUseRefs (VIEW-3, palette "In use")', () => {
   it('counts the cells each exact ref heads, and ignores the rest of a list', () => {
     const used = inUseRefs([
@@ -230,5 +266,23 @@ describe('inUseRefs (VIEW-3, palette "In use")', () => {
 
   it('is empty for a View with no cameras', () => {
     expect(inUseRefs([cell(), cell()]).size).toBe(0)
+  })
+})
+
+describe('cellCameraIcon (RTSP-4)', () => {
+  it('draws the camera icon on a cell whose head stream is in the inventory, in RTSP mode', () => {
+    expect(cellCameraIcon(cell('a'), CAMERAS, 'rtsp')).toBe(true)
+    expect(cellCameraIcon(cell('b', 'gone'), CAMERAS, 'rtsp')).toBe(true)
+  })
+
+  it('draws none for a stream the inventory no longer has (Camera not found)', () => {
+    expect(cellCameraIcon(cell('gone'), CAMERAS, 'rtsp')).toBe(false)
+    expect(cellCameraIcon(cell('gone', 'a'), CAMERAS, 'rtsp')).toBe(false)
+  })
+
+  it('draws none on an empty cell, nor in Protect mode', () => {
+    expect(cellCameraIcon(cell(), CAMERAS, 'rtsp')).toBe(false)
+    expect(cellCameraIcon(cell('a'), CAMERAS, 'protect')).toBe(false)
+    expect(cellCameraIcon(cell('a'), CAMERAS, undefined)).toBe(false)
   })
 })

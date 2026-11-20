@@ -16,14 +16,15 @@
 import { useEffect } from 'react'
 import type { View } from '@shared/models'
 import { useAppStore } from '../../state/appStore'
-import { shouldWatchDoors, viewCameraRefs } from './doorLink'
+import { accessActive, shouldWatchDoors, viewCameraRefs } from './doorLink'
 import { startDoorWatch } from './doorWatchRetry'
 
 /** `activeView`: the View the wall is showing (`useActiveView()`, read once by the Live screen). */
 export function useDoorWatch(activeView: View | null): void {
   const watch = useAppStore((s) =>
     shouldWatchDoors({
-      accessEnabled: s.settings?.console.accessEnabled ?? false,
+      // Never in RTSP mode (MODE-4): no Access call of any kind there.
+      accessEnabled: accessActive(s.settings),
       doorLinks: s.settings?.doorLinks,
       viewCameraRefs: viewCameraRefs(activeView),
     }),

@@ -483,6 +483,31 @@ describe('createGo2rtcManager — the desired stream set', () => {
     expect(yaml).toContain(`cam2_low: ${JSON.stringify(OTHER_SOURCE)}`)
   })
 
+  it('unregisters from the new go2rtc a stream removed after its config was written', async () => {
+    const h = createHarness()
+    await h.manager.addStream('cam1_low', SOURCE)
+    await h.manager.addStream('cam2_low', OTHER_SOURCE)
+    // The start parks in its readiness poll, after the config holding both was written.
+    h.authStatus = null
+    const starting = h.manager.start()
+    await settle()
+    expect(h.writes[0]?.data).toContain('cam1_low')
+    // No runtime yet, so this sends no DELETE: the go2rtc coming up would run it from the YAML.
+    await h.manager.removeStream('cam1_low')
+    expect(h.requests.filter((r) => r.method === 'DELETE')).toEqual([])
+
+    h.authStatus = 200
+    await h.clock.advance(READY_POLL_MS * 2)
+    const runtime = await starting
+
+    const deletes = h.requests.filter((r) => r.method === 'DELETE')
+    expect(deletes.map((r) => r.url)).toEqual([
+      `http://127.0.0.1:${String(runtime.port)}/api/streams?src=cam1_low`,
+    ])
+    expect(deletes[0]?.headers.Authorization).toBe(h.manager.authHeader())
+    expect(h.manager.streams()).toEqual({ cam2_low: OTHER_SOURCE })
+  })
+
   it('serves a stream added while a start is in flight (QUAL-8)', async () => {
     const h = createHarness()
     // The start parks in its readiness poll, which is where an `ensureStream` finds it.
@@ -558,18 +583,117 @@ describe('createGo2rtcManager — the desired stream set', () => {
     const h = createHarness()
     await h.manager.start()
     await h.manager.addStream('cam1_low', SOURCE)
-    await h.manager.removeStream('cam1_low')
+    expect(await h.manager.removeStream('cam1_low')).toBe(true)
     expect(h.manager.streams()).toEqual({})
     expect(h.requests.filter((r) => r.method === 'DELETE')).toHaveLength(1)
 
-    // Unknown name: nothing is sent, nothing throws.
-    await h.manager.removeStream('nope_low')
+    // Unknown name: nothing is sent, nothing throws, and go2rtc does not have it.
+    expect(await h.manager.removeStream('nope_low')).toBe(true)
     expect(h.requests.filter((r) => r.method === 'DELETE')).toHaveLength(1)
 
-    // A failing DELETE is logged, not thrown: the desired set is what the next start uses.
+    // A failing DELETE is logged and answered `false`, not thrown: the desired set is what the
+    // next start uses, and the caller can say the running go2rtc may still have it (MODE-4).
     await h.manager.addStream('cam2_low', OTHER_SOURCE)
     h.streamsStatus = 500
-    await expect(h.manager.removeStream('cam2_low')).resolves.toBeUndefined()
+    await expect(h.manager.removeStream('cam2_low')).resolves.toBe(false)
+    expect(h.manager.streams()).toEqual({})
+  })
+
+  describe('in RTSP streams mode (RTSP-5)', () => {
+    const RTSP_NAME = 'rtsp-22222222-2222-4222-8222-222222222222_high'
+    const RTSP_SOURCE = 'rtspx://admin:garden-pass@cam-a.invalid:7441/live'
+
+    /** RTSP mode, with the registry's validated sources as a plain map the test controls. */
+    function rtspHarness(mode: { rtsp: boolean } = { rtsp: true }) {
+      const validated = new Map<string, string>([[RTSP_NAME, RTSP_SOURCE]])
+      const h = createHarness({
+        // RTSP mode needs no console at all.
+        consoleHost: () => null,
+        rtspMode: () => mode.rtsp,
+        rtspSource: (name: string) => validated.get(name) ?? null,
+      })
+      return { h, validated }
+    }
+
+    it('accepts exactly the source the registry validated for that name', async () => {
+      const { h } = rtspHarness()
+      await h.manager.start()
+      await h.manager.addStream(RTSP_NAME, RTSP_SOURCE)
+      expect(h.manager.streams()).toEqual({ [RTSP_NAME]: RTSP_SOURCE })
+    })
+
+    it('refuses any other source, a Protect one on the pinned host included, without quoting it', async () => {
+      const { h } = rtspHarness()
+      for (const [name, source] of [
+        [RTSP_NAME, `${RTSP_SOURCE}?x=1`],
+        [RTSP_NAME, SOURCE],
+        ['cam1_low', SOURCE],
+        ['cam1_low', RTSP_SOURCE],
+      ] as const) {
+        const error: unknown = await h.manager.addStream(name, source).catch((err: unknown) => err)
+        expect(String(error)).toMatch(/not one OverWatch validated/)
+        expect(String(error)).not.toContain('garden-pass')
+        expect(String(error)).not.toContain('cam-a.invalid')
+        expect(String(error)).not.toMatch(/rtsp[sx]?:\/\//)
+      }
+      expect(h.manager.streams()).toEqual({})
+      expect(h.logs.join('\n')).not.toContain('garden-pass')
+    })
+
+    it('replays only validated sources: a restart leaves out and drops one the registry dropped', async () => {
+      const { h, validated } = rtspHarness()
+      await h.manager.addStream(RTSP_NAME, RTSP_SOURCE)
+      await h.manager.start()
+      expect(h.writes[0]?.data).toContain(RTSP_NAME)
+      // The check runs on the replay too, not only on addStream: fail-closed for that entry only.
+      validated.clear()
+      await h.manager.stop()
+      await h.manager.start()
+      expect(h.writes[1]?.data).not.toContain(RTSP_NAME)
+      expect(h.writes[1]?.data).not.toContain('garden-pass')
+      expect(h.manager.streams()).toEqual({})
+      expect(h.logs.some((line) => line.includes(`left stream "${RTSP_NAME}" out`))).toBe(true)
+      expect(h.logs.join('\n')).not.toContain('garden-pass')
+    })
+
+    it('starts despite the other mode`s streams still in the set just after a switch (MODE-4)', async () => {
+      const mode = { rtsp: false }
+      const validated = new Map<string, string>([[RTSP_NAME, RTSP_SOURCE]])
+      const h = createHarness({
+        rtspMode: () => mode.rtsp,
+        rtspSource: (name: string) => validated.get(name) ?? null,
+      })
+      await h.manager.addStream('cam1_low', SOURCE)
+      // The mode is saved before `unregisterAll` has dropped the Protect stream.
+      mode.rtsp = true
+      await h.manager.addStream(RTSP_NAME, RTSP_SOURCE)
+      await h.manager.start()
+      const yaml = h.writes[0]?.data ?? ''
+      expect(yaml).not.toContain('cam1_low')
+      expect(yaml).not.toContain(SOURCE)
+      expect(yaml).toContain(RTSP_NAME)
+      expect(h.manager.streams()).toEqual({ [RTSP_NAME]: RTSP_SOURCE })
+      expect(h.logs.join('\n')).not.toContain(SOURCE)
+    })
+
+    it('refuses the RTSP source once back in Protect mode (the pinned-host check applies)', async () => {
+      const mode = { rtsp: true }
+      const h = createHarness({
+        rtspMode: () => mode.rtsp,
+        // Still answering: in Protect mode the registry's list must not be what decides.
+        rtspSource: () => RTSP_SOURCE,
+      })
+      await h.manager.addStream(RTSP_NAME, RTSP_SOURCE)
+      // The pinned-host source is refused in RTSP mode, though its host is the console's.
+      await expect(h.manager.addStream('cam1_low', SOURCE)).rejects.toThrow(/validated/)
+      mode.rtsp = false
+      await expect(h.manager.addStream(RTSP_NAME, RTSP_SOURCE)).rejects.toThrow(
+        /not on the pinned console host/,
+      )
+      // And the Protect path is unchanged: a pinned-host source is accepted.
+      await h.manager.addStream('cam1_low', SOURCE)
+      expect(h.manager.streams()).toMatchObject({ cam1_low: SOURCE })
+    })
   })
 
   it('answers streamInfo with the allowlisted summary, and null when go2rtc is down (R7)', async () => {

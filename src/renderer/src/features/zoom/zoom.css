@@ -1,18 +1,38 @@
 /*
- * Digital zoom (P3.6; ZOOM-1/2/3): the layer around the player that `useZoomPan` transforms, and
- * the cursors of a zoomed cell. Tokens come from src/renderer/src/styles.css.
+ * Digital zoom (P3.6; ZOOM-1/2/3): the layer around the player, the canvas over it where
+ * `useZoomPan` draws the zoomed picture, and the cursors of a zoomed cell. Tokens come from
+ * src/renderer/src/styles.css.
  *
- * The layer is always there, zoomed or not (ZoomPan.tsx, "Only the player is scaled"), and is the
- * cell's box exactly, so its untransformed coordinates are the cell's and zoomMath needs no
- * conversion. `transform-origin: 0 0` is what zoomMath's `(x, y) + scale · p` assumes. The
- * `transform` itself and `will-change` are written on the element by the hook, per frame and only
- * while zoomed. The cell's `overflow: hidden` (grid.css) clips the zoomed picture to the cell, and
- * the overlay, painted after the layer, stays on top of it at its own size.
+ * The layer is always there, zoomed or not (ZoomPan.tsx, "The zoomed picture is drawn on a
+ * canvas"), and is the cell's box exactly, so its coordinates are the cell's and zoomMath needs no
+ * conversion. Nothing in it is ever transformed and the videos are never styled from here: they play
+ * at 1× under the canvas. F1.0.2-9: a transform and an `object-view-box` crop both made the video's
+ * quad up to 8× the cell, which on Windows' DirectComposition overlay path rebuilt a swap chain up
+ * to 16384×9216 per zoom step until the GPU process crashed; a cell-sized canvas keeps the video and
+ * its overlay at 1×, and a zoom step is only a redraw. The overlay, painted after the layer, stays
+ * on top of it at its own size.
  */
 .zoomPan {
   position: absolute;
   inset: 0;
-  transform-origin: 0 0;
+}
+
+/*
+ * Over the players (painted after them), the cell's size, and never in the pointer's way. Hidden
+ * except while zoomed with a frame to draw; the hook toggles `--on` with `classList`, never through
+ * React, and sizes its backing store in device px.
+ */
+.zoomPan__canvas {
+  position: absolute;
+  display: none;
+  width: 100%;
+  height: 100%;
+  inset: 0;
+  pointer-events: none;
+}
+
+.zoomPan__canvas--on {
+  display: block;
 }
 
 /* FILL-1: the filled cell takes touch gestures for itself, so two fingers pinch the camera, not the page. */

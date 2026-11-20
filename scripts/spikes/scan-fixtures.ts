@@ -27,14 +27,19 @@ const checks: Check[] = [
     test: (t) => hostname.length > 0 && t.toLowerCase().includes(hostname.toLowerCase()),
   },
   { name: 'API key', test: (t) => apiKey.length > 0 && t.includes(apiKey) },
-  { name: 'MAC (separated)', test: (t) => /\b[0-9a-f]{2}(?:[:-][0-9a-f]{2}){5}\b/i.test(t) },
-  { name: 'MAC (bare 12-hex)', test: (t) => /\b[0-9a-f]{12}\b/i.test(t) },
-  { name: 'IPv4 address', test: (t) => /\b\d{1,3}(?:\.\d{1,3}){3}\b/.test(t) },
+  // Alphanumeric lookarounds, not `\b`: `_` is a word character, so `\b` misses a value wrapped in
+  // underscores (e.g. `reader_<mac>_<uuid>_<ts>.jpg`). Same boundaries as lib/sanitize.ts.
+  {
+    name: 'MAC (separated)',
+    test: (t) => /(?<![0-9a-z])[0-9a-f]{2}(?:[:-][0-9a-f]{2}){5}(?![0-9a-z])/i.test(t),
+  },
+  { name: 'MAC (bare 12-hex)', test: (t) => /(?<![0-9a-z])[0-9a-f]{12}(?![0-9a-z])/i.test(t) },
+  { name: 'IPv4 address', test: (t) => /(?<!\d)\d{1,3}(?:\.\d{1,3}){3}(?!\d)/.test(t) },
   {
     name: 'rtsps:// with a real host',
     test: (t) => /rtsps?:\/\/(?!console\.invalid[:/])/i.test(t),
   },
-  { name: '24-hex Protect id', test: (t) => /\b[0-9a-f]{24}\b/i.test(t) },
+  { name: '24-hex Protect id', test: (t) => /(?<![0-9a-z])[0-9a-f]{24}(?![0-9a-z])/i.test(t) },
 ]
 
 async function main(): Promise<void> {

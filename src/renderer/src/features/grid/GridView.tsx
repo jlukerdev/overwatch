@@ -83,7 +83,10 @@
 // user decision 2026-11-16), so audio never follows a cell onto another camera, even one that rotates
 // back. Unmounting — leaving the Live screen or opening the View editor — mutes everything. `M` mutes
 // all (features/audio/muteShortcut.ts), heard only while a cell is unmuted, like `Esc` only while
-// filled.
+// filled. **In RTSP mode** (RTSP-4) a slot has audio once the stream it plays turned out to carry an
+// audio track: each cell's players report it (`onStreamAudio`, once per change, from the MSE
+// handshake), this component keeps the answers per slot and camera (features/audio/streamAudio.ts)
+// and the slot builder reads them in place of the mic flags. Protect mode passes no reporter.
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type JSX } from 'react'
 import type { Camera } from '@shared/ipc'
 import type { View } from '@shared/models'
@@ -92,6 +95,7 @@ import { cellRect, layoutGrid, type Rect } from '@shared/viewLayout'
 import { useAppStore } from '../../state/appStore'
 import { audioActions, isSlotAudible, useAudioStore } from '../../state/audioStore'
 import { isMuteAllKey } from '../audio/muteShortcut'
+import { NO_STREAM_AUDIO, streamAudioStep } from '../audio/streamAudio'
 import { viewsActions, type ViewResult } from '../../state/viewsStore'
 import { Cell } from '../cells/Cell'
 import { MissingCell } from '../cells/MissingCell'
@@ -100,10 +104,9 @@ import { shownIndices, type StepDirection } from '../cells/schedulerSet'
 import { useCellSchedulers } from '../cells/useCellSchedulers'
 import {
   activeFillPick,
-  canSaveFillQuality,
-  effectiveFillQuality,
   FILL_FIT,
   fillClickStep,
+  filledQuality,
   filledSlotKey,
   isFillExitKey,
   pickAfterFillSave,
@@ -198,10 +201,36 @@ export function GridView({ view, cameras, streams }: GridViewProps): JSX.Element
   } = useCellSchedulers(entries, pinnedKey)
   const shown = useMemo(() => shownIndices(schedulerViewsByKey), [schedulerViewsByKey])
 
+  // RTSP-3: which qualities each stream has a URL for, `null` in Protect mode. The store's own
+  // object, so this is stable until the secrets change.
+  const rtspUrls = useAppStore((s) =>
+    s.settings?.mode === 'rtsp' ? s.secretsStored.rtspUrls : null,
+  )
+
+  // RTSP-4 (header): which slot + camera streams reported an audio track. One update per change
+  // of a player's answer, never per frame; the step hands back the same set for a no-op.
+  const [streamAudio, setStreamAudio] = useState<ReadonlySet<string>>(NO_STREAM_AUDIO)
+  const rtsp = rtspUrls !== null
+  const onStreamAudio = useCallback(
+    (slotKey: string, cameraId: string, hasAudio: boolean): void => {
+      setStreamAudio((current) => streamAudioStep(current, slotKey, cameraId, hasAudio))
+    },
+    [],
+  )
+
   // `prewarm` is stable while its targets are, so this rebuilds only when one starts or ends.
   const slots = useMemo(
-    () => buildViewSlots({ view, cameras, streams, shown, prewarm }),
-    [view, cameras, streams, shown, prewarm],
+    () =>
+      buildViewSlots({
+        view,
+        cameras,
+        streams,
+        shown,
+        prewarm,
+        rtspUrls,
+        streamAudio: rtsp ? streamAudio : null,
+      }),
+    [view, cameras, streams, shown, prewarm, rtspUrls, rtsp, streamAudio],
   )
 
   const filledKey = filledSlotKey(fill, view.id, slots)
@@ -476,6 +505,7 @@ export function GridView({ view, cameras, streams }: GridViewProps): JSX.Element
                   audible={audible}
                   volume={volume}
                   onAudioToggle={onAudioToggle}
+                  onStreamAudio={rtsp ? onStreamAudio : undefined}
                 />
               </div>
             )
@@ -527,6 +557,7 @@ function SlotContent({
   audible,
   volume,
   onAudioToggle,
+  onStreamAudio,
 }: {
   readonly slot: GridSlot
   /** VIEW-8: the View's `showNames`. */
@@ -549,12 +580,16 @@ function SlotContent({
   /** AUD-3: the app-wide level (header). */
   readonly volume: number
   readonly onAudioToggle: (slotKey: string, cameraId: string, unmute: boolean) => void
+  /** RTSP-4: a player's audio answer (header); `undefined` in Protect mode. Stable. */
+  readonly onStreamAudio:
+    ((slotKey: string, cameraId: string, hasAudio: boolean) => void) | undefined
 }): JSX.Element {
   switch (slot.kind) {
     case 'camera': {
-      // Filled: the fill stream (the session pick over QUAL-5's chain) and fit. A change of
-      // `quality` is the player's seamless swap (FILL-2, QUAL-6); the badge shows it (QUAL-7).
-      const fillQuality = effectiveFillQuality(slot.fillQuality, fillPick)
+      // Filled: the fill stream (the session pick over QUAL-5's chain, in RTSP mode the quality
+      // served for it, RTSP-3) and fit. A change of `quality` is the player's seamless swap
+      // (FILL-2, QUAL-6); the picker's colour shows it (QUAL-7).
+      const fill = filledQuality(slot.fillQuality, fillPick, slot.availability)
       return (
         <Cell
           slotKey={slot.key}
@@ -562,7 +597,7 @@ function SlotContent({
           cameraRef={slot.ref}
           name={slot.name}
           showName={showNames}
-          quality={filled ? fillQuality : slot.quality}
+          quality={filled ? fill.shown : slot.quality}
           fit={filled ? FILL_FIT : slot.fit}
           overlayAutoHideMs={autoHideMs}
           filled={filled}
@@ -570,7 +605,8 @@ function SlotContent({
           onBack={onBack}
           cellQuality={slot.qualityChoice?.override ?? null}
           inheritedQuality={slot.qualityChoice?.inherited ?? null}
-          canSaveFillQuality={filled && canSaveFillQuality(fillQuality, slot.fillQuality)}
+          canSaveFillQuality={filled && fill.canSave}
+          availability={slot.availability}
           onQualityChange={onQualityChange}
           onFillQualityPick={onFillQualityPick}
           onSaveFillQuality={onSaveFillQuality}
@@ -586,6 +622,7 @@ function SlotContent({
           volume={volume}
           onAudioToggle={onAudioToggle}
           onVolumeChange={audioActions.setVolume}
+          onStreamAudio={onStreamAudio}
         />
       )
     }

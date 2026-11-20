@@ -160,7 +160,7 @@ describe('auth', () => {
   ])('%s token -> 401 error envelope', (_label, headers) => {
     const res = mock.handle(req('GET', '/doors', { headers }))
     expect(res.status).toBe(401)
-    expect(res.body.code).toBe('CODE_ACCESS_TOKEN_INVALID')
+    expect(res.body.code).toBe('CODE_UNAUTHORIZED')
     expect(AccessErrorEnvelopeSchema.safeParse(res.body).success).toBe(true)
   })
 
@@ -190,9 +190,22 @@ describe('GET /doors and /doors/{id}', () => {
     expect(AccessDoorResponseSchema.parse(res.body).data).toEqual(FRONT)
   })
 
-  it('unknown door id -> CODE_NOT_EXISTS', () => {
+  it('sends the unbound door the way a real console does: position "none" and an extras object', () => {
+    const res = mock.handle(req('GET', `/doors/${UNBOUND.id}`))
+    const raw = (res.body as { data: Record<string, unknown> }).data
+    expect(raw.door_position_status).toBe('none')
+    expect(raw.extras).toEqual({
+      door_thumbnail: expect.stringMatching(/^\/preview\//) as unknown,
+      door_thumbnail_last_update: expect.any(Number) as unknown,
+    })
+    const parsed = AccessDoorResponseSchema.parse(res.body).data
+    expect(parsed.door_position_status).toBeNull()
+    expect(parsed).not.toHaveProperty('extras')
+  })
+
+  it('unknown door id -> HTTP 200 CODE_NOT_EXISTS, as a real console answers', () => {
     const res = mock.handle(req('GET', '/doors/00000000-0000-4000-8000-000000000000'))
-    expect(res.status).toBe(404)
+    expect(res.status).toBe(200)
     expect(res.body.code).toBe('CODE_NOT_EXISTS')
   })
 
@@ -270,9 +283,9 @@ describe('PUT /doors/{id}/unlock', () => {
     expect(relay(FRONT.id)).toBe('lock')
   })
 
-  it('unknown door -> CODE_NOT_EXISTS', () => {
+  it('unknown door -> HTTP 200 CODE_NOT_EXISTS', () => {
     const res = mock.handle(req('PUT', '/doors/00000000-0000-4000-8000-000000000000/unlock'))
-    expect(res.status).toBe(404)
+    expect(res.status).toBe(200)
     expect(res.body.code).toBe('CODE_NOT_EXISTS')
   })
 
@@ -533,7 +546,7 @@ describe("PUT/GET /doors/{id}/lock_rule (interactions are the mock's own choice)
   it('unknown door -> CODE_NOT_EXISTS; unbound door -> CODE_OPERATION_FORBIDDEN on PUT only', () => {
     const missing = '00000000-0000-4000-8000-000000000000'
     expect(mock.handle(req('GET', `/doors/${missing}/lock_rule`)).body.code).toBe('CODE_NOT_EXISTS')
-    expect(putRule(missing, { type: 'keep_unlock' }).status).toBe(404)
+    expect(putRule(missing, { type: 'keep_unlock' }).status).toBe(200)
     const res = putRule(UNBOUND.id, { type: 'keep_unlock' })
     expect(res.status).toBe(403)
     expect(res.body.code).toBe('CODE_OPERATION_FORBIDDEN')
@@ -573,7 +586,7 @@ describe('PUT/GET /doors/settings/emergency', () => {
     expect(mock.handle(req('GET', '/doors/settings/emergency/')).status).toBe(200)
     // One segment short, `settings` is just an unknown door id.
     const res = mock.handle(req('GET', '/doors/settings'))
-    expect(res.status).toBe(404)
+    expect(res.status).toBe(200)
     expect(res.body.code).toBe('CODE_NOT_EXISTS')
     expect(mock.handle(req('GET', '/doors/settings/lock_rule')).body.code).toBe('CODE_NOT_EXISTS')
     expect(mock.handle(req('GET', '/doors/settings/emergency/x')).body.code).toBe(
@@ -775,7 +788,7 @@ describe('mock-only control routes (/__mock)', () => {
     ]) {
       const res = mock.handle(admin(path, { headers }))
       expect(res.status).toBe(401)
-      expect(res.body.code).toBe('CODE_ACCESS_TOKEN_INVALID')
+      expect(res.body.code).toBe('CODE_UNAUTHORIZED')
       expect(res.headers[MOCK_HEADER]).toBe('1')
     }
     expect(mock.store.get(FRONT.id)).toEqual(FRONT)
@@ -871,9 +884,9 @@ describe('mock-only control routes (/__mock)', () => {
     expect(mock.handle(admin('/notifications/drop')).body.data).toEqual({ closed: 0 })
   })
 
-  it('unknown door -> 404 CODE_NOT_EXISTS; unknown route -> 404; wrong method -> 405', () => {
+  it('unknown door -> 200 CODE_NOT_EXISTS; unknown route -> 404; wrong method -> 405', () => {
     const missing = mock.handle(admin('/doors/00000000-0000-4000-8000-000000000000/unlock'))
-    expect(missing.status).toBe(404)
+    expect(missing.status).toBe(200)
     expect(missing.body.code).toBe('CODE_NOT_EXISTS')
     expect(mock.handle(admin('/doors')).body.code).toBe('CODE_RESOURCE_NOT_FOUND')
     expect(mock.handle(admin(`/doors/${FRONT.id}/explode`)).status).toBe(404)
@@ -914,13 +927,13 @@ describe('WebSocket upgrade decision (authorizeUpgrade)', () => {
     expect(mock.authorizeUpgrade(upgrade({ url: `${NOTIFICATIONS_PATH}?x=1` }))).toBeUndefined()
   })
 
-  it('a missing or wrong token -> 401 CODE_ACCESS_TOKEN_INVALID with the mock header', () => {
+  it('a missing or wrong token -> 401 CODE_UNAUTHORIZED with the mock header', () => {
     for (const authorization of [undefined, 'Bearer nope']) {
       const res = mock.authorizeUpgrade(
         upgrade({ headers: { ...upgrade().headers, authorization } }),
       )
       expect(res?.status).toBe(401)
-      expect(res?.body.code).toBe('CODE_ACCESS_TOKEN_INVALID')
+      expect(res?.body.code).toBe('CODE_UNAUTHORIZED')
       expect(res?.headers[MOCK_HEADER]).toBe('1')
     }
   })
@@ -1235,9 +1248,7 @@ describe.skipIf(!hasOpenssl())('over real TLS: REST, WebSocket and mock controls
       const res = await rawUpgrade(NOTIFICATIONS_PATH, authorization)
       expect(res.status).toBe(401)
       expect(res.headers[MOCK_HEADER]).toBe('1')
-      expect(AccessErrorEnvelopeSchema.parse(JSON.parse(res.body)).code).toBe(
-        'CODE_ACCESS_TOKEN_INVALID',
-      )
+      expect(AccessErrorEnvelopeSchema.parse(JSON.parse(res.body)).code).toBe('CODE_UNAUTHORIZED')
     }
     expect(running.hub.size()).toBe(0)
     // undici's WebSocket reports it as a failed connection.

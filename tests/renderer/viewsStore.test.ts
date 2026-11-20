@@ -15,7 +15,7 @@ import {
   type IpcResult,
   type ViewProtectApi,
 } from '@shared/ipc'
-import { CellSchema, type View } from '@shared/models'
+import { CellSchema, type Camera, type View } from '@shared/models'
 import { LAYOUT_PRESETS, mergeCells, uniformCells } from '@shared/viewLayout'
 import { useAppStore } from '../../src/renderer/src/state/appStore'
 import {
@@ -31,6 +31,7 @@ import {
   selectActiveView,
   selectViews,
   STARTER_VIEW_NAME,
+  starterCameraIds,
   starterPreset,
   viewsActions,
 } from '../../src/renderer/src/state/viewsStore'
@@ -71,9 +72,11 @@ function appState(views: View[], lastViewId: string | null): AppState {
       streams: { defaultGridQuality: 'low', defaultFillQuality: 'high' },
       ui: { overlayAutoHideSec: 3 },
       accessPolling: { withSocketSec: 5, withoutSocketSec: 2, unlockedSec: 1, detailsSec: 30 },
+      mode: 'protect',
+      rtsp: { streams: [], views: [], lastViewId: null },
     },
     keystoreAvailable: true,
-    secretsStored: { protectApiKey: true, accessToken: false },
+    secretsStored: { protectApiKey: true, accessToken: false, rtspUrls: {} },
     connection: null as unknown as AppState['connection'],
     cameras: [],
   }
@@ -167,9 +170,10 @@ describe('list operations (VIEW-3)', () => {
     for (const preset of LAYOUT_PRESETS) {
       const created = createViewFromPreset('id-1', 'New', preset)
       expect(created).toMatchObject({ cols: preset.cols, rows: preset.rows, gap: 0 })
-      expect(SetViewsInputSchema.safeParse({ views: [created], lastViewId: 'id-1' }).success).toBe(
-        true,
-      )
+      expect(
+        SetViewsInputSchema.safeParse({ views: [created], lastViewId: 'id-1', mode: 'protect' })
+          .success,
+      ).toBe(true)
     }
   })
 })
@@ -218,9 +222,10 @@ describe('starter View (the Live screen’s "Create a View")', () => {
       [1, 1, ['c5']],
       [1, 2, []],
     ])
-    expect(SetViewsInputSchema.safeParse({ views: [created], lastViewId: 'id-1' }).success).toBe(
-      true,
-    )
+    expect(
+      SetViewsInputSchema.safeParse({ views: [created], lastViewId: 'id-1', mode: 'protect' })
+        .success,
+    ).toBe(true)
   })
 
   it('a starter View for 20 cameras shows the first 16', () => {
@@ -455,9 +460,22 @@ describe('viewsActions', () => {
     const main = installFakeMain([view('a'), view('b')], 'a')
     const result = await viewsActions.setActiveView('b')
     expect(result.ok).toBe(true)
-    expect(main.setLastView).toHaveBeenCalledWith({ viewId: 'b' })
+    expect(main.setLastView).toHaveBeenCalledWith({ viewId: 'b', mode: 'protect' })
     expect(main.setViews).not.toHaveBeenCalled()
     expect(storeActive()?.id).toBe('b')
+  })
+
+  it('sends the mode of the list each write was built from (MODE-4)', async () => {
+    const main = installFakeMain([view('a'), view('b')], 'a')
+    // The renderer is showing RTSP mode's list.
+    const settings = useAppStore.getState().settings
+    if (settings === null) throw new Error('not loaded')
+    useAppStore.setState({ settings: { ...settings, mode: 'rtsp' } })
+    expect((await viewsActions.renameView('a', 'Garage')).ok).toBe(true)
+    expect(main.setViews.mock.calls[0]?.[0]).toMatchObject({ mode: 'rtsp', lastViewId: 'a' })
+    // The answer folded in Protect mode (the fake main's): the next write says so.
+    expect((await viewsActions.setActiveView('b')).ok).toBe(true)
+    expect(main.setLastView).toHaveBeenCalledWith({ viewId: 'b', mode: 'protect' })
   })
 
   it('runs mutations one at a time, each on the result of the one before', async () => {
@@ -472,5 +490,46 @@ describe('viewsActions', () => {
     // Without the queue the reorder would have saved the old name back over the rename.
     expect(storeViews().map((v) => v.name)).toEqual(['Renamed'])
     expect(main.views.map((v) => v.name)).toEqual(['Renamed'])
+  })
+})
+
+describe('starterCameraIds (VIEW-4, RTSP-4)', () => {
+  const cam = (id: string, name: string | null, model = ''): Camera => ({
+    id,
+    name,
+    model,
+    state: 'CONNECTED',
+    hasMic: false,
+    micEnabled: false,
+    hasSpeaker: false,
+    smartDetectTypes: [],
+    supportsFullHdSnapshot: false,
+    hasPackageCamera: false,
+  })
+
+  it('uses the streams in name order, ignoring case, in RTSP mode', () => {
+    const streams = [
+      cam('rtsp-3', 'garage', 'RTSP stream'),
+      cam('rtsp-1', 'Porch', 'RTSP stream'),
+      cam('rtsp-2', 'Drive', 'RTSP stream'),
+    ]
+    expect(starterCameraIds(streams, 'rtsp')).toEqual(['rtsp-2', 'rtsp-3', 'rtsp-1'])
+  })
+
+  it('compares numbers in stream names as numbers (Cam 2 before Cam 10)', () => {
+    const streams = [cam('rtsp-1', 'Cam 10'), cam('rtsp-2', 'Cam 2')]
+    expect(starterCameraIds(streams, 'rtsp')).toEqual(['rtsp-2', 'rtsp-1'])
+  })
+
+  it('keeps the camera list order in Protect mode', () => {
+    const cameras = [cam('c', 'Cam 10'), cam('a', 'Cam 2'), cam('b', null, 'G4 Bullet')]
+    // The camera list compares numbers as numbers (Cam 2 before Cam 10), falling back to the model.
+    expect(starterCameraIds(cameras, 'protect')).toEqual(['a', 'c', 'b'])
+  })
+
+  it('does not change its input', () => {
+    const streams = [cam('rtsp-2', 'B'), cam('rtsp-1', 'A')]
+    starterCameraIds(streams, 'rtsp')
+    expect(streams.map((s) => s.id)).toEqual(['rtsp-2', 'rtsp-1'])
   })
 })

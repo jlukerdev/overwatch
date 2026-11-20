@@ -1,7 +1,9 @@
 // One grid cell with a camera in it (CELL-1): the live player and, over it, the overlay with the
 // camera's name and the auto-hiding controls (CellOverlay, P3.4; CELL-3/4, QUAL-7).
 //
-// **Audio (P5.1; AUD-1/2/3).** A cell whose camera has audio (`audio`: `hasMic && micEnabled`) gets
+// **Audio (P5.1; AUD-1/2/3).** A cell whose camera has audio (`audio`: `hasMic && micEnabled`; in RTSP
+// mode, its stream reported an audio track, RTSP-4 — every player here, the pre-warm included,
+// reports its answer upward through `onStreamAudio` with this slot's key) gets
 // a mute toggle in its strip, in the grid and in fill, and while filled a volume slider after it
 // (./AudioControls). Whether this cell is the one heard (`audible`) is decided above, by
 // state/audioStore.ts through `<GridView>`: the single active source is a slot of the View *with the
@@ -19,8 +21,9 @@
 // it at its slot), so a control press is never a cell click.
 //
 // **Zoom (P3.6; ZOOM-1/2/3), filled only.** `useZoomPan(filled)` (features/zoom/ZoomPan.tsx) listens
-// on this cell's element while it is filled, and transforms `<ZoomPanLayer>`, which wraps the player
-// and nothing else, so the overlay is never scaled. The layer is rendered whether filled or not: the
+// on this cell's element while it is filled, and draws the zoomed picture on `<ZoomPanLayer>`'s
+// canvas over the player (the videos themselves stay at 1×); the layer wraps the player and nothing
+// else, so the overlay is never zoomed. The layer is rendered whether filled or not: the
 // player must never be re-parented, which would remount it and break FILL-2's "same player". While
 // filled the overlay's slot also has the zoom reset (ZOOM-2), an icon button that is always there
 // and disabled at 1×, where it would do nothing (the user's call, 2026-11-16). A drag's trailing click is stopped by the hook before `onClick` below sees it, so
@@ -34,7 +37,9 @@
 // per quality, so a cell with a picker has no quality badge; only the package-channel cell, which
 // has no picker, keeps the badge (`PKG`) so it still says what it plays. This file only reports
 // picks upward with the slot's key — saving a cell override, keeping fill's session pick and saving
-// it for the View are `<GridView>`'s.
+// it for the View are `<GridView>`'s. For an RTSP stream (RTSP-3) the pickers get its `availability`
+// and list a quality with no URL disabled, "(not set)"; `quality` is then already the one served,
+// so the colour shows what plays.
 //
 // **Strip order.** In fill, left to right: zoom reset (disabled at 1×), back, position, mute, volume,
 // quality picker and its Save. In the grid: position, mute, quality picker. The badge, where there
@@ -91,6 +96,7 @@
 import { memo, useCallback, useMemo, useState, type JSX } from 'react'
 import type { Fit } from '@shared/models'
 import type { Quality, StreamQuality } from '@shared/quality'
+import type { QualityAvailability } from '../quality/qualityChoice'
 import { LivePlayer } from '../../player/LivePlayer'
 import { ZoomResetIcon } from '../../ui/icons'
 import { MuteToggle, VolumeSlider } from './AudioControls'
@@ -137,6 +143,11 @@ export interface CellProps {
   readonly inheritedQuality: Quality | null
   /** QUAL-5: while filled, show the fill picker's Save (a pick changed what plays, `canSaveFillQuality`). */
   readonly canSaveFillQuality: boolean
+  /**
+   * RTSP-3: which qualities the stream has a URL for, for the pickers; `null` in Protect mode. The
+   * store's own object, so the memo's shallow compare holds until the secrets change.
+   */
+  readonly availability: QualityAvailability
   /** QUAL-4: a new override for this cell (`null` clears it). Stable, like `onClickEvent`. */
   readonly onQualityChange: (slotKey: string, quality: Quality | null) => void
   /** QUAL-5: a quality picked while filled, for this fill only. Stable. */
@@ -170,6 +181,13 @@ export interface CellProps {
   readonly onAudioToggle: (slotKey: string, cameraId: string, unmute: boolean) => void
   /** AUD-3: the volume slider. Stable. */
   readonly onVolumeChange: (volume: number) => void
+  /**
+   * RTSP-4: a player's answer to "does the stream on screen carry audio", with this slot's key and
+   * that player's camera (`<GridView>` keeps them, features/audio/streamAudio.ts). `undefined` in
+   * Protect mode, where the mic flags decide. Stable.
+   */
+  readonly onStreamAudio?:
+    ((slotKey: string, cameraId: string, hasAudio: boolean) => void) | undefined
 }
 
 /**
@@ -208,6 +226,7 @@ export const Cell = memo(function Cell({
   cellQuality,
   inheritedQuality,
   canSaveFillQuality,
+  availability,
   onQualityChange,
   onFillQualityPick,
   onSaveFillQuality,
@@ -221,8 +240,9 @@ export const Cell = memo(function Cell({
   volume,
   onAudioToggle,
   onVolumeChange,
+  onStreamAudio,
 }: CellProps): JSX.Element {
-  const { cellRef, layerRef, zoomed, resetZoom } = useZoomPan(filled)
+  const { cellRef, layerRef, canvasRef, zoomed, resetZoom } = useZoomPan(filled)
   // The visible player shows live video (header, "Door unlock"). Kept as *which* camera is live, so
   // the render that switches camera never shows the unlock control on the previous one's word.
   const [streamingCameraId, setStreamingCameraId] = useState<string | null>(null)
@@ -242,6 +262,16 @@ export const Cell = memo(function Cell({
       )
     },
     [cameraId],
+  )
+  // RTSP-4: every player's audio answer, named by this slot (header). `undefined` in Protect mode.
+  const onPlayerAudio = useMemo(
+    () =>
+      onStreamAudio === undefined
+        ? undefined
+        : (playerCameraId: string, hasAudio: boolean): void => {
+            onStreamAudio(slotKey, playerCameraId, hasAudio)
+          },
+    [slotKey, onStreamAudio],
   )
   // The same element object across renders that change nothing of the player's own, so a flip of
   // `zoomed` (or of `filled` alone) re-renders the overlay and never the player.
@@ -276,16 +306,28 @@ export const Cell = memo(function Cell({
             volume={volume}
             fit={fit}
             onPlayingChange={entry.hidden ? undefined : onPlayingChange}
+            onStreamAudio={onPlayerAudio}
           />
         </div>
       )),
-    [cameraId, quality, prewarmCameraId, prewarmQuality, fit, audible, volume, onPlayingChange],
+    [
+      cameraId,
+      quality,
+      prewarmCameraId,
+      prewarmQuality,
+      fit,
+      audible,
+      volume,
+      onPlayingChange,
+      onPlayerAudio,
+    ],
   )
   const qualityPicker =
     inheritedQuality === null ? null : filled ? (
       <FillQualityPicker
         shown={quality}
         canSave={canSaveFillQuality}
+        availability={availability}
         onPick={(picked) => {
           onFillQualityPick(slotKey, picked)
         }}
@@ -298,6 +340,7 @@ export const Cell = memo(function Cell({
         override={cellQuality}
         inherited={inheritedQuality}
         playing={quality}
+        availability={availability}
         onChange={(picked) => {
           onQualityChange(slotKey, picked)
         }}
@@ -344,7 +387,9 @@ export const Cell = memo(function Cell({
       }}
     >
       {/* Always a list, visible player first (header): the pre-warmed one must sit after it. */}
-      <ZoomPanLayer layerRef={layerRef}>{players}</ZoomPanLayer>
+      <ZoomPanLayer layerRef={layerRef} canvasRef={canvasRef}>
+        {players}
+      </ZoomPanLayer>
       <CellOverlay
         name={showName ? name : undefined}
         // The badge only where no picker already shows the quality: a package-channel cell (header).

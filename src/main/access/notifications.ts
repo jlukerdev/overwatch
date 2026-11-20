@@ -3,9 +3,10 @@
 // notifications`, scope `view:device`, Access 1.20.11 or later — as a self-healing subscription
 // that hands each parsed frame to its caller.
 //
-// ⚠️ Documented, not yet run against hardware: no Access console exists on the development network,
-// so OS-1 is what confirms the console behaves this way. Modelled on `../protect/subscriptions.ts`,
-// which *was* verified, with the differences the Access reference calls for.
+// ⚠️ Documented, barely run against hardware: OS-1 has opened this socket on a real console,
+// but which frames a console sends, and when, is still for OS-1 to confirm. Modelled on
+// `../protect/subscriptions.ts`, which *was* verified, with the differences the Access reference
+// calls for.
 //
 // What this socket is good for, and what it is not:
 //

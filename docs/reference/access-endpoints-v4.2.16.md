@@ -4,7 +4,7 @@
 >
 > This file covers only what View Protect uses: listing doors, reading and controlling their lock state, and push notifications. Users, visitors, policies, credentials, door groups, devices, system logs and Identity are in the PDF and not used by the app.
 >
-> **Documented, not yet run against hardware.** The development network has no Access. Everything here is what the document says; on-site check OS-1 is what confirms the console behaves this way. Where the document contradicts itself, this file says so.
+> **Documented, partly run against hardware.** The development network has no Access. Everything here is what the document says, except the notes marked **Seen on a console (OS-1)**: the on-site check ran `GET /doors`, an unknown `GET /doors/:id`, a request with a bad token, `GET /doors/:id/lock_rule`, `GET /doors/settings/emergency` and the notifications WebSocket open against a real console. Unlock and the two `PUT`s have not been run. Where the document contradicts itself, this file says so.
 
 ## Basics (§1, §2)
 
@@ -43,7 +43,7 @@
 | 429 | Too many requests in a short amount of time |
 | 500, 502, 503, 504 | Something went wrong on UniFi Access's end |
 
-The document does **not** say which HTTP status goes with which error code.
+The document does **not** say which HTTP status goes with which error code. **Seen on a console (OS-1):** an unknown door id answers HTTP **200** with `CODE_NOT_EXISTS`, and a bad token HTTP 401 with `CODE_UNAUTHORIZED`. So a non-`SUCCESS` code is an error whatever the status.
 
 ### Error codes relevant to doors (§2.4)
 
@@ -81,7 +81,8 @@ The full list (users, policies, credentials, holidays, webhooks) is in the PDF �
 | `type` | String | Type of the door (`door` in every sample) |
 | `is_bind_hub` | String in the table, **boolean in every sample** | Whether the door is bound to a hub device. "It can only be used for remote opening if it's bound" |
 | `door_lock_relay_status` | String | `enum {lock, unlock}` |
-| `door_position_status` | String | DPS: `open` or `close`. "A null value means that no device is connected"; the §7.7 sample sends `""` |
+| `door_position_status` | String | DPS: `open` or `close`. "A null value means that no device is connected"; the §7.7 sample sends `""`. **Seen on a console (OS-1):** `"none"` for a door with no position sensor. The app reads anything but `open`/`close` as no sensor |
+| `extras` | Object | **Not in the document; seen on a console (OS-1).** `{ door_thumbnail, door_thumbnail_last_update }`: a reader thumbnail path (`/preview/reader_<mac>_<uuid>_<ts>.jpg`) and its Unix time. The app ignores it |
 
 ### `GET /doors` — Fetch All Doors (§7.8)
 
@@ -169,7 +170,7 @@ Scope `view:space`. Access 1.24.6 or later.
 { "code": "SUCCESS", "data": { "ended_time": 1708673342, "type": "custom" }, "msg": "success" }
 ```
 
-What it answers for a door with no rule at all is not documented.
+What it answers for a door with no rule at all is not documented. **Seen on a console (OS-1):** `data: { "type": "", "ended_time": 0 }`, a normal `SUCCESS` answer that means "no rule".
 
 ### `PUT /doors/settings/emergency` — Set Door Emergency Status (§7.12)
 

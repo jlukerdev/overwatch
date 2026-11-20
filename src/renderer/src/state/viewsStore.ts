@@ -18,8 +18,8 @@
 // Mutations are **queued**, one at a time, and each computes its list from the store as it is when
 // its turn comes, not when it was called. Two quick edits (a rename, then a drag) would otherwise both
 // start from the same list, and the second save would silently undo the first.
-import { type AppState, type IpcResult, ipcFail } from '@shared/ipc'
-import { ViewSchema, type View } from '@shared/models'
+import { type AppState, type Camera, type IpcResult, ipcFail } from '@shared/ipc'
+import { ViewSchema, type AppMode, type View } from '@shared/models'
 import {
   DEFAULT_LAYOUT_PRESET,
   LAYOUT_PRESETS,
@@ -28,6 +28,8 @@ import {
   type LayoutPreset,
   type LayoutResult,
 } from '@shared/viewLayout'
+import { cameraDisplayName, sortCameras } from '@shared/cameraOrder'
+import { sortStreams } from '../features/streams/streamForm'
 import { useAppStore, type AppStoreState } from './appStore'
 
 // -------------------------------------------------------------------------------------------------
@@ -83,6 +85,19 @@ const UNIFORM_PRESETS: readonly LayoutPreset[] = LAYOUT_PRESETS.filter((preset) 
 
 /** The name the "Create a View" button gives the first View. */
 export const STARTER_VIEW_NAME = 'View 1'
+
+/**
+ * The cameras "Create a View" fills the first View with, in order (VIEW-4): the camera list's order
+ * in Protect mode (`sortCameras`), and in RTSP streams mode the streams in name order, the Streams
+ * screen's own order (`sortStreams`, RTSP-1/RTSP-4). The inventory is the streams in RTSP mode.
+ */
+export function starterCameraIds(cameras: readonly Camera[], mode: AppMode | undefined): string[] {
+  const ordered =
+    mode === 'rtsp'
+      ? sortStreams(cameras.map((camera) => ({ id: camera.id, name: cameraDisplayName(camera) })))
+      : sortCameras(cameras)
+  return ordered.map((camera) => camera.id)
+}
 
 /**
  * The layout for a first View showing `cameraCount` cameras: the smallest uniform preset with a slot
@@ -217,10 +232,15 @@ function enqueue<T>(task: () => Promise<T>): Promise<T> {
   return run
 }
 
-/** The persisted pair as it is right now, or `null` before the first load. */
-function current(): { views: View[]; lastViewId: string | null } | null {
+/**
+ * The persisted pair as it is right now, with the app mode it belongs to (MODE-4: main refuses a
+ * save whose mode is no longer the stored one), or `null` before the first load.
+ */
+function current(): { views: View[]; lastViewId: string | null; mode: AppMode } | null {
   const settings = useAppStore.getState().settings
-  return settings === null ? null : { views: settings.views, lastViewId: settings.lastViewId }
+  return settings === null
+    ? null
+    : { views: settings.views, lastViewId: settings.lastViewId, mode: settings.mode }
 }
 
 function notFound(id: string): IpcResult<never> {
@@ -242,7 +262,10 @@ function mutate(
     if (now === null) return ipcFail('not-ready', NOT_LOADED, { retryable: true })
     const next = plan(now)
     if ('ok' in next) return next
-    return useAppStore.getState().setViews(next)
+    // Only the pair `plan` returned, plus the mode of the list it was computed from (MODE-4).
+    return useAppStore
+      .getState()
+      .setViews({ views: next.views, lastViewId: next.lastViewId, mode: now.mode })
   })
 }
 
@@ -341,7 +364,7 @@ export const viewsActions = {
       const now = current()
       if (now === null) return ipcFail('not-ready', NOT_LOADED, { retryable: true })
       if (!now.views.some((view) => view.id === id)) return notFound(id)
-      return useAppStore.getState().setLastView(id)
+      return useAppStore.getState().setLastView(id, now.mode)
     })
   },
 } as const

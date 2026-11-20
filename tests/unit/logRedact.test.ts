@@ -46,6 +46,10 @@ describe('redactLogText patterns', () => {
       `connect ${REDACTED} x`,
     )
     expect(redactLogText('src="rtsp://user:pw@cam.invalid/s1"')).toBe(`src="${REDACTED}"`)
+    // RTSP-2: a user-entered stream URL, any scheme case, with userinfo, port, path and query.
+    expect(
+      redactLogText('failed RTSPS://admin:s3cret-pw@192.0.2.20:554/cam/realmonitor?channel=1 end'),
+    ).toBe(`failed ${REDACTED} end`)
   })
 
   it('redacts URL userinfo but keeps the host', () => {

@@ -1,5 +1,5 @@
 {
-  "_source": "mock",
+  "_source": "console",
   "request": {
     "method": "GET",
     "path": "/doors",
@@ -7,7 +7,7 @@
   },
   "status": 401,
   "response": {
-    "code": "CODE_ACCESS_TOKEN_INVALID",
-    "msg": "token is missing, invalid or expired"
+    "code": "CODE_UNAUTHORIZED",
+    "msg": "You do not have permission to perform this action."
   }
 }

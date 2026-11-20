@@ -1,6 +1,6 @@
 // The Doors screen (P5.6; DOOR-0…DOOR-6): every Access door on a card of its own — lock state,
 // door position, the rule controlling it, its actions and its linked cameras — with lockdown and
-// evacuation in the header and the Access read intervals at the bottom.
+// evacuation in the header and the Access read intervals in the Settings bar above it.
 //
 // The app shell mounts it only while the **saved** Access switch is on (DOOR-0, App.tsx), so
 // nothing here runs, and main is asked nothing, while Access is off.
@@ -278,6 +278,9 @@ export function DoorsScreen({ onOpenSettings }: { onOpenSettings: () => void }):
 
   return (
     <section className="doors">
+      {/* DOOR-9's polling: the shared Settings bar, at the top above the title row. */}
+      <PollingCard polling={polling ?? defaultAccessPolling()} />
+
       <header className="doors__header row">
         <h2 className="doors__title">Doors</h2>
         <div className="doors__actions row">
@@ -383,8 +386,6 @@ export function DoorsScreen({ onOpenSettings }: { onOpenSettings: () => void }):
       ) : null}
 
       {cardList}
-
-      <PollingCard polling={polling ?? defaultAccessPolling()} />
     </section>
   )
 }

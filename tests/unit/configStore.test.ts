@@ -139,6 +139,140 @@ describe('load', () => {
   })
 })
 
+describe('app mode and the RTSP block (MODE-1, RTSP-2)', () => {
+  const STREAM_ID = 'rtsp-0f8e1c2a-3b4d-4e5f-8a9b-0c1d2e3f4a5b'
+
+  /** A one-cell RTSP View showing `STREAM_ID`. */
+  function rtspView(): Config['rtsp']['views'][number] {
+    return {
+      id: 'rv1',
+      name: 'Garden',
+      cols: 1,
+      rows: 1,
+      fit: 'contain',
+      aspect: { w: 16, h: 9 },
+      gap: 0,
+      gridQuality: null,
+      fillQuality: null,
+      showNames: true,
+      cells: [
+        {
+          col: 0,
+          row: 0,
+          colSpan: 1,
+          rowSpan: 1,
+          cameraIds: [STREAM_ID],
+          quality: null,
+          motionSwitch: false,
+          motionTriggers: ['motion', 'smartDetect', 'ring'],
+          motionHoldSec: 15,
+        },
+      ],
+    }
+  }
+
+  it('loads a v2 file written before modes existed as Protect with an empty RTSP block', async () => {
+    const old = configWithView() as Partial<Config>
+    delete old.mode
+    delete old.rtsp
+    await writeFile(join(dir, CONFIG_FILE_NAME), JSON.stringify(old))
+    const result = await store().load()
+    expect(result).toEqual({ source: 'file', config: configWithView(), migratedFrom: null })
+    expect(result.config.mode).toBe('protect')
+    expect(result.config.rtsp).toEqual({ streams: [], views: [], lastViewId: null })
+    expect(await entries()).toEqual([CONFIG_FILE_NAME])
+  })
+
+  it('round-trips RTSP mode with its streams and its own Views, apart from Protect’s', async () => {
+    const saved: Config = {
+      ...configWithView(),
+      mode: 'rtsp',
+      rtsp: {
+        streams: [{ id: STREAM_ID, name: 'Garden' }],
+        views: [rtspView()],
+        lastViewId: 'rv1',
+      },
+    }
+    await store().save(saved)
+    const result = await store().load()
+    expect(result).toEqual({ source: 'file', config: saved, migratedFrom: null })
+    // No URL ever lands in config.json (RTSP-2): only ids and names.
+    const text = await readFile(join(dir, CONFIG_FILE_NAME), 'utf8')
+    expect(text).not.toMatch(/rtsps?:\/\//)
+  })
+
+  it('loads an unknown mode as Protect rather than moving the file aside (VIEW-6)', async () => {
+    for (const mode of ['onvif', 42, null, 'RTSP']) {
+      await writeFile(join(dir, CONFIG_FILE_NAME), JSON.stringify({ ...configWithView(), mode }))
+      const result = await store().load()
+      expect(result.source).toBe('file')
+      expect(result.config.mode).toBe('protect')
+      expect(result.config.views).toHaveLength(1)
+      expect(await entries()).toEqual([CONFIG_FILE_NAME])
+    }
+  })
+
+  it('drops a malformed stream, not the file, and trims names', async () => {
+    await writeFile(
+      join(dir, CONFIG_FILE_NAME),
+      JSON.stringify({
+        ...configWithView(),
+        rtsp: {
+          streams: [
+            { id: STREAM_ID, name: '  Garden  ' },
+            { id: 'cam-1', name: 'Not an RTSP id' },
+            { id: 'rtsp-NOT-A-UUID', name: 'Bad id' },
+            { id: 'rtsp-1a2b3c4d-5e6f-4a7b-8c9d-0e1f2a3b4c5d', name: '   ' },
+            { id: 'rtsp-2a2b3c4d-5e6f-4a7b-8c9d-0e1f2a3b4c5d', name: 'x'.repeat(65) },
+            'not an object',
+          ],
+        },
+      }),
+    )
+    const result = await store().load()
+    expect(result.source).toBe('file')
+    expect(result.config.rtsp.streams).toEqual([{ id: STREAM_ID, name: 'Garden' }])
+    expect(result.config.views).toHaveLength(1)
+    expect(await entries()).toEqual([CONFIG_FILE_NAME])
+  })
+
+  it('keeps streams whose names differ only in case: uniqueness is a write-time rule', async () => {
+    const streams = [
+      { id: STREAM_ID, name: 'Garden' },
+      { id: 'rtsp-1a2b3c4d-5e6f-4a7b-8c9d-0e1f2a3b4c5d', name: 'garden' },
+    ]
+    await writeFile(
+      join(dir, CONFIG_FILE_NAME),
+      JSON.stringify({ ...configWithView(), rtsp: { streams } }),
+    )
+    const result = await store().load()
+    expect(result.source).toBe('file')
+    expect(result.config.rtsp.streams).toEqual(streams)
+  })
+
+  it('loads a streams value that is not a list as no streams', async () => {
+    await writeFile(
+      join(dir, CONFIG_FILE_NAME),
+      JSON.stringify({ ...configWithView(), rtsp: { streams: 'nope', lastViewId: 'rv9' } }),
+    )
+    const result = await store().load()
+    expect(result.source).toBe('file')
+    expect(result.config.rtsp).toEqual({ streams: [], views: [], lastViewId: 'rv9' })
+  })
+
+  it('treats an invalid RTSP View like an invalid Protect View: the file is recovered (VIEW-6)', async () => {
+    // The RTSP Views follow exactly the top-level rules, so a View that does not tile its grid
+    // is refused the same way in either list.
+    const broken = { ...rtspView(), cols: 2 }
+    await writeFile(
+      join(dir, CONFIG_FILE_NAME),
+      JSON.stringify({ ...configWithView(), rtsp: { views: [broken] } }),
+    )
+    const result = await store().load()
+    expect(result.source).toBe('recovered')
+  })
+})
+
 describe('save', () => {
   it('writes readable 2-space JSON with a trailing newline', async () => {
     await store().save(configWithView())

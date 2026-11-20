@@ -158,6 +158,31 @@ describe('createSanitizer', () => {
     expect(s.sanitizeString('24:A4:3C:3D:FE:B9 / 24A43C3DFEB9')).toBe('mac-001 / mac-001')
   })
 
+  it('catches a MAC and a UUID wrapped in underscores (the Access door thumbnail path)', () => {
+    const s = createSanitizer()
+    const path = '/preview/reader_a1b2c3d4e5f6_0f1e2d3c-4b5a-4968-8778-695a4b3c2d1e_1700000000.jpg'
+    expect(s.sanitize({ extras: { door_thumbnail: path } })).toEqual({
+      extras: { door_thumbnail: '/preview/reader_mac-001_uuid-001_1700000000.jpg' },
+    })
+  })
+
+  it('catches ids, MACs and IPs between _, /, . and - delimiters', () => {
+    const s = createSanitizer()
+    expect(s.sanitizeString(`snap_${CAM_A}.jpg`)).toBe('snap_id-001.jpg')
+    expect(s.sanitizeString('/x/a1b2c3d4e5f6/y')).toBe('/x/mac-001/y')
+    expect(s.sanitizeString('dev_a1:b2:c3:d4:e5:f6_x')).toBe('dev_mac-001_x')
+    expect(s.sanitizeString('host_192.0.2.7_log')).toBe('host_<redacted-ip>_log')
+  })
+
+  it('never splits a 24-hex id into a 12-hex MAC, nor matches a MAC inside a longer run', () => {
+    const s = createSanitizer()
+    expect(s.sanitizeString(`_${CAM_B}_`)).toBe('_id-001_')
+    // 13 or 16 hex characters are neither a MAC nor an id: no match, no partial redaction.
+    expect(s.sanitizeString('a1b2c3d4e5f6a')).toBe('a1b2c3d4e5f6a')
+    expect(s.sanitizeString('xa1b2c3d4e5f6')).toBe('xa1b2c3d4e5f6')
+    expect(s.sanitizeString('0123456789abcdef')).toBe('0123456789abcdef')
+  })
+
   it('replaces explicit secrets anywhere, including object keys', () => {
     const s = createSanitizer({ secrets: ['console.home.arpa', 'k3y-value'] })
     expect(

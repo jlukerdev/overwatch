@@ -1,15 +1,25 @@
 // Digital zoom's arithmetic (P3.6; ZOOM-1/2/3): where the picture sits for a wheel tick, a pinch or
 // a drag, how far it may go, and which clicks belong to zoom rather than to the cell. Pure, so every
 // rule is tested in the node environment (this project has no jsdom; CLAUDE.md) and `useZoomPan`
-// (./ZoomPan.tsx) only feeds it pointer events and writes its answer onto the player's wrapper.
+// (./ZoomPan.tsx) only feeds it pointer events and draws its answer on the cell's canvas.
 //
-// **One transform, origin top-left.** The state is `{ scale, x, y }` and the wrapper gets
-// `translate(x, y) scale(scale)` with `transform-origin: 0 0`, so a point `p` of the unzoomed
-// picture (cell-local px) is drawn at `(x, y) + scale · p`. Every point here — the cursor, a pinch's
-// fingers — is in the same cell-local px, measured from the cell's top-left. The box is the cell's
-// own (the whole grid area while filled), and the wrapper's untransformed box is exactly that box,
-// so there is no second coordinate system to convert between. It is a CSS transform on the
-// renderer's own element and nothing else (ZOOM-3): no stream, quality or camera setting moves.
+// **One mapping, origin top-left.** The state is `{ scale, x, y }`: a point `p` of the unzoomed
+// picture (cell-local px) is drawn at `(x, y) + scale · p`, as `translate(x, y) scale(scale)` with
+// `transform-origin: 0 0` would draw it. Every point here — the cursor, a pinch's fingers — is in
+// the same cell-local px, measured from the cell's top-left. The box is the cell's own (the whole
+// grid area while filled), so there is no second coordinate system to convert between.
+//
+// **Drawn on a canvas, not on the video** ({@link zoomDrawRect}). The state is never written onto
+// the `<video>`: a CSS transform and an `object-view-box` crop both make the video's quad up to 8×
+// the cell (Chromium lays the video out at the zoomed size and clips it), and on Windows, where
+// Chromium puts video in a DirectComposition overlay sized from that quad, each zoom step rebuilt a
+// swap chain up to 16384×9216 — a trace showed presents of up to 2.1 s, then the GPU process
+// crashing and every player reconnecting (F1.0.2-9). Instead the video keeps playing at 1×, and
+// while zoomed a cell-sized canvas over it draws the frame into {@link zoomDrawRect}: the contained
+// picture moved by the state, clipped by the canvas. The video and its overlay stay the cell's size
+// at every zoom, and a zoom step is only a redraw. The two are the same picture; the tests check it
+// point by point. It is the renderer's own drawing and nothing else (ZOOM-3): no stream, quality or
+// camera setting moves.
 //
 // The rules, and why:
 //
@@ -26,7 +36,7 @@
 //    than one per camera shape, and they leave the screen as soon as the zoom is deep enough.
 //  - **1× is exactly the identity.** A scale within {@link SNAP_EPSILON} of 1 snaps to
 //    {@link ZOOM_IDENTITY} — offsets of `-0.0000001px` from repeated multiply-and-divide would
-//    otherwise leave the picture a hair off, and "zoomed" (the 100% control, `will-change`) would
+//    otherwise leave the picture a hair off, and "zoomed" (the 100% control, the canvas) would
 //    stay on for a state the viewer cannot tell from 1×.
 //  - **A wheel tick is a factor, not a step** ({@link wheelZoomFactor}). `exp(−delta · k)` makes
 //    zooming in and back out by the same distance land on the same scale, and treats one big tick
@@ -50,7 +60,7 @@
 // **Identity is meaningful.** A step that changes nothing returns the very same state object, so
 // the hook skips the frame with `===`.
 
-/** The transform on the player's wrapper: drawn at `(x, y) + scale · p` (header). */
+/** Where the zoomed picture is: content point `p` is drawn at `(x, y) + scale · p` (header). */
 export interface ZoomState {
   readonly scale: number
   /** Translation in CSS px, `<= 0` (clampPan). */
@@ -292,11 +302,59 @@ export function isZoomResetDblClick(event: ZoomResetDblClick): boolean {
   return event.button === 0 && (event.ctrlKey || event.metaKey || event.altKey || event.shiftKey)
 }
 
+/** A video's natural size in px (`videoWidth` / `videoHeight`). */
+export interface ZoomNaturalSize {
+  readonly width: number
+  readonly height: number
+}
+
+function isPositiveSize(size: ZoomBox | ZoomNaturalSize): boolean {
+  return (
+    Number.isFinite(size.width) && Number.isFinite(size.height) && size.width > 0 && size.height > 0
+  )
+}
+
+/** A rectangle in cell-local CSS px. */
+export interface ZoomRect {
+  readonly left: number
+  readonly top: number
+  readonly width: number
+  readonly height: number
+}
+
 /**
- * The wrapper's `transform` for `state`: empty at the identity, so an unzoomed player is not
- * composited as a transformed layer at all.
+ * Where the unzoomed player draws a `natural`-sized video in `box`: `object-fit: contain`, centred,
+ * at its own aspect, with bars on one axis (SPEC FILL; player.css). Contain because a filled cell
+ * always plays at fillMode's `FILL_FIT`, whatever the View's `fit`: if that ever follows the View,
+ * this needs the fit too, or the picture jumps from cropped to letterboxed as the zoom leaves 1×. `null` whenever a size is not a
+ * positive finite number (no metadata yet, a cell not laid out).
  */
-export function zoomTransform(state: ZoomState): string {
-  if (!isZoomed(state)) return ''
-  return `translate(${String(state.x)}px, ${String(state.y)}px) scale(${String(state.scale)})`
+export function containRect(box: ZoomBox, natural: ZoomNaturalSize): ZoomRect | null {
+  if (!isPositiveSize(box) || !isPositiveSize(natural)) return null
+  const aspect = natural.width / natural.height
+  const wide = aspect > box.width / box.height
+  const width = wide ? box.width : box.height * aspect
+  const height = wide ? box.width / aspect : box.height
+  return { left: (box.width - width) / 2, top: (box.height - height) / 2, width, height }
+}
+
+/**
+ * Where the canvas draws the video for `state` (header, "Drawn on a canvas"): the {@link containRect}
+ * moved by the state's mapping, `(x, y) + scale · p`, exactly as `translate(x, y) scale(scale)` with
+ * origin top-left drew the contained video. In cell-local CSS px; it reaches past the box when zoomed,
+ * and the canvas clips it. `null` as for {@link containRect}.
+ */
+export function zoomDrawRect(
+  state: ZoomState,
+  box: ZoomBox,
+  natural: ZoomNaturalSize,
+): ZoomRect | null {
+  const content = containRect(box, natural)
+  if (content === null) return null
+  return {
+    left: state.x + state.scale * content.left,
+    top: state.y + state.scale * content.top,
+    width: state.scale * content.width,
+    height: state.scale * content.height,
+  }
 }

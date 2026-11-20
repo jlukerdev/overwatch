@@ -711,3 +711,30 @@ function deepEqual(a: unknown, b: unknown): boolean {
 export function isDraftDirty(saved: View, draft: View): boolean {
   return !deepEqual(normalised(saved), normalised(draft))
 }
+
+/**
+ * The note under the camera list: what the Live grid does with this cell's cameras (CellInspector.tsx header).
+ * Without `events` (RTSP mode) a stored Switch on events does nothing, so it is not mentioned.
+ */
+export function multiCameraHint(
+  cell: Pick<Cell, 'rotateIntervalSec' | 'motionSwitch'>,
+  events = true,
+): string {
+  const rotates = cell.rotateIntervalSec !== undefined
+  const switches = events && cell.motionSwitch
+  if (!events) {
+    return rotates
+      ? `With two or more cameras, the cell rotates through them in this order every ${String(cell.rotateIntervalSec)} s.`
+      : 'With two or more cameras, the cell shows the first (rotation is off).'
+  }
+  if (rotates && switches) {
+    return `With two or more cameras, the cell rotates through them in this order every ${String(cell.rotateIntervalSec)} s, and switches to a camera on its events.`
+  }
+  if (rotates) {
+    return `With two or more cameras, the cell rotates through them in this order every ${String(cell.rotateIntervalSec)} s.`
+  }
+  if (switches) {
+    return 'With two or more cameras, the cell shows the first and switches to a camera on its events.'
+  }
+  return 'With two or more cameras, the cell shows the first (rotation and event switching are off).'
+}

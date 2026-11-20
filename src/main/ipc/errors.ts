@@ -3,12 +3,13 @@
 // string with main's stack glued on, which is useless to the UI and the easiest way to leak a path
 // or a query (CON-2, NFR-9).
 //
-// There are five error families in main — `ProtectApiError` (P1.3), `AccessApiError` (P1.4),
-// `PinRequiredError`/`PinMismatchError` (P1.2), `ConsoleEndpointError` (CON-1) and `SecretsError`
-// (CON-2) — and one union in the contract. Mapping them in one place is what keeps the renderer
-// branching on `kind` instead of re-reading HTTP statuses, and what keeps the three pin states
-// apart: `pin-required` runs the CON-3 accept dialog, `pin-mismatch` blocks until an explicit
-// re-pin, and everything else is a plain connection problem.
+// There are seven error families in main — `ProtectApiError` (P1.3), `AccessApiError` (P1.4),
+// `PinRequiredError`/`PinMismatchError` (P1.2), `ConsoleEndpointError` (CON-1), `SecretsError`
+// (CON-2), `AppModeError` (MODE-4) and `RtspStreamError` (RTSP-1/2) — and one union in the
+// contract. Mapping them in one place is what keeps the renderer branching on `kind` instead of
+// re-reading HTTP statuses, and what keeps the three pin states apart: `pin-required` runs the
+// CON-3 accept dialog, `pin-mismatch` blocks until an explicit re-pin, and everything else is a
+// plain connection problem.
 //
 // **The message is reused, never rebuilt.** Each of those classes is already written to be safe to
 // show and to log — no key, no token, no URL, no query string, `host:port` at most — so this file
@@ -16,10 +17,12 @@
 // error from nowhere in particular only `message` is read: never the stack, never the `cause` chain.
 import { type IpcError, type IpcErrorKind } from '@shared/ipc'
 import { AccessApiError, type AccessErrorKind } from '../access/client'
+import { AppModeError } from '../appMode'
 import { ConsoleEndpointError } from '../console/endpoints'
 import { pinFailure } from '../net/errorCause'
 import { ProtectApiError, type ProtectErrorKind } from '../protect/errors'
 import { SecretsError } from '../secrets/secrets'
+import { RtspStreamError } from '../streams/rtspStreams'
 import { PinMismatchError, PinRequiredError } from '../tls/pinning'
 
 /**
@@ -115,6 +118,17 @@ export function toIpcError(err: unknown, fallback: { endpoint?: string | null } 
       endpoint: err.endpoint ?? where,
       retryable: err.retryable,
     }
+  }
+  if (err instanceof AppModeError) {
+    // MODE-4: a call the current app mode does not make. Nothing to retry until the user switches
+    // modes, and the message is a fixed sentence (src/main/appMode.ts).
+    return { kind: err.kind, message: err.message, endpoint: where, retryable: false }
+  }
+  if (err instanceof RtspStreamError) {
+    // RTSP-1/2: a stream save or delete refused (`bad-request` or `not-found`). Fixed sentences
+    // with no URL or id in them (src/main/streams/rtspStreams.ts), and repeating the same request
+    // cannot help.
+    return { kind: err.kind, message: err.message, endpoint: where, retryable: false }
   }
   if (err instanceof SecretsError) {
     // The keystore's own failures are not something the UI can classify further, and the store's

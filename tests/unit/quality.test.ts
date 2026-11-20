@@ -1,6 +1,7 @@
 // P1.1: the Quality / StreamQuality split in src/shared/quality.ts (QUAL preamble, QUAL-1, CAM-4).
 // P2.2: the two inheritance chains, `resolveGridQuality` and `resolveFillQuality` (QUAL-2/3/5).
 // P3.4: the overlay's quality badge text, `qualityBadgeLabel` (QUAL-7).
+// F1.0.2-6: RTSP-3's quality fallback, `fallbackQuality`.
 //
 // The chains are three lines of code and the single most consequential three lines in the app: get
 // one level wrong and every cell of a 4x4 View streams `high` (NFR-2/4), or a per-cell override
@@ -9,6 +10,7 @@
 // level holding something that is not a quality must *inherit* rather than be passed on.
 import { describe, expect, it } from 'vitest'
 import {
+  fallbackQuality,
   isQuality,
   isStreamQuality,
   PACKAGE_CHANNEL,
@@ -187,5 +189,59 @@ describe('what the chains refuse', () => {
     expect(resolveGridQuality(broken)).toBe(QUALITIES[QUALITIES.length - 1])
     expect(resolveFillQuality(broken)).toBe(QUALITIES[QUALITIES.length - 1])
     expect(isQuality(resolveGridQuality(broken))).toBe(true)
+  })
+})
+
+describe('fallbackQuality (RTSP-3)', () => {
+  /** `has` for a set of qualities, as main and the renderer build it from booleans. */
+  const among =
+    (...qualities: Quality[]) =>
+    (quality: Quality): boolean =>
+      qualities.includes(quality)
+
+  it('serves the quality asked for whenever it has a stream', () => {
+    for (const wanted of QUALITIES) {
+      expect(fallbackQuality(wanted, among(...QUALITIES))).toBe(wanted)
+      expect(fallbackQuality(wanted, among(wanted))).toBe(wanted)
+    }
+  })
+
+  it('falls back to the closest, the lower one on a tie', () => {
+    // high → medium → low
+    expect(fallbackQuality('high', among('medium', 'low'))).toBe('medium')
+    expect(fallbackQuality('high', among('low'))).toBe('low')
+    // medium → low → high: high and low are equally close, the lower wins.
+    expect(fallbackQuality('medium', among('high', 'low'))).toBe('low')
+    expect(fallbackQuality('medium', among('high'))).toBe('high')
+    // low → medium → high
+    expect(fallbackQuality('low', among('high', 'medium'))).toBe('medium')
+    expect(fallbackQuality('low', among('high'))).toBe('high')
+  })
+
+  it('answers every combination with a quality that has a stream, or null for none', () => {
+    const subsets: Quality[][] = [
+      [],
+      ['high'],
+      ['medium'],
+      ['low'],
+      ['high', 'medium'],
+      ['high', 'low'],
+      ['medium', 'low'],
+      ['high', 'medium', 'low'],
+    ]
+    for (const wanted of QUALITIES) {
+      for (const subset of subsets) {
+        const served = fallbackQuality(wanted, among(...subset))
+        if (subset.length === 0) expect(served).toBeNull()
+        else expect(subset).toContain(served)
+      }
+    }
+  })
+
+  it('never answers the package channel', () => {
+    for (const wanted of QUALITIES) {
+      expect(fallbackQuality(wanted, () => true)).not.toBe(PACKAGE_CHANNEL)
+      expect(fallbackQuality(wanted, () => false)).toBeNull()
+    }
   })
 })

@@ -10,7 +10,8 @@
 //
 // Each entry starts with a small 16:9 thumbnail (UX polish 2026-11-17, VIEW-3): the camera's cached
 // snapshot when the shared cache has one (`paletteSnapshots`, ./editorThumbnails — the palette
-// itself fetches nothing), else a camera icon on a tile. It never takes the pointer, so a drag
+// itself fetches nothing), else a camera icon on a tile — always the icon in RTSP mode, which has no
+// snapshots (RTSP-4). It never takes the pointer, so a drag
 // started on the picture drags the entry.
 //
 // The panel sits under the side panel's tabs, whichever is open, and its list scrolls on its own.
@@ -30,6 +31,8 @@ export interface CameraPaletteProps {
   readonly inUse: ReadonlyMap<string, number>
   /** `paletteSnapshots(...)`: ref → its cached image. Absent means the icon tile. */
   readonly snapshots: ReadonlyMap<string, ReadySnapshot>
+  /** RTSP mode (MODE-3): the empty hint points to the Streams screen rather than the console. */
+  readonly rtsp: boolean
 }
 
 /** "In use in 1 cell", "In use in 3 cells". */
@@ -37,13 +40,20 @@ function inUseText(count: number): string {
   return `In use in ${String(count)} ${count === 1 ? 'cell' : 'cells'}`
 }
 
-export function CameraPalette({ choices, inUse, snapshots }: CameraPaletteProps): JSX.Element {
+export function CameraPalette({
+  choices,
+  inUse,
+  snapshots,
+  rtsp,
+}: CameraPaletteProps): JSX.Element {
   return (
     <section className="viewEditor__panel viewEditor__palettePanel" aria-label="Cameras">
       <h3 className="viewEditor__panelTitle">Cameras</h3>
       {choices.length === 0 ? (
         <p className="viewEditor__hint">
-          No cameras yet. Connect to the console from the Cameras screen.
+          {rtsp
+            ? 'No streams yet. Add one on the Streams screen.'
+            : 'No cameras yet. Connect to the console from the Cameras screen.'}
         </p>
       ) : (
         <>

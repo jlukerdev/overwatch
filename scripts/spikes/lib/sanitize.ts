@@ -35,11 +35,16 @@ const MAPPED_KEY_WORDS = new Map([
   ['owner', 'user'],
 ])
 
-const PROTECT_ID = /\b[0-9a-f]{24}\b/gi
-const UUID = /\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi
-const IPV4 = /\b(?:25[0-5]|2[0-4]\d|1?\d?\d)(?:\.(?:25[0-5]|2[0-4]\d|1?\d?\d)){3}\b/g
-const MAC_SEPARATED = /\b[0-9a-f]{2}(?:[:-][0-9a-f]{2}){5}\b/gi
-const MAC_BARE = /\b[0-9a-f]{12}\b/gi
+// Boundaries are alphanumeric lookarounds, not `\b`: `_` is a word character, so `\b` let a MAC and
+// a UUID wrapped in underscores (`/preview/reader_<mac>_<uuid>_<ts>.jpg`) through unredacted. A
+// run longer than the pattern (e.g. a 24-hex id) still never matches a 12-hex MAC inside it.
+const PROTECT_ID = /(?<![0-9a-z])[0-9a-f]{24}(?![0-9a-z])/gi
+const UUID =
+  /(?<![0-9a-z])[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}(?![0-9a-z])/gi
+// Only a digit may not touch an address: `_10.0.0.1_` and `host10.0.0.1` are still caught.
+const IPV4 = /(?<!\d)(?:25[0-5]|2[0-4]\d|1?\d?\d)(?:\.(?:25[0-5]|2[0-4]\d|1?\d?\d)){3}(?!\d)/g
+const MAC_SEPARATED = /(?<![0-9a-z])[0-9a-f]{2}(?:[:-][0-9a-f]{2}){5}(?![0-9a-z])/gi
+const MAC_BARE = /(?<![0-9a-z])[0-9a-f]{12}(?![0-9a-z])/gi
 const EMAIL = /\b[^\s@"]+@[^\s@"]+\.[a-z]{2,}\b/gi
 const RTSPS_URL = /\brtsps?:\/\/[^\s"]+/gi
 /** A whole value that is only a dotted quad, e.g. `4.74.30.67`. */

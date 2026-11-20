@@ -35,7 +35,7 @@
 // button goes back to idle and turns green when main's push says so (main re-reads the door right
 // after an unlock); an unknown outcome or a failure changes nothing here.
 //
-// **When it is drawn.** Only while Access is saved as on, the camera (or, for a package-channel
+// **When it is drawn.** Only in Protect mode (never in RTSP mode, RTSP-4), while Access is saved as on, the camera (or, for a package-channel
 // cell, its doorbell) has a door link, the camera is connected, and the cell's player is showing
 // live video (`streaming`, reported by `<LivePlayer>` through `<Cell>`). It is kept while a request
 // is in flight even if that stops being true, so the busy state does not vanish; a hold, though, is
@@ -60,7 +60,7 @@ import { useAppStore } from '../../state/appStore'
 import { showToast } from '../../state/toastStore'
 import { DoorIcon, DoorOpenIcon } from '../../ui/icons'
 import { parseCameraRef } from '@shared/cameraRef'
-import { doorForCell, unlockAvailable } from './doorLink'
+import { accessActive, doorForCell, unlockAvailable } from './doorLink'
 import { doorLook, unlockLabel, unlockRestTitle } from './doorState'
 import {
   HOLD_MS,
@@ -98,7 +98,8 @@ export function UnlockButton({
   cameraName,
   streaming,
 }: UnlockButtonProps): JSX.Element | null {
-  const accessEnabled = useAppStore((s) => s.settings?.console.accessEnabled ?? false)
+  // Off in RTSP mode whatever is saved (MODE-3, RTSP-4: no Access, no door lookup there).
+  const accessEnabled = useAppStore((s) => accessActive(s.settings))
   const doorId = useAppStore((s) => doorForCell(cameraRef, s.settings?.doorLinks, accessEnabled))
   const connected = useAppStore((s) => {
     const { cameraId } = parseCameraRef(cameraRef)

@@ -98,6 +98,8 @@ async function setup() {
       isEncryptionAvailable: () => true,
       set: () => Promise.resolve(),
       clear: () => Promise.resolve(),
+      setRtspUrls: () => Promise.resolve(),
+      clearRtspStream: () => Promise.resolve(),
     },
     pins: {
       pinnedFingerprint: () => null,
@@ -148,7 +150,9 @@ async function setup() {
     setViews(): Promise<IpcResult<AppState>> {
       const handler = router.get(IPC.setViews.channel)
       if (handler === undefined) throw new Error('no setViews handler')
-      return handler({ views: [VIEW], lastViewId: 'v1' }) as Promise<IpcResult<AppState>>
+      return handler({ views: [VIEW], lastViewId: 'v1', mode: 'protect' }) as Promise<
+        IpcResult<AppState>
+      >
     },
     setHost(host: string): Promise<void> {
       return manager.applyConsoleChange({ ...services.current.console, host })

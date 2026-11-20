@@ -56,9 +56,11 @@ function appState(overrides: Partial<AppState> = {}): AppState {
       streams: { defaultGridQuality: 'low', defaultFillQuality: 'high' },
       ui: { overlayAutoHideSec: 3 },
       accessPolling: { withSocketSec: 5, withoutSocketSec: 2, unlockedSec: 1, detailsSec: 30 },
+      mode: 'protect',
+      rtsp: { streams: [], views: [], lastViewId: null },
     },
     keystoreAvailable: true,
-    secretsStored: { protectApiKey: true, accessToken: false },
+    secretsStored: { protectApiKey: true, accessToken: false, rtspUrls: {} },
     connection: {
       protect: endpointStatus('protect', 'idle'),
       access: endpointStatus('access', 'disabled'),
@@ -147,6 +149,11 @@ function fakeBridge(overrides: Partial<ViewProtectApi> = {}): FakeBridge {
     doorAction: unimplemented('doorAction'),
     setDoorEmergency: unimplemented('setDoorEmergency'),
     setAccessPolling: unimplemented('setAccessPolling'),
+    // F1.0.2-3 (MODE-1/4); the Settings mode picker calls it through the store (F1.0.2-4).
+    setMode: unimplemented('setMode'),
+    // F1.0.2-5 (RTSP-1/2): driven by the Streams screen; no store test drives them.
+    saveRtspStream: unimplemented('saveRtspStream'),
+    deleteRtspStream: unimplemented('deleteRtspStream'),
     // P6.2 (NFR-7/8): the wall reports itself (features/power/) and the players hear `onRecover`
     // themselves; no store test drives either.
     setViewVisible: unimplemented('setViewVisible'),
@@ -204,7 +211,7 @@ describe('load', () => {
     expect(store.version).toBe('0.1.0')
     expect(store.settings?.console.host).toBe('udm.local')
     expect(store.keystoreAvailable).toBe(true)
-    expect(store.secretsStored).toEqual({ protectApiKey: true, accessToken: false })
+    expect(store.secretsStored).toEqual({ protectApiKey: true, accessToken: false, rtspUrls: {} })
     expect(store.cameras).toHaveLength(1)
     expect(store.loadError).toBeNull()
   })
@@ -350,6 +357,47 @@ describe('mutating actions', () => {
     expect(useAppStore.getState().settings?.console.host).toBe('udm2.local')
   })
 
+  it('switches the mode and folds in the new mode’s state (MODE-2/4)', async () => {
+    const before = appState()
+    const switched = appState({
+      settings: { ...before.settings, mode: 'rtsp', views: [], lastViewId: null },
+      cameras: [],
+    })
+    const setMode = vi.fn<ViewProtectApi['setMode']>(() =>
+      Promise.resolve<IpcResult<AppState>>({ ok: true, value: switched }),
+    )
+    fakeBridge({ setMode })
+    useAppStore.setState({ settings: before.settings, cameras: [camera('cam-1')] })
+
+    const result = await useAppStore.getState().setMode('rtsp')
+
+    expect(result.ok).toBe(true)
+    expect(setMode).toHaveBeenCalledWith({ mode: 'rtsp' })
+    expect(useAppStore.getState().settings?.mode).toBe('rtsp')
+    expect(useAppStore.getState().cameras).toEqual([])
+  })
+
+  it('keeps the mode when the switch fails', async () => {
+    fakeBridge({
+      setMode: () =>
+        Promise.resolve({
+          ok: false,
+          error: {
+            kind: 'internal',
+            message: 'The mode could not be saved.',
+            endpoint: null,
+            retryable: false,
+          },
+        }),
+    })
+    useAppStore.setState({ settings: appState().settings })
+
+    const result = await useAppStore.getState().setMode('rtsp')
+
+    expect(result.ok).toBe(false)
+    expect(useAppStore.getState().settings?.mode).toBe('protect')
+  })
+
   it('leaves the store untouched when the call fails, and hands the error back', async () => {
     fakeBridge({
       setSecret: () =>
@@ -363,7 +411,9 @@ describe('mutating actions', () => {
           },
         }),
     })
-    useAppStore.setState({ secretsStored: { protectApiKey: false, accessToken: false } })
+    useAppStore.setState({
+      secretsStored: { protectApiKey: false, accessToken: false, rtspUrls: {} },
+    })
 
     const result = await useAppStore.getState().setSecret({ key: 'protectApiKey', value: 'abc' })
 

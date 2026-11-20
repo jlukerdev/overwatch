@@ -5,8 +5,9 @@
  *
  * Three columns filling the body: the Views list (its footer — New / Duplicate / Delete — pinned
  * under it), the main column (a compact header with the name, the Grid controls and Close, the
- * selection toolbar, the canvas taking whatever height is left, and the save bar under it), and
- * the side column: the View | Cell tabs, the open tab's panel, and the camera palette under it.
+ * canvas taking whatever height is left, and the save bar under it), and the side column: the
+ * View | Cell tabs, the open tab's panel (the Cell tab starts with the selection's actions), and
+ * the camera palette under it.
  * The list, the tab panel and the palette each scroll on their own; the canvas never scrolls, it
  * letterboxes like the Live grid. Buttons, sidebar rows (`.sideItem`), status lines (`.status`)
  * and the empty state are the shared ones (styles.css). Every font size is a `--font-*` token.
@@ -233,25 +234,6 @@
   width: 4.5rem;
 }
 
-.viewEditor__toolbar {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 0.5rem;
-}
-
-.viewEditor__selectionCount {
-  min-width: 9rem;
-  color: var(--muted);
-  font-size: var(--font-sm);
-}
-
-/* What the last edit cost (cameras lost to a merge or a layout change): a `.status` line. */
-.viewEditor__note {
-  align-items: center;
-  margin-left: 0.5rem;
-}
-
 /* The canvas takes every px of height the rows above and the save bar below leave. */
 .viewEditor__canvasBox {
   position: relative;
@@ -377,6 +359,47 @@
 
 .viewEditor__tabPanel[hidden] {
   display: none;
+}
+
+/*
+ * The top of the Cell tab (F1.0.2-2): the selection's count, then Merge / Split / Clear cameras as
+ * one row of equal-width buttons at the standard height or taller, icon over label, so the labels
+ * fit the side column (a long one wraps, centred).
+ */
+.viewEditor__cellActions {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  margin-bottom: 0.85rem;
+}
+
+.viewEditor__selectionCaption {
+  margin: 0;
+  color: var(--muted);
+  font-size: var(--font-sm);
+}
+
+.viewEditor__cellActionRow {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  align-items: stretch;
+  gap: 0.4rem;
+  border-radius: var(--radius);
+}
+
+/* Focus lands on the row when an action left none of the three able to act (CellActions). */
+.viewEditor__cellActionRow:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.viewEditor__cellAction {
+  flex-direction: column;
+  gap: 0.25rem;
+  min-width: 0;
+  padding: 0.45rem 0.35rem;
+  white-space: normal;
+  text-align: center;
 }
 
 .viewEditor__panel {
@@ -681,6 +704,21 @@
 
 .editorCanvas__image--cover {
   object-fit: cover;
+}
+
+/* RTSP-4: RTSP streams have no snapshots, so a cell holding a camera draws a large, dimmed camera
+ * icon as its bottom layer instead, centred behind the name chip, so it does not look empty. The
+ * SVG keeps its square viewBox inside the box, so it stays centred and undistorted in any cell. It
+ * never takes the pointer; the selected and drop highlights show around and over it. */
+.editorCanvas__cameraIcon {
+  position: absolute;
+  inset: 0;
+  width: 60%;
+  height: 60%;
+  margin: auto;
+  color: var(--muted);
+  opacity: 0.22;
+  pointer-events: none;
 }
 
 /* The selected tint is the cell's background, which the image covers: draw it over the image on

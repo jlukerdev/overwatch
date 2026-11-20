@@ -35,7 +35,8 @@
 // **The placeholder is a small composition, not a line of text** (CAM-3, UX polish; ./NoPicture): an
 // icon by kind (`placeholderTone`), the machine's label, and — only while connecting, only if the
 // renderer's thumbnail cache already has one — a dimmed, blurred still of the camera behind the
-// spinner (./placeholderSnapshot has the rules; nothing is ever fetched or timed for it). It is
+// spinner (./placeholderSnapshot has the rules; nothing is ever fetched or timed for it), or in RTSP
+// mode, which has no snapshots, a large dimmed camera icon in its place (RTSP-4). It is
 // rendered only when the machine asks for a placeholder, which it never does over live video
 // (playerMachine.ts, rule 1), and the cache is read only while one is shown, so a playing cell
 // holds no subscription to it.
@@ -46,9 +47,10 @@ import type { StreamQuality } from '@shared/quality'
 import { useAppStore } from '../state/appStore'
 import { useThumbnails } from '../state/thumbnailsStore'
 import { NoPicture } from './NoPicture'
-import { placeholderSnapshot } from './placeholderSnapshot'
+import { placeholderCameraIcon, placeholderSnapshot } from './placeholderSnapshot'
 import { createMsePlayer, type MsePlayer } from './MsePlayer'
 import { onRecover } from './recoverBus'
+import { nextPlayerAudio } from '../features/audio/streamAudio'
 import {
   cameraAvailability,
   initialPlayerState,
@@ -65,6 +67,8 @@ import {
   openPaintWindow,
   paintWindowStep,
   stallStep,
+  FIRST_FRAME_TIMEOUT_MS,
+  STALL_GRACE_MS,
   STALL_POLL_MS,
   type PaintWindow,
   type StallState,
@@ -92,6 +96,15 @@ export interface LivePlayerProps {
    * Should be stable (memoised): a new function re-reports, it never rebuilds the player.
    */
   readonly onPlayingChange?: ((playing: boolean) => void) | undefined
+  /**
+   * RTSP-4 (AUD-1): told whether the stream on screen carries an audio track — the visible layer's
+   * handshake mime (`mseBuffer.mimeHasAudio`); while no layer is visible (a reconnect) the last
+   * answer stands — with this player's camera id, each time that answer changes, and `false` when
+   * the player goes.
+   * One call per change, never per frame. Read through a ref: a new function never rebuilds the
+   * player. `<Cell>` passes it only in RTSP mode; Protect mode's audio comes from the mic flags.
+   */
+  readonly onStreamAudio?: ((cameraId: string, hasAudio: boolean) => void) | undefined
 }
 
 export function LivePlayer({
@@ -101,6 +114,7 @@ export function LivePlayer({
   volume = 1,
   fit = 'contain',
   onPlayingChange,
+  onStreamAudio,
 }: LivePlayerProps): JSX.Element {
   // CAM-3 comes from the inventory's `state`, never from whether a stream started: `camerasStore`
   // already decides what each Protect state means, including the undocumented ones (SPEC R8/R11).
@@ -120,6 +134,11 @@ export function LivePlayer({
   useEffect(() => {
     propsRef.current = { quality, muted, volume, availability }
   }, [quality, muted, volume, availability])
+  // RTSP-4: the audio report's target, current at the moment of each report (header of the prop).
+  const onStreamAudioRef = useRef(onStreamAudio)
+  useEffect(() => {
+    onStreamAudioRef.current = onStreamAudio
+  }, [onStreamAudio])
 
   useEffect(() => {
     const container = containerRef.current
@@ -131,6 +150,9 @@ export function LivePlayer({
       muted: propsRef.current.muted,
       volume: propsRef.current.volume,
       onPlaceholder: setPlaceholder,
+      onStreamAudio: (hasAudio) => {
+        onStreamAudioRef.current?.(cameraId, hasAudio)
+      },
     })
     controllerRef.current = controller
 
@@ -206,8 +228,17 @@ function PlayerPlaceholderView({
   readonly cameraId: string
   readonly quality: StreamQuality
 }): JSX.Element {
+  // RTSP-4: no still in RTSP mode; a connecting cell draws the camera icon behind its spinner.
+  const mode = useAppStore((state) => state.settings?.mode)
   const snapshot = useThumbnails((state) =>
-    placeholderSnapshot(placeholder, cameraId, quality, state.thumbnails.entries, state.packages),
+    placeholderSnapshot(
+      placeholder,
+      cameraId,
+      quality,
+      state.thumbnails.entries,
+      state.packages,
+      mode,
+    ),
   )
   return (
     <NoPicture
@@ -217,6 +248,7 @@ function PlayerPlaceholderView({
       // The detail where there is one (a mime); otherwise the label, for a cell too small to show it.
       title={placeholderDetail(placeholder)}
       snapshot={snapshot}
+      cameraBackdrop={placeholderCameraIcon(placeholder, mode)}
     />
   )
 }
@@ -251,7 +283,20 @@ interface ControllerLayer {
   stall: StallState | null
   /** Visible time since attach, for `paintWindowStep` (hidden time does not count). */
   paint: PaintWindow
+  /** RTSP-4: its handshake mime carries an audio track; `false` until the handshake answers. */
+  audio: boolean
 }
+
+/*
+ * The player's recoveries, one `console.warn` each, so a report from the field has them in the app
+ * log (renderer warnings reach it as `[renderer] …`). Fixed text only: no URL, stream name or go2rtc
+ * message. Each fires once per recovery — a few an hour on a wall that is struggling, none on a
+ * healthy one — and never per frame or per sample. A socket that keeps closing while go2rtc or the
+ * network is down is logged once, until the player paints again.
+ */
+const STALLED_WARNING = `[LivePlayer] picture froze for ${String(STALL_GRACE_MS / 1000)} s; reconnecting`
+const NO_FIRST_FRAME_WARNING = `[LivePlayer] no picture within ${String(FIRST_FRAME_TIMEOUT_MS / 1000)} s; retrying`
+const SOCKET_CLOSED_WARNING = '[LivePlayer] stream socket closed; reconnecting'
 
 /** Class that hides a layer that has not rendered its first frame yet. See player.css. */
 const PENDING_LAYER_CLASS = 'livePlayer__layer--pending'
@@ -263,6 +308,8 @@ function createPlayerController(input: {
   readonly muted: boolean
   readonly volume: number
   readonly onPlaceholder: (placeholder: PlayerPlaceholder | null) => void
+  /** RTSP-4: whether the visible layer carries audio, on each change (`reportAudio`). */
+  readonly onStreamAudio: (hasAudio: boolean) => void
 }): PlayerController {
   let state: PlayerState = initialPlayerState({
     cameraId: input.cameraId,
@@ -272,8 +319,15 @@ function createPlayerController(input: {
   let volume = input.volume
   let disposed = false
   const layers = new Map<number, ControllerLayer>()
+  /**
+   * A socket close was logged and no layer has painted since: further closes are the same outage
+   * retrying (every backoff step, or every cell at a go2rtc restart), and stay out of the app log.
+   */
+  let socketCloseLogged = false
   /** At most one `ensureStream` is ever scheduled (see the `ensure` command), so one slot. */
   let ensureTimer: ReturnType<typeof setTimeout> | null = null
+  /** The last answer `reportAudio` gave; nothing is reported before a layer with audio shows. */
+  let reportedAudio = false
 
   const dispatch = (event: PlayerEvent): void => {
     // A reply from a call that was already in flight at unmount, or a close event from an element
@@ -285,7 +339,24 @@ function createPlayerController(input: {
     state = step.state
     for (const command of step.commands) execute(command)
     applyLayerRoles()
+    reportAudio()
     if (!samePlaceholder(previous, state.placeholder)) input.onPlaceholder(state.placeholder)
+  }
+
+  /**
+   * RTSP-4: the visible layer's audio answer, reported only when it changes. A pending layer's
+   * answer counts once the machine promotes it, so a quality swap between two streams that both
+   * carry audio reports nothing, and the cell stays heard (AUD-2). While no layer is visible (a
+   * reconnect of the same stream) the last answer stands (`nextPlayerAudio`); `dispose` reports
+   * `false` when the player goes.
+   */
+  const reportAudio = (): void => {
+    const visibleId = state.current?.id ?? null
+    const visible = visibleId === null ? null : (layers.get(visibleId)?.audio ?? false)
+    const audio = nextPlayerAudio(reportedAudio, visible)
+    if (audio === reportedAudio) return
+    reportedAudio = audio
+    input.onStreamAudio(audio)
   }
 
   const execute = (command: PlayerCommand): void => {
@@ -338,9 +409,14 @@ function createPlayerController(input: {
     element.classList.add('livePlayer__layer', PENDING_LAYER_CLASS)
     element.setHooks({
       onFirstFrame: () => {
+        socketCloseLogged = false
         dispatch({ type: 'firstFrame', id })
       },
       onSocketClosed: () => {
+        // Only a socket that died by itself; one this player closes is quiet (MsePlayer.stop).
+        // Once per outage, not once per retry (`socketCloseLogged`).
+        if (!socketCloseLogged) console.warn(SOCKET_CLOSED_WARNING)
+        socketCloseLogged = true
         dispatch({ type: 'socketClosed', id })
       },
       onCodecUnsupported: (mime) => {
@@ -349,11 +425,18 @@ function createPlayerController(input: {
       onStreamError: () => {
         dispatch({ type: 'streamError', id })
       },
+      onAudioTrack: (hasAudio) => {
+        const layer = layers.get(id)
+        if (disposed || layer === undefined) return
+        layer.audio = hasAudio
+        reportAudio()
+      },
     })
     layers.set(id, {
       element,
       stall: null,
       paint: openPaintWindow(performance.now(), document.hidden),
+      audio: false,
     })
     // In the DOM first: the element connects the moment `start` assigns `src`, and upstream's
     // `onconnect()` refuses while the element is disconnected.
@@ -402,14 +485,20 @@ function createPlayerController(input: {
         layer.stall = step.state
         // Forces a reattach rather than sitting on a frozen frame: the machine closes this layer's
         // socket, keeps its last frame on screen and asks for a fresh handle (NFR-7).
-        if (step.stalled) dispatch({ type: 'stalled', id })
+        if (step.stalled) {
+          console.warn(STALLED_WARNING)
+          dispatch({ type: 'stalled', id })
+        }
         // A layer that has painted is never overdue, so a stale `current` holding its last frame
         // with its socket closed is left alone here (and the machine ignores anything but an
         // unproven `incoming` regardless). Only visible time counts: the first-frame callback does
         // not run while the window is hidden (playerTiming.PaintWindow).
         const paint = paintWindowStep(layer.paint, { nowMs: atMs, hidden, painted: sample.painted })
         layer.paint = paint.state
-        if (paint.overdue) dispatch({ type: 'firstFrameTimeout', id })
+        if (paint.overdue) {
+          console.warn(NO_FIRST_FRAME_WARNING)
+          dispatch({ type: 'firstFrameTimeout', id })
+        }
       }
     },
     setAudio: (nextMuted: boolean, nextVolume: number) => {
@@ -421,6 +510,11 @@ function createPlayerController(input: {
       // `stop` detaches both layers and cancels the scheduled call; `disposed` then silences every
       // callback that was already in flight.
       dispatch({ type: 'stop' })
+      // RTSP-4: the stream is gone, so it no longer claims sound for this camera.
+      if (reportedAudio) {
+        reportedAudio = false
+        input.onStreamAudio(false)
+      }
       disposed = true
       clearEnsureTimer()
       // Belt and braces: anything the machine did not know about still gets closed.

@@ -40,16 +40,44 @@
 // generated config and nowhere else. Returned handles carry a name, a port and an epoch; the log
 // lines carry a stream name at most; and no error message built here quotes a URL.
 //
+// **RTSP streams mode (RTSP-3, RTSP-5) is its own branch**, chosen per call from the live mode, and
+// makes no Protect call at all (MODE-4):
+//
+//  R1. **The id must be a stream in the live config** (`rtsp.streams`), else `not-found`, not
+//      retryable: an RTSP stream is never "not read yet", so a missing one has been deleted. The
+//      `package` channel is a `bad-request` — only a Protect doorbell has one (CAM-4).
+//  R2. **The URL comes from main's own decrypted secrets** (`rtspUrls`), never from the renderer,
+//      which names a stream id and a quality only (RTSP-5). The quality served is
+//      `fallbackQuality(asked, has a URL)` (RTSP-3): the asked one, else the closest stored one,
+//      the lower on a tie. No URL at all is `not-configured`.
+//  R3. **The URL is validated again** with RTSP-2's `validateRtspUrl` before it is used (a
+//      hand-edited or damaged secrets file is not trusted); an invalid one is a `bad-request`.
+//      `rtsps://` becomes go2rtc's `rtspx://`, `rtsp://` is passed as is (`toRtspGo2rtcSource`).
+//  R4. **It is registered as `streamName(id, served)`**, and the handle names the *served* quality,
+//      so the badge shows what really plays. Concurrent calls are coalesced on that served name.
+//  R5. **The registry keeps the validated source of every RTSP stream it registered** and the
+//      manager asks for it (`rtspSource`): in RTSP mode go2rtc accepts a source only if it is
+//      exactly the one recorded here, in place of Protect's pinned-host check (RTSP-5).
+//  R6. **A changed or deleted stream is dropped** (`rtspStreamChanged`): every go2rtc registration
+//      of that stream is removed, its recorded sources forgotten, and an ensure for it already in
+//      flight does not register afterwards (a per-stream generation, like `unregisterAll`'s).
+//
+// RTSP sources are never cached as a GET-saving measure (reading secrets costs nothing) and
+// `invalidate` never touches them: the inventory push that calls it is not a URL change.
+// Every RTSP message is a fixed sentence (`RTSP_STREAM_MESSAGES`): none carries a URL (CON-2).
+//
 // No Electron and no network of its own: the manager, the Protect client, the inventory, the pinned
-// host and the log are all injected, so every rule above is unit-tested in plain Node against fakes
+// host, the RTSP streams and URLs and the log are all injected, so every rule above is unit-tested in plain Node against fakes
 // (`tests/unit/streamRegistry.test.ts`). `src/main/index.ts` wires the real ones.
 import type { IpcErrorKind } from '@shared/ipc'
-import type { StreamQuality } from '@shared/quality'
+import { fallbackQuality, type Quality, type StreamQuality } from '@shared/quality'
+import { validateRtspUrl, type RtspStreamUrls } from '@shared/rtsp'
 import { parseStreamName, streamHandle, streamName, type StreamHandle } from '@shared/streams'
 import type { Camera } from '@shared/models'
 import type { ProtectClient } from '../protect/client'
 import { sourceHostIs, toGo2rtcSource } from './go2rtcConfig'
 import type { Go2rtcManager } from './go2rtcManager'
+import { RTSP_STREAM_MESSAGES, toRtspGo2rtcSource } from './rtspStreams'
 
 /**
  * The kinds this module fails with, deliberately a subset of the contract's own: the IPC handler
@@ -87,7 +115,10 @@ export interface StreamRegistryOptions {
    * The go2rtc sidecar (P2.1). `start()` is called on every `ensureStream` because it is idempotent
    * and because go2rtc starts **lazily**: a user who only opens Settings never spawns one.
    */
-  readonly manager: Pick<Go2rtcManager, 'start' | 'runtime' | 'addStream'>
+  readonly manager: Pick<
+    Go2rtcManager,
+    'start' | 'runtime' | 'addStream' | 'removeStream' | 'streams'
+  >
   /**
    * The Protect client for the console **as configured right now**, read per call rather than
    * captured: `src/main/index.ts` rebuilds it when the address changes.
@@ -105,6 +136,23 @@ export interface StreamRegistryOptions {
    * refused (R4).
    */
   readonly consoleHost: () => string | null
+  /**
+   * MODE-4: whether the app is in UniFi Protect mode, read per call. While it answers `false` (RTSP
+   * streams mode) `ensureStream` takes the RTSP branch (RTSP-3) and makes no Protect call of any
+   * kind. Default: always Protect.
+   */
+  readonly protectMode?: () => boolean
+  /**
+   * RTSP-3: the configured streams (`config.rtsp.streams`), read per call so a stream saved or
+   * deleted a moment ago counts at once. Default: none.
+   */
+  readonly rtspStreams?: () => readonly { readonly id: string; readonly name: string }[]
+  /**
+   * RTSP-2/5: the decrypted stream URLs main holds (`credentials.rtspUrls`), read per call.
+   * **Secret** (CON-2): read, validated, transformed and handed to the manager, never logged or
+   * returned. Default: none.
+   */
+  readonly rtspUrls?: () => Readonly<Record<string, RtspStreamUrls>> | undefined
   /** Safe lines only — no URL, no alias, no credential (CON-2, NFR-9). Default: no-op. */
   readonly log?: (line: string) => void
 }
@@ -132,6 +180,30 @@ export interface StreamRegistry {
    */
   invalidate(cameraId?: string): void
   /**
+   * MODE-4: a mode switch, in either direction (one mode's sources would fail the manager's check
+   * for the other, R4 / RTSP-5). **Unregisters every stream from go2rtc** (`removeStream` for
+   * each name in the desired set, so a running go2rtc drops it and no later restart replays it),
+   * forgets every cached URL, every recorded RTSP source and every in-flight request, and makes a request that was already past
+   * its read when this was called fail instead of registering its stream afterwards. Players attached
+   * to a removed stream lose it; that is the point of the switch. go2rtc itself keeps running.
+   * Never rejects: a stream go2rtc would not drop is logged (the desired set still forgets it).
+   */
+  unregisterAll(): Promise<void>
+  /**
+   * RTSP-5: the go2rtc source the registry validated and registered under this stream name, or
+   * `null` for any name it did not. The manager's RTSP-mode check: a source is accepted only if it
+   * is exactly this. **Secret** (CON-2): for the manager only.
+   */
+  rtspSource(name: string): string | null
+  /**
+   * RTSP-3: one RTSP stream's URLs changed, or the stream was deleted. Removes every go2rtc
+   * registration of that stream (any quality), forgets its recorded sources and in-flight requests,
+   * and makes a request for it that is already past its checks fail instead of registering
+   * afterwards. A playing cell loses the stream and re-asks, which reads the new URL. Never
+   * rejects.
+   */
+  rtspStreamChanged(streamId: string): Promise<void>
+  /**
    * App shutdown: forget every cached URL and every in-flight request, so nothing holds an alias
    * after the window is gone. The sidecar is **not** stopped here — `manager.stop()` owns that, and
    * `will-quit` calls it alongside this (`src/main/index.ts`).
@@ -158,6 +230,44 @@ export function createStreamRegistry(options: StreamRegistryOptions): StreamRegi
 
   /** Stream name → the single in-flight `ensureStream`, so a 10-cell View makes one GET per pair. */
   const inFlight = new Map<string, Promise<StreamHandle>>()
+
+  /**
+   * Bumped by every {@link StreamRegistry.unregisterAll}. An `ensureOnce` that started under an
+   * earlier generation refuses rather than registering its stream after everything was removed.
+   */
+  let generation = 0
+
+  /**
+   * RTSP-5: stream name → the go2rtc source this registry validated and registered (R5). Mirrors
+   * the RTSP entries of the manager's desired set, so a go2rtc restart replays only sources the
+   * manager will accept. **Secret** (CON-2), like {@link sources}.
+   */
+  const rtspSources = new Map<string, string>()
+
+  /** RTSP stream id → generation, bumped by {@link StreamRegistry.rtspStreamChanged} (R6). */
+  const rtspGenerations = new Map<string, number>()
+
+  /**
+   * RTSP stream name → the token of the request that last registered it. A request that turns out
+   * stale removes the registration only while it still owns it: a newer request for the same name
+   * may have registered an identical source (only another quality's URL changed), and that one
+   * must stay.
+   */
+  const rtspOwners = new Map<string, object>()
+
+  const protectMode = options.protectMode ?? ((): boolean => true)
+  const rtspStreams = options.rtspStreams ?? ((): readonly { id: string; name: string }[] => [])
+  const rtspUrls =
+    options.rtspUrls ?? ((): Readonly<Record<string, RtspStreamUrls>> | undefined => undefined)
+
+  /** MODE-4: the mode was switched while this request was waiting, so it must not register. */
+  function requireGeneration(started: number): void {
+    if (started === generation) return
+    throw new StreamRegistryError(
+      'The app mode changed while the stream was being opened, so it was not opened.',
+      { kind: 'bad-request' },
+    )
+  }
 
   /**
    * Refuses the pair unless main's cached inventory (CAM-1) has that camera and that camera can
@@ -259,6 +369,7 @@ export function createStreamRegistry(options: StreamRegistryOptions): StreamRegi
   }
 
   async function ensureOnce(cameraId: string, quality: StreamQuality): Promise<StreamHandle> {
+    const started = generation
     requireStreamable(cameraId, quality)
     const name = streamName(cameraId, quality)
 
@@ -277,12 +388,16 @@ export function createStreamRegistry(options: StreamRegistryOptions): StreamRegi
     }
     if (source === undefined) {
       source = await readSource(cameraId, quality)
+      requireGeneration(started)
       requirePinnedHost(source, cameraId, quality)
       // Cached only once it is known good, and only for this session (SPEC §5.1).
       sources.set(name, source)
     }
 
     const runtime = await requireRuntime()
+    // After the last await before `addStream`: a switch to RTSP mode during the GET or the go2rtc
+    // start has already unregistered everything, and this stream must not come back after it.
+    requireGeneration(started)
     try {
       // Records the stream in the desired set and, since go2rtc is up, registers it live. Replayed
       // into every later (re)start by the manager, so a restart needs nothing from here.
@@ -303,17 +418,155 @@ export function createStreamRegistry(options: StreamRegistryOptions): StreamRegi
     return streamHandle({ cameraId, quality, port: runtime.port, epoch: runtime.epoch })
   }
 
+  // --- RTSP streams mode (RTSP-3, RTSP-5) -----------------------------------------------------
+
+  /** What an RTSP request resolved to before anything is awaited: R1–R3. */
+  interface RtspPlan {
+    readonly streamId: string
+    readonly served: Quality
+    readonly name: string
+    /** The validated go2rtc source. **Secret** (CON-2). */
+    readonly source: string
+  }
+
+  /**
+   * R1–R3, synchronous: refuses, or names the served quality and its validated source. Every
+   * refusal is a fixed sentence with no URL in it (CON-2).
+   */
+  function planRtsp(streamId: string, quality: StreamQuality): RtspPlan {
+    if (quality === 'package') {
+      throw new StreamRegistryError(RTSP_STREAM_MESSAGES.playPackage, { kind: 'bad-request' })
+    }
+    if (!rtspStreams().some((stream) => stream.id === streamId)) {
+      // Not retryable: unlike a Protect inventory, the stream list is never "not read yet".
+      throw new StreamRegistryError(RTSP_STREAM_MESSAGES.playNotFound, { kind: 'not-found' })
+    }
+    // The id has just matched a configured `rtsp-<uuid>`, so it cannot name a prototype key.
+    const urls: RtspStreamUrls = rtspUrls()?.[streamId] ?? {}
+    const served = fallbackQuality(quality, (q) => (urls[q] ?? '') !== '')
+    const url = served === null ? undefined : urls[served]
+    if (served === null || url === undefined) {
+      throw new StreamRegistryError(RTSP_STREAM_MESSAGES.playNoUrl, { kind: 'not-configured' })
+    }
+    // RTSP-5: only a URL that passes RTSP-2's rules is ever handed to go2rtc. The check's own
+    // reason is not passed on: it is safe, but the fixed sentence says what to do about it.
+    if (!validateRtspUrl(url).ok) {
+      throw new StreamRegistryError(RTSP_STREAM_MESSAGES.playInvalidUrl, { kind: 'bad-request' })
+    }
+    return { streamId, served, name: streamName(streamId, served), source: toRtspGo2rtcSource(url) }
+  }
+
+  /** R6: the stream changed (or the mode switched) while this request was waiting. */
+  function rtspStale(plan: RtspPlan, started: number, streamStarted: number): boolean {
+    return started !== generation || (rtspGenerations.get(plan.streamId) ?? 0) !== streamStarted
+  }
+
+  function requireRtspCurrent(plan: RtspPlan, started: number, streamStarted: number): void {
+    requireGeneration(started)
+    if (rtspStale(plan, started, streamStarted)) {
+      // Retryable: the player asks again and gets the stream's new URL (or its refusal).
+      throw new StreamRegistryError(RTSP_STREAM_MESSAGES.playChanged, {
+        kind: 'bad-request',
+        retryable: true,
+      })
+    }
+  }
+
+  /** Keeps {@link rtspSources} equal to what the manager's desired set now holds for `name`. */
+  function syncRtspSource(name: string): void {
+    const held = manager.streams()[name]
+    if (held === undefined) rtspSources.delete(name)
+    else rtspSources.set(name, held)
+  }
+
+  async function ensureRtspOnce(plan: RtspPlan): Promise<StreamHandle> {
+    const started = generation
+    const streamStarted = rtspGenerations.get(plan.streamId) ?? 0
+    const runtime = await requireRuntime()
+    // After the go2rtc start: a mode switch or a change to this stream during it has already
+    // removed this stream's registrations, and it must not come back with a stale URL (R6).
+    requireRtspCurrent(plan, started, streamStarted)
+    // Recorded before `addStream`, which asks the manager's RTSP-5 check for exactly this (R5).
+    rtspSources.set(plan.name, plan.source)
+    const owner = {}
+    rtspOwners.set(plan.name, owner)
+    try {
+      await manager.addStream(plan.name, plan.source)
+    } catch (err) {
+      // The manager rolled its desired set back; the record follows it, so a restart's replay
+      // never meets a source the manager would refuse.
+      syncRtspSource(plan.name)
+      // The manager's message names the stream at most, never the source (CON-2).
+      log(
+        `go2rtc rejected stream ${plan.name}: ${err instanceof Error ? err.message : String(err)}`,
+      )
+      throw new StreamRegistryError(
+        'The local video gateway (go2rtc) did not accept the stream, so there is no video yet. ' +
+          'OverWatch will try again.',
+        { kind: 'gateway-down', retryable: true },
+      )
+    }
+    if (rtspStale(plan, started, streamStarted)) {
+      // Changed while go2rtc was registering it: the removal may have run before this landed, so
+      // it is removed again here rather than left playing the old URL (R6).
+      // Only a registration this request added and no newer request has claimed since.
+      if (rtspOwners.get(plan.name) === owner && manager.streams()[plan.name] === plan.source) {
+        rtspOwners.delete(plan.name)
+        // The name leaves the manager's desired set synchronously inside `removeStream`, and its
+        // record goes at the same moment, before anything is awaited: a newer request that
+        // registers meanwhile keeps its own record.
+        const removal = removeQuietly(plan.name)
+        rtspSources.delete(plan.name)
+        await removal
+      }
+      requireRtspCurrent(plan, started, streamStarted)
+    }
+    log(`stream ${plan.name} ready on epoch ${String(runtime.epoch)} (RTSP)`)
+    return streamHandle({
+      cameraId: plan.streamId,
+      quality: plan.served,
+      port: runtime.port,
+      epoch: runtime.epoch,
+    })
+  }
+
+  /** `removeStream`, answering whether go2rtc dropped it and never rejecting. */
+  async function removeQuietly(name: string): Promise<boolean> {
+    try {
+      return await manager.removeStream(name)
+    } catch {
+      return false
+    }
+  }
+
+  /** Shares one in-flight promise per stream name (R9, NFR-6), dropping only its own entry. */
+  function coalesce(name: string, run: () => Promise<StreamHandle>): Promise<StreamHandle> {
+    const pending = inFlight.get(name)
+    if (pending !== undefined) return pending
+    const promise = run().finally(() => {
+      // Only its own entry: `unregisterAll` may have dropped it and a newer request taken its place.
+      if (inFlight.get(name) === promise) inFlight.delete(name)
+    })
+    inFlight.set(name, promise)
+    return promise
+  }
+
   return {
     ensureStream(cameraId, quality) {
+      if (!protectMode()) {
+        let plan: RtspPlan
+        try {
+          plan = planRtsp(cameraId, quality)
+        } catch (err) {
+          return Promise.reject(err instanceof Error ? err : new Error(String(err)))
+        }
+        // Coalesced on the *served* name (R4): asking for `high` and `medium` of a stream that only
+        // has `medium` is one registration, not two racing ones.
+        return coalesce(plan.name, () => ensureRtspOnce(plan))
+      }
       const name = streamName(cameraId, quality)
-      const pending = inFlight.get(name)
       // R9/NFR-6: ten cells on one camera at startup share this one promise.
-      if (pending !== undefined) return pending
-      const promise = ensureOnce(cameraId, quality).finally(() => {
-        inFlight.delete(name)
-      })
-      inFlight.set(name, promise)
-      return promise
+      return coalesce(name, () => ensureOnce(cameraId, quality))
     },
 
     invalidate(cameraId) {
@@ -328,8 +581,50 @@ export function createStreamRegistry(options: StreamRegistryOptions): StreamRegi
       log(`dropped the cached stream URLs for camera ${cameraId} (QUAL-8)`)
     },
 
+    async unregisterAll() {
+      generation += 1
+      sources.clear()
+      rtspSources.clear()
+      inFlight.clear()
+      const names = Object.keys(manager.streams())
+      // `removeStream` never rejects; it answers whether the running go2rtc dropped the stream. A
+      // rejection is still counted, so an injected manager that throws cannot make this reject.
+      const results = await Promise.allSettled(names.map((name) => manager.removeStream(name)))
+      const failed = results.filter(
+        (result) => result.status === 'rejected' || !result.value,
+      ).length
+      log(
+        `unregistered ${String(names.length)} stream(s) from go2rtc (MODE-4)` +
+          (failed === 0 ? '' : `; ${String(failed)} could not be removed from the running go2rtc`),
+      )
+    },
+
+    rtspSource(name) {
+      return rtspSources.get(name) ?? null
+    },
+
+    async rtspStreamChanged(streamId) {
+      rtspGenerations.set(streamId, (rtspGenerations.get(streamId) ?? 0) + 1)
+      const ofStream = (name: string): boolean => parseStreamName(name)?.cameraId === streamId
+      for (const name of [...inFlight.keys()]) if (ofStream(name)) inFlight.delete(name)
+      const names = Object.keys(manager.streams()).filter(ofStream)
+      // Each name leaves the manager's desired set synchronously inside `removeStream`, so the
+      // records go at that same moment, before anything is awaited: a newer ensure that registers
+      // during the DELETEs keeps its own record, and the desired set never holds a source this
+      // registry no longer vouches for (RTSP-5).
+      const removals = Promise.all(names.map((name) => removeQuietly(name)))
+      for (const name of [...rtspSources.keys()]) if (ofStream(name)) rtspSources.delete(name)
+      const results = await removals
+      const failed = results.filter((dropped) => !dropped).length
+      log(
+        `unregistered ${String(names.length)} stream(s) of a changed RTSP stream (RTSP-3)` +
+          (failed === 0 ? '' : `; ${String(failed)} could not be removed from the running go2rtc`),
+      )
+    },
+
     shutdown() {
       sources.clear()
+      rtspSources.clear()
       inFlight.clear()
     },
   }

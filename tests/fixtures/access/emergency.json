@@ -1,5 +1,5 @@
 {
-  "_source": "mock",
+  "_source": "console",
   "request": {
     "method": "GET",
     "path": "/doors/settings/emergency"
@@ -7,10 +7,10 @@
   "status": 200,
   "response": {
     "code": "SUCCESS",
-    "msg": "success",
     "data": {
-      "lockdown": false,
-      "evacuation": false
-    }
+      "evacuation": false,
+      "lockdown": false
+    },
+    "msg": "success"
   }
 }

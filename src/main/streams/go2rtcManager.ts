@@ -193,6 +193,17 @@ export interface Go2rtcManagerOptions {
    * bad one.
    */
   readonly consoleHost: () => string | null
+  /**
+   * MODE-4: whether the app is in RTSP streams mode, read per call. Default: never (Protect).
+   * While it answers `true` the pinned-host check is replaced by {@link rtspSource} (RTSP-5).
+   */
+  readonly rtspMode?: () => boolean
+  /**
+   * RTSP-5: the source the stream registry validated and registered under a stream name, `null`
+   * for any other name. In RTSP mode a source is accepted **only** if it is exactly this, so go2rtc
+   * is only ever handed a URL main read from its own secrets and validated. Default: none.
+   */
+  readonly rtspSource?: (name: string) => string | null
   readonly spawn?: Go2rtcSpawn
   /** A free loopback port. Not atomic with go2rtc's bind, hence the ownership check. */
   readonly freePort?: () => Promise<number>
@@ -386,6 +397,8 @@ export function go2rtcBinaryPath(
 // --- the manager --------------------------------------------------------------------------------
 
 export function createGo2rtcManager(options: Go2rtcManagerOptions): Go2rtcManager {
+  const rtspMode = options.rtspMode ?? ((): boolean => false)
+  const rtspSource = options.rtspSource ?? ((): string | null => null)
   const spawnChild = options.spawn ?? nodeSpawn
   const freePort = options.freePort ?? freeLoopbackPort
   const http = options.http ?? nodeHttp
@@ -470,9 +483,22 @@ export function createGo2rtcManager(options: Go2rtcManagerOptions): Go2rtcManage
     emitRuntime()
   }
 
-  /** R4 and the stream-name allowlist, checked for every source before it can reach a config. */
+  /**
+   * R4 / RTSP-5 and the stream-name allowlist, checked for every source before it can reach a
+   * config. In Protect mode the source must point at the pinned console host (R4); in RTSP mode it
+   * must be exactly the source the registry validated for that name (RTSP-5), and the console host
+   * plays no part. The source is never put in a message (CON-2).
+   */
   const assertStream = (name: string, source: string): void => {
     if (!isSafeStreamName(name)) throw new Error(`go2rtc: unsafe stream name "${name}"`)
+    if (rtspMode()) {
+      if (rtspSource(name) !== source)
+        throw new Error(
+          `go2rtc: source for stream "${name}" is not one OverWatch validated from its saved ` +
+            'RTSP streams (RTSP-5)',
+        )
+      return
+    }
     const host = options.consoleHost()
     if (host === null || host.trim() === '')
       throw new Error('go2rtc: no console host is configured, so no source can be trusted (R4)')
@@ -660,6 +686,28 @@ export function createGo2rtcManager(options: Go2rtcManagerOptions): Go2rtcManage
       })
   }
 
+  /**
+   * `DELETE /api/streams`: unregisters one stream from a *running* go2rtc. Never throws: answers
+   * whether go2rtc dropped it (a 404 counts: it does not have it), and logs anything else.
+   */
+  const deleteLive = async (name: string, port: number, a: Go2rtcAuth): Promise<boolean> => {
+    try {
+      const res = await http({
+        url: `${go2rtcApiUrl(port, '/api/streams')}?src=${encodeURIComponent(name)}`,
+        method: 'DELETE',
+        headers: authHeaders(a),
+        timeoutMs: API_TIMEOUT_MS,
+      })
+      // 404: go2rtc does not have it, which is what was asked for.
+      if ((res.status >= 200 && res.status < 300) || res.status === 404) return true
+      log(`[go2rtc] could not unregister stream "${name}": DELETE answered ${String(res.status)}`)
+      return false
+    } catch (err) {
+      log(`[go2rtc] could not unregister stream "${name}": ${safeMessage(err)}`)
+      return false
+    }
+  }
+
   /** `PUT /api/streams`: registers one stream in a *running* go2rtc. Throws on any non-2xx. */
   const putStream = async (
     name: string,
@@ -708,6 +756,26 @@ export function createGo2rtcManager(options: Go2rtcManagerOptions): Go2rtcManage
   }
 
   /**
+   * Unregisters from the go2rtc that has just come up every stream this attempt wrote into its
+   * config but that has since left the desired set, or changed source. `removeStream` sends no
+   * DELETE while no runtime is up, so a stream removed during the start (e.g. by a mode switch's
+   * `unregisterAll`) would otherwise run from the YAML. Best effort: a refused DELETE is logged.
+   * Runs before {@link registerLate}, which then registers any changed source afresh.
+   */
+  const dropUnwanted = async (
+    written: ReadonlyMap<string, string>,
+    runtime: Go2rtcRuntime,
+    a: Go2rtcAuth,
+  ): Promise<void> => {
+    for (const [name, source] of written) {
+      // Re-read per entry: an `addStream` during an earlier DELETE registers live and is kept.
+      if (desired.get(name) === source) continue
+      if (await deleteLive(name, runtime.port, a))
+        log(`[go2rtc] unregistered stream "${name}" removed while go2rtc was starting`)
+    }
+  }
+
+  /**
    * One full start: config → spawn → readiness → delete the config → ownership verdict, retried on
    * a new port up to {@link START_ATTEMPTS} times (SPEC §5.3). Every attempt gets fresh
    * credentials, so a port taken over by someone else never sees the credentials twice.
@@ -718,8 +786,21 @@ export function createGo2rtcManager(options: Go2rtcManagerOptions): Go2rtcManage
       // Read per attempt, not once before the loop: `addStream` while a start is in flight has no
       // runtime to register against, so the launch that comes up must pick it up itself. What this
       // attempt was given is remembered, and anything added after it is registered live below.
-      for (const [name, source] of desired) assertStream(name, source)
-      const written = new Map(desired)
+      //
+      // Fail-closed per entry, not per start: an entry that fails the check (e.g. the other mode's
+      // stream, in the moment between a mode switch being saved and `unregisterAll` dropping it) is
+      // left out of the config and dropped from the desired set, and the rest still starts. No
+      // unchecked source ever reaches a config. The log names the stream only (CON-2).
+      const written = new Map<string, string>()
+      for (const [name, source] of [...desired]) {
+        try {
+          assertStream(name, source)
+          written.set(name, source)
+        } catch {
+          if (desired.get(name) === source) desired.delete(name)
+          log(`[go2rtc] left stream "${name}" out of the config: its source failed the check`)
+        }
+      }
       const port = await freePort()
       const launchAuth = createGo2rtcAuth(random)
       const config = buildGo2rtcConfig({
@@ -782,6 +863,7 @@ export function createGo2rtcManager(options: Go2rtcManagerOptions): Go2rtcManage
         // Deliberately *not* a reset of `consecutiveFailures`: only a run that lasted
         // {@link RESTART_STABLE_AFTER_MS} clears the budget (see `runRestartLoop`), or else a
         // go2rtc that dies seconds after every start would never reach `failed`.
+        await dropUnwanted(written, runtime, launchAuth)
         await registerLate(written, runtime, launchAuth)
         const token = {}
         monitorToken = token
@@ -912,21 +994,7 @@ export function createGo2rtcManager(options: Go2rtcManagerOptions): Go2rtcManage
     // Best effort: the desired set is authoritative, and the next start simply leaves it out. A
     // stream go2rtc still knows about costs nothing while no consumer is attached (ARCHITECTURE §2).
     // The answer says whether the running go2rtc dropped it, for a caller that reports it (MODE-4).
-    try {
-      const res = await http({
-        url: `${go2rtcApiUrl(runtime.port, '/api/streams')}?src=${encodeURIComponent(name)}`,
-        method: 'DELETE',
-        headers: authHeaders(current),
-        timeoutMs: API_TIMEOUT_MS,
-      })
-      // 404: go2rtc does not have it, which is what was asked for.
-      if ((res.status >= 200 && res.status < 300) || res.status === 404) return true
-      log(`[go2rtc] could not unregister stream "${name}": DELETE answered ${String(res.status)}`)
-      return false
-    } catch (err) {
-      log(`[go2rtc] could not unregister stream "${name}": ${safeMessage(err)}`)
-      return false
-    }
+    return await deleteLive(name, runtime.port, current)
   }
 
   const streamInfo = async (name: string): Promise<StreamCodecSummary | null> => {

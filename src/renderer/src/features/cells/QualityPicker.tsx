@@ -30,12 +30,17 @@
 // here), so the next `Esc` leaves fill, and by the pointer leaving the cell (CellOverlay). Which input
 // focused the select is this picker's own record (the last of a pointer press or a key on it,
 // cleared on blur), because `:focus-visible` turns on for the very key being handled.
+//
+// **RTSP streams** (RTSP-3). Both pickers take the stream's `availability`: a quality with no URL is
+// listed but disabled, "High (not set)" (`QualityOptions`); "Default (X)" stays enabled. The colour
+// and the fill select's value are the quality served, which the caller already hands in.
 import { useRef, type ChangeEvent, type JSX, type KeyboardEvent } from 'react'
 import type { Quality, StreamQuality } from '@shared/quality'
 import {
   inheritOptionLabel,
   parseQualityOption,
   qualityOptionValue,
+  type QualityAvailability,
 } from '../quality/qualityChoice'
 import { QualityOptions } from '../quality/QualityOptions'
 import { SaveIcon } from '../../ui/icons'
@@ -82,6 +87,8 @@ export interface CellQualityPickerProps {
   readonly inherited: Quality
   /** What the cell plays now, for the select's colour (header). */
   readonly playing: StreamQuality
+  /** RTSP-3: which qualities have a URL; `null` (Protect mode) enables them all (header). */
+  readonly availability: QualityAvailability
   readonly onChange: (quality: Quality | null) => void
 }
 
@@ -89,6 +96,7 @@ export function CellQualityPicker({
   override,
   inherited,
   playing,
+  availability,
   onChange,
 }: CellQualityPickerProps): JSX.Element {
   const blur = usePointerPickBlur()
@@ -107,7 +115,10 @@ export function CellQualityPicker({
         blur.afterPick(event)
       }}
     >
-      <QualityOptions inheritLabel={inheritOptionLabel('Default', inherited)} />
+      <QualityOptions
+        inheritLabel={inheritOptionLabel('Default', inherited)}
+        availability={availability}
+      />
     </select>
   )
 }
@@ -117,6 +128,8 @@ export interface FillQualityPickerProps {
   readonly shown: StreamQuality
   /** Show Save: a pick changed what plays (`canSaveFillQuality`). */
   readonly canSave: boolean
+  /** RTSP-3: which qualities have a URL; `null` (Protect mode) enables them all (header). */
+  readonly availability: QualityAvailability
   readonly onPick: (quality: Quality) => void
   readonly onSave: () => void
 }
@@ -124,6 +137,7 @@ export interface FillQualityPickerProps {
 export function FillQualityPicker({
   shown,
   canSave,
+  availability,
   onPick,
   onSave,
 }: FillQualityPickerProps): JSX.Element {
@@ -145,7 +159,7 @@ export function FillQualityPicker({
           blur.afterPick(event)
         }}
       >
-        <QualityOptions />
+        <QualityOptions availability={availability} />
       </select>
       {canSave ? (
         <button

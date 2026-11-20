@@ -20,8 +20,25 @@
 //  - **A cell is addressed by its top-left slot.** That is unique in a tiled View, survives the
 //    canonical reordering a save does, and is what a grid slot's `placement` carries — so the
 //    overlay can name the persisted cell without knowing its index.
+//  - **RTSP mode plays what has a URL** (RTSP-3). A stream's {@link QualityAvailability} (the
+//    booleans main tells the renderer, `secretsStored.rtspUrls`) maps every quality handed to a
+//    player through `fallbackQuality` ({@link servedQuality}), because main serves that quality and
+//    the player treats a handle of another quality as a contract violation. Settings and saved
+//    overrides stay on the quality *asked for*; only what plays, and the picker's colour and badge
+//    that show it (QUAL-7), use the served one. Protect mode has no availability (`null`): every
+//    quality exists on every camera, and nothing is mapped. The overlay's pickers list a quality
+//    with no URL disabled, "High (not set)" ({@link qualityOptionItems}).
 import type { View } from '@shared/models'
-import { isQuality, qualityBadgeLabel, QUALITIES, type Quality } from '@shared/quality'
+import type { RtspQualitiesStored, RtspUrlsStored } from '@shared/rtsp'
+import {
+  fallbackQuality,
+  isQuality,
+  PACKAGE_CHANNEL,
+  qualityBadgeLabel,
+  QUALITIES,
+  type Quality,
+  type StreamQuality,
+} from '@shared/quality'
 
 /** The select value of the "inherit" option (`null`). */
 export const INHERIT_OPTION = ''
@@ -38,6 +55,62 @@ const QUALITY_NAMES: Readonly<Record<Quality, string>> = {
 
 export function qualityName(quality: Quality): string {
   return QUALITY_NAMES[quality]
+}
+
+/**
+ * Which qualities of one stream have a URL (RTSP-3), or `null` when every quality exists — Protect
+ * mode (header).
+ */
+export type QualityAvailability = RtspQualitiesStored | null
+
+/** A stream with no URL stored at all: main leaves it out of `rtspUrls` (src/shared/rtsp.ts). */
+const NO_URLS: RtspQualitiesStored = { high: false, medium: false, low: false }
+
+/**
+ * The availability of `cameraId`'s qualities: `null` outside RTSP mode (`rtspUrls` `null`), else the
+ * stream's booleans — the very object from the store, so a memo comparing it by identity holds — or
+ * all `false` for a stream with no entry.
+ */
+export function streamAvailability(
+  rtspUrls: RtspUrlsStored | null,
+  cameraId: string,
+): QualityAvailability {
+  if (rtspUrls === null) return null
+  return rtspUrls[cameraId] ?? NO_URLS
+}
+
+/**
+ * The quality a player is handed for `quality` (RTSP-3, header): the closest one with a URL, lower
+ * on a tie (`fallbackQuality`, the same rule main serves by). Unchanged in Protect mode
+ * (`availability` `null`), for the package channel (a source, not a quality), and when the stream
+ * has no URL at all — main then refuses and the cell shows its error.
+ */
+export function servedQuality(
+  quality: StreamQuality,
+  availability: QualityAvailability,
+): StreamQuality {
+  if (availability === null || quality === PACKAGE_CHANNEL) return quality
+  return fallbackQuality(quality, (q) => availability[q]) ?? quality
+}
+
+/** One quality `<option>`: its value, its text and whether it can be picked. */
+export interface QualityOptionItem {
+  readonly value: Quality
+  readonly label: string
+  readonly disabled: boolean
+}
+
+/**
+ * The quality options of a picker, best first (QUAL-4). With an RTSP stream's availability, a
+ * quality with no URL is listed but disabled and named "High (not set)" (RTSP-3); without one
+ * (Protect mode, or a View-wide select) every quality is enabled.
+ */
+export function qualityOptionItems(availability: QualityAvailability = null): QualityOptionItem[] {
+  return QUALITY_OPTIONS.map((quality) => {
+    const disabled = availability !== null && !availability[quality]
+    const name = qualityName(quality)
+    return { value: quality, label: disabled ? `${name} (not set)` : name, disabled }
+  })
 }
 
 /** A level as a select value: the quality itself, or {@link INHERIT_OPTION} for `null`. */

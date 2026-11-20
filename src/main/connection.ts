@@ -126,6 +126,7 @@ import {
   type SubscriptionState,
 } from './protect/subscriptions'
 import type { Secrets } from './secrets/secrets'
+import { rtspInventory } from './streams/rtspStreams'
 import type { PinRegistry } from './tls/pinning'
 
 /**
@@ -188,7 +189,11 @@ export interface ConnectionManagerOptions {
 export interface ConnectionManager {
   /** CON-5, recomputed on every call: the derived parts can change without anything happening. */
   status(): ConnectionStatus
-  /** The inventory as main last read it (CAM-1). Empty before the first successful read. */
+  /**
+   * The inventory as main last read it (CAM-1). Empty before the first successful read. In RTSP
+   * mode, the configured streams instead (RTSP-3, `rtspInventory`), built from the live config on
+   * every call with no request.
+   */
   cachedCameras(): Camera[]
   /**
    * CAM-1/2, CELL-2: read the inventory and open the devices and events feeds. Idempotent — a
@@ -318,9 +323,11 @@ export interface ConnectionManager {
    * MODE-4: `mode` has just been saved (by `vp:app/mode`); the manager reads it from the live
    * config. **Entering RTSP mode** stops both Protect feeds (and with them their reconnect
    * timers), stops the door-state monitor and its retry timer, resets both endpoint statuses to a
-   * never-connected `idle`, empties the inventory and pushes the empty inventory, the status and
-   * the Doors screen's state. **In Protect mode it does nothing**: switching back behaves like a
-   * launch, which is the caller's `connectOnLaunch()` (CON-4). The monitor, its retry timer and
+   * never-connected `idle`, empties the Protect inventory and pushes the RTSP inventory (RTSP-3),
+   * the status and the Doors screen's state. **Back in Protect mode it only pushes the Protect
+   * inventory** (empty until the next connect), so the RTSP streams leave the renderer at once;
+   * switching back otherwise behaves like a launch, which is the caller's `connectOnLaunch()`
+   * (CON-4). The monitor, its retry timer and
    * both feeds are stopped **synchronously, when this is called**, so nothing polls Access or
    * reconnects a feed while the rest waits; the rest (the status reset, the inventory, the pushes)
    * is serialized with `connect` and `applyConsoleChange`, so a connect in progress finishes (it
@@ -328,6 +335,12 @@ export interface ConnectionManager {
    * new mode. Never rejects.
    */
   modeChanged(): Promise<void>
+  /**
+   * RTSP-3: `rtsp.streams` (or a stream's URLs) has just been saved. In RTSP mode pushes the new
+   * RTSP inventory as `cameras`; in Protect mode does nothing (the streams are not the inventory
+   * there). Synchronous and never throws.
+   */
+  rtspStreamsChanged(): void
   /**
    * App shutdown: close the feed and every pinned Agent. Leaves `console.connectOnLaunch` as it is —
    * quitting is not a reason to stop, and the next launch is exactly when it is meant to apply.
@@ -533,9 +546,17 @@ export function createConnectionManager(options: ConnectionManagerOptions): Conn
     emit(IPC_EVENTS.connection.channel, status())
   }
 
-  /** A copy: the cached array is replaced on every change, but a listener must not alias it. */
+  /**
+   * The inventory of the current mode: the Protect one main read (CAM-1), or in RTSP mode the
+   * configured streams (RTSP-3), rebuilt from the live config. Either way a fresh array: the cached
+   * one is replaced on every change, but a caller must not alias it.
+   */
+  function currentCameras(): Camera[] {
+    return rtspMode() ? rtspInventory(services.current.rtsp.streams) : [...inventory]
+  }
+
   function emitCameras(): void {
-    emit(IPC_EVENTS.cameras.channel, [...inventory])
+    emit(IPC_EVENTS.cameras.channel, currentCameras())
   }
 
   function recordError(which: EndpointName, err: unknown, endpoint: string | null): IpcError {
@@ -1924,13 +1945,20 @@ export function createConnectionManager(options: ConnectionManagerOptions): Conn
   async function modeChanged(stopping: Promise<void>): Promise<void> {
     // The early stop's own promise first, so nothing below overlaps a socket still closing.
     await stopping
-    if (!rtspMode()) return
+    if (!rtspMode()) {
+      // RTSP-3/MODE-4: the renderer still holds the RTSP inventory from the last push. The Protect
+      // one (empty until the next connect, since entering RTSP dropped it) replaces it now.
+      log('mode: UniFi Protect; the RTSP inventory replaced by the Protect one')
+      emitCameras()
+      return
+    }
     stopDoorMonitor()
     await stopFeedQuietly()
     state.protect = { phase: 'idle', error: null, version: null, updatedAt: now() }
     state.access = { phase: 'idle', error: null, version: null, updatedAt: now() }
     inventory = []
     log('mode: RTSP streams; Protect feeds and the door monitor stopped, inventory dropped')
+    // RTSP-3: the pushed inventory is the configured streams.
     emitCameras()
     emitStatus()
     pushDoorsScreen()
@@ -1980,13 +2008,13 @@ export function createConnectionManager(options: ConnectionManagerOptions): Conn
   // `applyConsoleChange` holds still while the address is being replaced.
   return {
     status,
-    cachedCameras: () => [...inventory],
+    cachedCameras: currentCameras,
     connect: () => serialize(connect),
     connectOnLaunch: () => serialize(connectOnLaunch),
     testConnection,
-    // MODE-4: in RTSP mode the inventory main holds (empty since `modeChanged`), with no request.
+    // MODE-4/RTSP-3: in RTSP mode the configured streams, with no request.
     cameras: () =>
-      rtspMode() ? Promise.resolve([...inventory]) : refreshInventory('a camera list request'),
+      rtspMode() ? Promise.resolve(currentCameras()) : refreshInventory('a camera list request'),
     snapshot,
     streamQualities,
     unlockDoor,
@@ -2008,6 +2036,9 @@ export function createConnectionManager(options: ConnectionManagerOptions): Conn
       // Before `serialize`, on purpose (see `stopProtectSideNow`).
       const stopping = stopProtectSideNow()
       return serialize(() => modeChanged(stopping))
+    },
+    rtspStreamsChanged: () => {
+      if (rtspMode()) emitCameras()
     },
     shutdown: () => serialize(shutdown),
   }

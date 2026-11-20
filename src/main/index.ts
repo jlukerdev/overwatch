@@ -20,6 +20,7 @@ import { IPC_EVENTS, type Recover, type RecoverReason } from '@shared/ipc'
 import type { View } from '@shared/models'
 import { STREAM_RUNTIME_DOWN, type StreamRuntime } from '@shared/streams'
 import { buildAppMenuTemplate } from './appMenu'
+import { isRtspMode } from './appMode'
 import { APP_NAME, appIconPath, userDataOverride } from './branding'
 import { createAccessClient, type AccessClient } from './access/client'
 import type { DoorNotificationHandlers, DoorNotificationsHandle } from './access/doorStateMonitor'
@@ -659,6 +660,10 @@ function buildStreaming(started: Services, manager: ConnectionManager): void {
     configDir: app.getPath('userData'),
     binaryPath: go2rtcBinary,
     consoleHost,
+    // RTSP-5: in RTSP mode a source is accepted only if the registry validated it from the
+    // secrets. Late-bound: the registry is built just below, after the manager it uses.
+    rtspMode: () => isRtspMode(started.current),
+    rtspSource: (name) => streams?.rtspSource(name) ?? null,
     log: (line) => {
       // Already redacted by the manager: no credential and no source URL (CON-2, NFR-9).
       console.log(`[go2rtc] ${line}`)
@@ -673,9 +678,13 @@ function buildStreaming(started: Services, manager: ConnectionManager): void {
     // CAM-1: `GET /v1/cameras` is the authority and the manager caches its last read.
     cameras: () => manager.cachedCameras(),
     consoleHost,
-    // MODE-4: in RTSP streams mode `ensureStream` refuses before any Protect call (RTSP playback is
-    // its own path, RTSP-3). Read per call from the live config, like everything else here.
-    protectMode: () => started.current.mode === 'protect',
+    // MODE-4: in RTSP streams mode `ensureStream` takes its RTSP branch and makes no Protect call
+    // (RTSP-3). Read per call from the live config, like everything else here.
+    protectMode: () => !isRtspMode(started.current),
+    // RTSP-3/5: the configured streams and the decrypted URLs, both per call (the handlers update
+    // them in place on every save and delete).
+    rtspStreams: () => started.current.rtsp.streams,
+    rtspUrls: () => started.credentials.rtspUrls,
     log: (line) => {
       console.log(`[streams] ${line}`)
     },

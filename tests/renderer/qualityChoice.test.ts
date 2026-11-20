@@ -6,6 +6,9 @@
 //    and the fill picker's Save are never read back as a quality.
 //  - a level round-trips through a select value, `null` included.
 //  - the inherit option names what inheriting gives with the QUAL-7 badge's text.
+//  - (RTSP-3) the quality served for a stream is the closest with a URL (lower on a tie), the asked
+//    one when there is none, and unchanged in Protect mode or for the package channel; a picker's
+//    options for an RTSP stream disable a quality with no URL and mark it "(not set)".
 //  - `setCellQuality` edits only the cell at that top-left slot, and hands back the same View when
 //    nothing changes.
 import type { Cell, View } from '@shared/models'
@@ -18,8 +21,11 @@ import {
   parseQualityOption,
   QUALITY_OPTIONS,
   qualityName,
+  qualityOptionItems,
   qualityOptionValue,
+  servedQuality,
   setCellQuality,
+  streamAvailability,
 } from '../../src/renderer/src/features/quality/qualityChoice'
 
 function view(cells: Cell[]): View {
@@ -71,6 +77,48 @@ describe('quality options', () => {
     }
     expect(inheritOptionLabel('App default', undefined)).toBe('App default')
     expect(inheritOptionLabel('App default', null)).toBe('App default')
+  })
+})
+
+describe('RTSP availability (RTSP-3)', () => {
+  const noHigh = { high: false, medium: true, low: true }
+  const onlyHigh = { high: true, medium: false, low: false }
+  const none = { high: false, medium: false, low: false }
+
+  it('is null in Protect mode, the stream’s booleans in RTSP mode, all false without an entry', () => {
+    const rtspUrls = { s1: noHigh }
+    expect(streamAvailability(null, 's1')).toBeNull()
+    expect(streamAvailability(rtspUrls, 's1')).toBe(noHigh)
+    expect(streamAvailability(rtspUrls, 'other')).toEqual(none)
+  })
+
+  it('serves the closest quality with a URL, the lower on a tie', () => {
+    expect(servedQuality('high', noHigh)).toBe('medium')
+    expect(servedQuality('medium', noHigh)).toBe('medium')
+    expect(servedQuality('low', onlyHigh)).toBe('high')
+    expect(servedQuality('medium', { high: true, medium: false, low: true })).toBe('low')
+  })
+
+  it('keeps the asked quality without any URL, in Protect mode and for the package channel', () => {
+    expect(servedQuality('high', none)).toBe('high')
+    for (const quality of QUALITIES) expect(servedQuality(quality, null)).toBe(quality)
+    expect(servedQuality('package', noHigh)).toBe('package')
+  })
+
+  it('lists a quality with no URL disabled and marked "(not set)"', () => {
+    expect(qualityOptionItems(noHigh)).toEqual([
+      { value: 'high', label: 'High (not set)', disabled: true },
+      { value: 'medium', label: 'Medium', disabled: false },
+      { value: 'low', label: 'Low', disabled: false },
+    ])
+  })
+
+  it('enables every quality without availability (Protect mode, View-wide selects)', () => {
+    for (const items of [qualityOptionItems(), qualityOptionItems(null)]) {
+      expect(items).toEqual(
+        QUALITY_OPTIONS.map((q) => ({ value: q, label: qualityName(q), disabled: false })),
+      )
+    }
   })
 })
 

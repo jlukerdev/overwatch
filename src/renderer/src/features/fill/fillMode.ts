@@ -74,9 +74,15 @@
 //    ({@link canSaveFillQuality}): the quality on screen is not already the View's own.
 //    Once it lands the pick it saved is dropped, the View now giving the same quality — but only
 //    that pick ({@link pickAfterFillSave}): one made while the save was in flight is kept.
+//  - **In RTSP mode the filled cell plays what has a URL** (RTSP-3; {@link filledQuality}). The
+//    quality asked for (pick over QUAL-5's chain) is mapped to the one main serves, which is what
+//    the player gets and the picker shows. Save is still decided on the quality asked for, so a View
+//    whose fill quality has no URL is not offered a save just because a lower one plays; a pick can
+//    only be a quality with a URL (the others are disabled), so a pick that can be saved plays as is.
 import type { Fit } from '@shared/models'
 import { PACKAGE_CHANNEL, type Quality, type StreamQuality } from '@shared/quality'
 import { showsStepControls } from '../cells/cellPosition'
+import { servedQuality, type QualityAvailability } from '../quality/qualityChoice'
 import type { GridSlot } from '../grid/gridLayout'
 import { isTextEntryTarget, type ViewShortcutTarget } from '../viewSwitcher/viewShortcut'
 
@@ -129,6 +135,31 @@ export function activeFillPick(
 ): Quality | null {
   if (pick === null || filledKey === null) return null
   return pick.viewId === viewId && pick.slotKey === filledKey ? pick.quality : null
+}
+
+/** What a filled cell plays and whether its picker offers Save (header, RTSP-3). */
+export interface FilledQuality {
+  /** The quality handed to the player and shown by the picker: in RTSP mode, the one served. */
+  readonly shown: StreamQuality
+  /** {@link canSaveFillQuality} on the quality *asked for*. */
+  readonly canSave: boolean
+}
+
+/**
+ * The filled cell's quality: {@link effectiveFillQuality} of `slotFillQuality` (QUAL-5's chain, as
+ * asked) and the session `pick`, mapped through the stream's `availability` (`null` in Protect
+ * mode, where nothing changes); Save as {@link canSaveFillQuality} on the quality asked for.
+ */
+export function filledQuality(
+  slotFillQuality: StreamQuality,
+  pick: Quality | null,
+  availability: QualityAvailability,
+): FilledQuality {
+  const asked = effectiveFillQuality(slotFillQuality, pick)
+  return {
+    shown: servedQuality(asked, availability),
+    canSave: canSaveFillQuality(asked, slotFillQuality),
+  }
 }
 
 /**

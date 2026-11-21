@@ -77,6 +77,18 @@ On Windows, if the binary is in use, quit OverWatch (and any go2rtc) first.
 - **Check a build.** `codesign --verify --deep --strict dist/mac-arm64/OverWatch.app` should print nothing. To launch a packaged build from a terminal started by VS Code or Claude Code, unset `ELECTRON_RUN_AS_NODE` first (`env -u ELECTRON_RUN_AS_NODE dist/mac-arm64/OverWatch.app/Contents/MacOS/OverWatch --user-data-dir=<empty dir>`), or it starts as plain Node and says "bad option".
 - **Upgrade check.** Part of every version's release check. Install the new build over an older one: Views and settings are kept, because the `userData` folder name never changes (`src/main/branding.ts`).
 
+## CI, Releases and Pages
+
+GitHub Actions in `.github/workflows/`:
+
+- **`ci.yml`** runs on every pull request and every push to `main`: `npm ci`, lint, `format:check`, `build` (with the typecheck) and `npm test`, on Ubuntu. The e2e smoke test is not run.
+- **`release.yml`** builds all three installers on one `macos-latest` runner with `npm run dist:all` and publishes a GitHub Release with them and a `SHA256SUMS.txt`.
+  - **Every push to `main`** (and a manual run on `main`) makes a prerelease `v<package.json version>-main.<run number>`, e.g. `v1.0.2-main.14`. Once `v<package.json version>` has been released, main builds take the next patch instead (`v1.0.3-main.15`), so they sort after the stable release. The workflow sets `package.json` to that version on the runner before building, so the installer file names and every in-app version (Settings foot, About) carry it. Prereleases never become the repo's *Latest* release.
+  - **A stable release** comes from a pushed tag that equals `v<package.json version>`. After the version's last PR is merged (it sets `package.json`): `git tag v1.0.3 && git push origin v1.0.3`. A tag that does not match `package.json` fails the build.
+  - Builds are unsigned, so only the built-in `GITHUB_TOKEN` is used; the release job alone gets `contents: write`.
+- **`pages.yml`** publishes `docs/guide.html`, `docs/brochure.html` and `docs/guide-img/` (nothing else from `docs/`) to <https://jlukerdev.github.io/overwatch/> when one of them changes on `main`. The site root redirects to the brochure. Pages is set to build from GitHub Actions.
+- **`dependabot.yml`** opens weekly grouped updates for npm and for the Actions.
+
 ## Protect API types
 
 `src/main/protect/generated.ts` is generated from `docs/reference/protect-openapi-v7.3.74.json` and committed, so don't edit it by hand. `npm run typecheck` (and so `npm run build`) fails if it no longer matches the contract. App code imports from `src/main/protect/types.ts`, which applies the overrides for where the console differs from the contract (`docs/spikes/P0.3-protect-api.md` §6). When Protect is upgraded: vendor the new contract, update the path in `scripts/gen-protect-types.ts`, regenerate, and re-check those overrides.

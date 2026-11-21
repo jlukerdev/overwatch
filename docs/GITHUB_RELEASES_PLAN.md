@@ -1,6 +1,6 @@
 # GitHub repo move and automated Releases: plan
 
-Notes for moving OverWatch (View Protect) to its own public GitHub repo and building Releases with GitHub Actions. The move to the new repo is done; the workflows, Pages and versioning below are not. Written 2026-11-19.
+Notes for moving OverWatch (View Protect) to its own public GitHub repo and building Releases with GitHub Actions. The move to the new repo is done. Written 2026-11-19. On 2026-11-21 the workflows were added on branch `view-protect/github-releases` (see `docs/DEVELOPMENT.md`, "CI, Releases and Pages"), Pages was set to build from GitHub Actions, and Actions were confirmed enabled. The workflows first run once that PR is merged; the checklist in section 5 shows what is left.
 
 ## What the repo already provides
 
@@ -64,7 +64,7 @@ A Release needs a unique tag, so "a Release on every commit" needs a versioning 
 | Tag-driven | Build and release only on a pushed `v*` tag. CI still runs on every push. | Cleanest, usual approach. Bump `package.json` and tag by hand. |
 | release-please / semantic-release | Version and changelog from conventional commits. | Most setup. Needs a commit convention. |
 
-**Leaning:** CI on every commit, auto-built prereleases on `main`, and a tag-driven stable release. Not decided yet.
+**Decided (2026-11-21):** CI on every commit, an auto-built prerelease `v<pkg>-main.<run number>` on every push to `main` (the next patch once `v<pkg>` is released), and a stable release from a pushed `v<pkg>` tag. Built on one `macos-latest` runner with `dist:all`. Pages URLs: `/guide.html` and `/brochure.html`, with the root redirecting to the brochure.
 
 ## 4. Things to know
 
@@ -79,15 +79,15 @@ A Release needs a unique tag, so "a Release on every commit" needs a versioning 
 
 ## 5. Checklist
 
-- [ ] Choose a versioning approach (section 3)
-- [ ] Add `ci.yml`
-- [ ] Add `release.yml`
-- [ ] Add `dependabot.yml`
-- [ ] Enable GitHub Pages (source: GitHub Actions)
-- [ ] Add `pages.yml` publishing only the guide, brochure and `guide-img/`
-- [ ] Review guide screenshots for private details
-- [ ] Update `README.md` with the public guide and brochure URLs
+- [x] Choose a versioning approach (section 3)
+- [x] Add `ci.yml`
+- [x] Add `release.yml`
+- [x] Add `dependabot.yml`
+- [x] Enable GitHub Pages (source: GitHub Actions)
+- [x] Add `pages.yml` publishing only the guide, brochure and `guide-img/`
+- [x] Review guide screenshots for private details (they were already public in the README)
+- [x] Update `README.md` with the public guide and brochure URLs
 - [ ] Verify both public pages and all images load
-- [ ] Enable Actions and set workflow permissions in repo settings
+- [x] Enable Actions and set workflow permissions in repo settings (default stays read-only; each job asks for what it needs)
 - [ ] Run a test release and install both builds
-- [ ] Confirm the README download instructions match the Release asset names
+- [x] Confirm the README download instructions match the Release asset names

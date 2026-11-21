@@ -8,6 +8,14 @@ updates:
     groups:
       npm-minor-and-patch:
         update-types: [minor, patch]
+    ignore:
+      # The app runs on Node 24 (.nvmrc), so its types stay on 24.x.
+      - dependency-name: '@types/node'
+        update-types: ['version-update:semver-major']
+      # typescript-eslint and openapi-typescript don't accept TypeScript 7 yet (npm ci fails).
+      # Remove once they do.
+      - dependency-name: typescript
+        update-types: ['version-update:semver-major']
   - package-ecosystem: github-actions
     directory: /
     schedule:

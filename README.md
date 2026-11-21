@@ -6,6 +6,8 @@ OverWatch talks straight to your UniFi console over your local network, using Ub
 
 > OverWatch is a personal project, not a Ubiquiti product
 
+**[Download the latest release](https://github.com/jlukerdev/overwatch/releases/latest)** · [User guide](https://jlukerdev.github.io/overwatch/guide.html) · [Brochure](https://jlukerdev.github.io/overwatch/brochure.html)
+
 <img src="docs/guide-img/live.png" width="1200" alt="The Live screen showing a View of six cameras, with the front door camera largest">
 
 ## Features

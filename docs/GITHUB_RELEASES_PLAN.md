@@ -87,7 +87,7 @@ A Release needs a unique tag, so "a Release on every commit" needs a versioning 
 - [x] Add `pages.yml` publishing only the guide, brochure and `guide-img/`
 - [x] Review guide screenshots for private details (they were already public in the README)
 - [x] Update `README.md` with the public guide and brochure URLs
-- [ ] Verify both public pages and all images load
+- [x] Verify both public pages and all images load
 - [x] Enable Actions and set workflow permissions in repo settings (default stays read-only; each job asks for what it needs)
 - [ ] Run a test release and install both builds
 - [x] Confirm the README download instructions match the Release asset names

@@ -68,7 +68,7 @@ To work on the code, see [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md). The design 
 
 ## Install
 
-Download the installer for your computer from the releases:
+Download the installer for your computer from the [latest release](https://github.com/jlukerdev/overwatch/releases/latest):
 
 | Computer | Installer |
 |---|---|
@@ -100,7 +100,7 @@ OverWatch opens on Settings:
 
 No UniFi console? Choose **RTSP streams** at the top of Settings instead, and see below.
 
-A full getting-started guide is coming.
+The [user guide](https://jlukerdev.github.io/overwatch/guide.html) walks through every screen. For an overview, see the [brochure](https://jlukerdev.github.io/overwatch/brochure.html).
 
 ## Using RTSP cameras
 

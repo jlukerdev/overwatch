@@ -1,0 +1,135 @@
+# Builds the installers and publishes a GitHub Release.
+# - Push to main: a prerelease tagged v<package.json version>-main.<run number>, or
+#   v<next patch>-main.<run number> once v<package.json version> is released. The installers'
+#   file names and the in-app version carry the same version: package.json is set to it on the
+#   runner before the build (the renderer's version is fixed at build time, so electron-builder's
+#   extraMetadata alone is not enough). Being a prerelease, it never becomes "Latest".
+# - Push of a v* tag: a stable release. The tag must equal v<package.json version>.
+# All three installers (macOS arm64 + x64 DMGs, Windows x64 NSIS) build on one Apple silicon
+# runner with `dist:all`, as on a developer Mac (electron-builder.yml, NSIS toolset 1.2.1).
+# None are code-signed; only GITHUB_TOKEN is needed.
+name: Release
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# No concurrency group: each run has its own tag (run number), and a group would drop queued runs.
+
+jobs:
+  build:
+    runs-on: macos-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      prerelease: ${{ steps.version.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - name: Work out the version
+        id: version
+        env:
+          REF: ${{ github.ref }}
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+          RUN_NUMBER: ${{ github.run_number }}
+        run: |
+          pkg="$(node -p "require('./package.json').version")"
+          if [ "$REF_TYPE" = "tag" ]; then
+            if [ "$REF_NAME" != "v$pkg" ]; then
+              echo "::error::Tag $REF_NAME does not match package.json version $pkg (expected v$pkg)."
+              exit 1
+            fi
+            echo "version=$pkg" >> "$GITHUB_OUTPUT"
+            echo "prerelease=false" >> "$GITHUB_OUTPUT"
+          elif [ "$REF" = "refs/heads/main" ]; then
+            # Once v<pkg> is released, main builds lead to the next patch, so they sort after it.
+            base="$pkg"
+            if [ -n "$(git ls-remote --tags origin "refs/tags/v$pkg")" ]; then
+              base="$(node -p "const [a, b, c] = '$pkg'.split('.').map(Number); [a, b, c + 1].join('.')")"
+            fi
+            echo "version=$base-main.$RUN_NUMBER" >> "$GITHUB_OUTPUT"
+            echo "prerelease=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::error::Releases are built only from main or a v* tag, not $REF."
+            exit 1
+          fi
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run format:check
+      - run: npm test
+      - name: Set package.json to the release version
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: npm version --no-git-tag-version --allow-same-version "$VERSION"
+      # predist fetches go2rtc for every target (SHA-256 checked); afterPack checks each packaged
+      # copy. CSC_IDENTITY_AUTO_DISCOVERY=false keeps the ad-hoc identity ('-') from
+      # electron-builder.yml rather than searching the runner's keychain.
+      - name: Build installers
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+        run: npm run dist:all -- --publish never
+      - uses: actions/upload-artifact@v4
+        with:
+          name: installers
+          if-no-files-found: error
+          path: |
+            dist/OverWatch-${{ steps.version.outputs.version }}-arm64.dmg
+            dist/OverWatch-${{ steps.version.outputs.version }}-x64.dmg
+            dist/OverWatch-${{ steps.version.outputs.version }}-x64.exe
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: installers
+          path: installers
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+          VERSION: ${{ needs.build.outputs.version }}
+          PRERELEASE: ${{ needs.build.outputs.prerelease }}
+          PAGES: https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}
+        run: |
+          ls -l installers
+          # Fail if any expected installer is missing rather than publishing a partial release.
+          for f in arm64.dmg x64.dmg x64.exe; do
+            test -f "installers/OverWatch-$VERSION-$f"
+          done
+          (cd installers && sha256sum OverWatch-* > SHA256SUMS.txt)
+          cat > notes.md <<NOTES
+          | Computer | Installer |
+          |---|---|
+          | Mac with Apple silicon (M1 or later) | \`OverWatch-$VERSION-arm64.dmg\` |
+          | Mac with an Intel processor | \`OverWatch-$VERSION-x64.dmg\` |
+          | Windows x64 | \`OverWatch-$VERSION-x64.exe\` |
+
+          The builds aren't code-signed yet, so the first launch needs one extra step: see [Install](https://github.com/$REPO#install) in the README.
+
+          [User guide]($PAGES/guide.html) · [Brochure]($PAGES/brochure.html)
+          NOTES
+          # A re-run (same run number) finds the release it made before: replace its files.
+          if gh release view "v$VERSION" --repo "$REPO" >/dev/null 2>&1; then
+            gh release upload "v$VERSION" installers/* --repo "$REPO" --clobber
+            exit 0
+          fi
+          args=(--repo "$REPO" --title "OverWatch $VERSION" --notes-file notes.md)
+          if [ "$PRERELEASE" = "true" ]; then
+            # Creates the tag on the built commit.
+            gh release create "v$VERSION" installers/* "${args[@]}" --target "$SHA" --prerelease
+          else
+            gh release create "v$VERSION" installers/* "${args[@]}" --verify-tag --latest
+          fi

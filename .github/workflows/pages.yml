@@ -1,0 +1,61 @@
+# Publishes the user guide and brochure to GitHub Pages. Only those two pages and the guide's
+# screenshots are published, never the rest of docs/ (SPEC, plans, Ubiquiti references, spikes).
+# URLs: <pages>/guide.html, <pages>/brochure.html; <pages>/ redirects to the brochure.
+name: Pages
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - docs/guide.html
+      - docs/brochure.html
+      - docs/guide-img/**
+      - .github/workflows/pages.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Stage the public pages
+        run: |
+          mkdir -p site
+          cp docs/guide.html docs/brochure.html site/
+          cp -R docs/guide-img site/guide-img
+          cat > site/index.html <<'HTML'
+          <!doctype html>
+          <html lang="en">
+            <head>
+              <meta charset="utf-8" />
+              <title>OverWatch</title>
+              <meta http-equiv="refresh" content="0; url=brochure.html" />
+              <link rel="canonical" href="brochure.html" />
+            </head>
+            <body>
+              <p><a href="brochure.html">OverWatch</a> · <a href="guide.html">User guide</a></p>
+            </body>
+          </html>
+          HTML
+          touch site/.nojekyll
+          ls -lR site
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+      - id: deployment
+        uses: actions/deploy-pages@v4

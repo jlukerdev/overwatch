@@ -11,6 +11,7 @@ v1.0.0 and v1.0.1 were built from [DEV_PLAN.md](DEV_PLAN.md), which is now a **f
 | 1.0.0 | Released | [DEV_PLAN.md](DEV_PLAN.md) Phases 0–6 (legacy) | First release: Views, live grid, fill and zoom, multi-camera cells, audio, Access doors, OverWatch branding, installers |
 | 1.0.1 | Released | [DEV_PLAN.md](DEV_PLAN.md) Phase 7, P7.1 (legacy) | Window size and position remembered (WIN-1), collapsible Display / Quality groups in the View editor (VIEW-3), separate dev data folder (BRAND-5) |
 | 1.0.2 | In progress | [versions/v1.0.2.md](versions/v1.0.2.md) | RTSP stream mode (run without a UniFi console, Streams screen for RTSP feeds); Settings bars at the top of screens; View editor cell actions in the Cell pane; smooth fill zoom on Windows (ZOOM-3); brochure and user guide cover RTSP mode. Last PR (F1.0.2-11, PR #11) in review |
+| 1.0.3 | Planning | [versions/v1.0.3.md](versions/v1.0.3.md) | Two-way talk; multi-monitor Views, kiosk mode and launch at login; View export / import |
 
 Status values: **Planning** (scope being decided) → **In progress** (scope agreed, features being built) → **Released** (`package.json` at that version, installers built, release check passed).
 
@@ -34,13 +35,9 @@ Ideas not yet assigned to a version. Move an item into a version file when it is
 |---|---|
 | Code signing and notarization | macOS is ad-hoc signed, Windows unsigned (NFR-10) |
 | Auto-update | electron-updater with a GitHub Releases feed; needs signing |
-| Own GitHub repo and automated Releases | Plan in [GITHUB_RELEASES_PLAN.md](GITHUB_RELEASES_PLAN.md) |
 | Import Protect Live Views | `GET /v1/liveviews` (SPEC §5.1) |
 | Remote control / unlock through the Site Manager Cloud Connector | Video still needs LAN or VPN (SPEC §5.1) |
 | Badge-in camera pop-up | Show a camera on `nfcCardScanned` / `fingerprintIdentified` at its reader |
-| Two-way talk | `POST /v1/cameras/{id}/talkback-session`, cameras with `hasSpeaker` |
-| Multi-monitor Views, kiosk mode, launch at login | |
-| View export / import | |
 | Door-link auto-suggest | Suggest camera → door links by name or device (DOOR-2) |
 | PTZ preset and patrol buttons | The API has presets and patrols only, no continuous PTZ |
 | Motion badge on cells | Per-cell motion indicator in the overlay (CELL-3) |
@@ -48,14 +45,3 @@ Ideas not yet assigned to a version. Move an item into a version file when it is
 | Thumbnails for RTSP streams | Grab a frame from the stream; v1.0.2 shows an icon |
 | Test a stream before saving | Probe an RTSP URL from the Streams dialog |
 | Motion events for RTSP cameras | e.g. ONVIF events, so multi-camera cells can switch on motion in RTSP mode |
-
-## Open verification
-
-Checks that can only be run with hardware the development network does not have. They are not tied to a version.
-
-| # | Check | Why |
-|---|---|---|
-| OS-1 | At the deployment site, with a real Access token, run `npm run spike:access` against the console: doors list, one confirmed unlock of an agreed test door, one lock rule and the emergency status read, and the notifications WebSocket. Record which events arrive for a remote unlock, a card or PIN unlock and a relock, and what `lock_now` does to a door inside its unlock schedule. **Partly done:** the read-only run (doors list, error probes, lock rule, emergency status, WebSocket open) has passed on one console and its captures are in `tests/fixtures/access/`; the unlock, the PUTs and the event list are still open | The unlock and the door-changing calls in SPEC §5.2 have not run against Access hardware (R3) |
-| OS-2 | In the app at the site: enable Access, link each camera to its door, unlock each linked door once from its cell, and use the Doors screen | The door features have only been checked against the mock |
-| R1 | Before Enhanced Encoding (H.265) is turned back on for any camera, play a real H.265 stream on Windows | Only verified on macOS |
-| R11 | When a camera next goes offline, check the devices WebSocket messages and the snapshot answer | Both are unobserved |
